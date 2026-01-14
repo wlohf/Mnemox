@@ -1,0 +1,117 @@
+================================================
+  StudyAssistant 中转API 快速配置说明
+================================================
+
+您的API信息:
+- API Key:  sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
+- API地址:  https://api.224442.xyz
+- 模型:     glm-4.7
+
+================================================
+  自动配置（推荐）
+================================================
+
+1. 双击运行: 配置中转API.bat
+
+2. 等待配置完成
+
+3. 启动服务: start_with_anythingllm.bat
+
+4. 完成！
+
+================================================
+  手动配置
+================================================
+
+方法1: StudyAssistant 配置
+--------------------------
+创建文件: backend\.env
+
+内容:
+DATABASE_URL=sqlite+aiosqlite:///./data/study.db
+DEFAULT_AI_PROVIDER=openai
+OPENAI_API_KEY=sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
+OPENAI_MODEL=glm-4.7
+OPENAI_BASE_URL=https://api.224442.xyz/v1
+ANYTHINGLLM_ENABLED=true
+ANYTHINGLLM_BASE_URL=http://localhost:3001
+ANYTHINGLLM_WORKSPACE=study-materials
+HOST=0.0.0.0
+PORT=8000
+DEBUG=true
+
+方法2: AnythingLLM 配置
+-----------------------
+两种方式任选其一:
+
+A. Web界面配置（推荐）:
+   1. 启动: cd tools\anything-llm\server && yarn dev
+   2. 访问: http://localhost:3001
+   3. 首次进入选择配置:
+      - LLM Provider: OpenAI
+      - API Key: sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
+      - Base URL: https://api.224442.xyz/v1
+      - Model: glm-4.7
+      - Embedding: Native (推荐，免费)
+
+B. 配置文件（高级）:
+   创建: tools\anything-llm\server\.env.development
+   
+   内容:
+   LLM_PROVIDER=openai
+   OPEN_AI_KEY=sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
+   OPEN_MODEL_PREF=glm-4.7
+   OPEN_AI_BASE_PATH=https://api.224442.xyz/v1
+   EMBEDDING_ENGINE=native
+   VECTOR_DB=lancedb
+   SERVER_PORT=3001
+
+================================================
+  测试配置
+================================================
+
+cd backend
+python test_integration.py
+
+期望看到:
+✅ AnythingLLM 服务器在线
+✅ 文档处理服务在线
+✅ 工作空间已就绪
+✅ RAG 聊天功能正常
+✅ 所有测试通过！
+
+================================================
+  启动服务
+================================================
+
+双击运行: start_with_anythingllm.bat
+
+或手动启动:
+1. cd tools\anything-llm\server && yarn dev
+2. cd tools\anything-llm\collector && yarn dev
+3. cd StudyAssitant\backend && python -m uvicorn app.main:app --reload
+4. cd StudyAssitant\frontend && npm run dev
+
+================================================
+  访问地址
+================================================
+
+🌐 前端界面:      http://localhost:5173
+📚 API文档:       http://localhost:8000/docs
+🤖 AnythingLLM:   http://localhost:3001
+
+================================================
+  注意事项
+================================================
+
+⚠️  API地址必须包含 /v1 后缀
+⚠️  首次启动 AnythingLLM 需要在 Web 界面配置
+⚠️  Embedding 建议选择 Native (免费，本地运行)
+
+================================================
+  详细文档
+================================================
+
+查看完整配置指南: 配置中转API指南.md
+
+================================================
