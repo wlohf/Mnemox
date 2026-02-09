@@ -3,13 +3,13 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from pydantic import BaseModel
-from pathlib import Path
 import shutil
 import uuid
 
 from app.database import get_db
 from app.services.material_service import get_material_service, MaterialService
 from app.models.material import Material
+from app.utils.paths import ensure_data_dirs, get_uploads_dir, to_repo_relative, from_repo_relative
 
 
 router = APIRouter()
@@ -54,39 +54,33 @@ async def upload_material(
     - **file**: 上传的文件
     - **sync_to_anythingllm**: 是否同步到 AnythingLLM
     """
-    # 确保上传目录存在
-    upload_dir = Path("data/uploads")
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    # 确保上传目录存在（项目根目录的 data/uploads）
+    ensure_data_dirs()
+    upload_dir = get_uploads_dir()
     
     # 生成唯一文件名
     file_extension = Path(file.filename).suffix
     unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_path = upload_dir / unique_filename
+    abs_file_path = upload_dir / unique_filename
     
     # 保存文件
     try:
-        with file_path.open("wb") as buffer:
+        with abs_file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
-    
-    # 读取文本内容（如果是文本文件）
-    content = None
-    if file_extension.lower() in ['.txt', '.md']:
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-        except Exception as e:
-            print(f"读取文件内容失败: {e}")
+
+    # 在数据库里保存相对路径，便于迁移/部署
+    repo_rel_path = to_repo_relative(abs_file_path)
     
     # 创建资料记录
     material_service = get_material_service(db)
     try:
         material = await material_service.create_material(
             title=title,
-            file_path=str(file_path),
+            file_path=repo_rel_path,
             file_type=file_extension.lstrip('.'),
-            content=content,
+            content=None,  # 交给 service 做统一的文件提取
             sync_to_anythingllm=sync_to_anythingllm
         )
         
@@ -101,8 +95,8 @@ async def upload_material(
         )
     except Exception as e:
         # 如果创建失败，删除已上传的文件
-        if file_path.exists():
-            file_path.unlink()
+        if abs_file_path.exists():
+            abs_file_path.unlink()
         raise HTTPException(status_code=500, detail=f"创建资料失败: {str(e)}")
 
 

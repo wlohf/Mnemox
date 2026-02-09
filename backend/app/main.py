@@ -12,11 +12,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时初始化数据库
     await init_db()
-    print("✅ 数据库初始化完成")
+    print("[OK] 数据库初始化完成")
     yield
     # 关闭时清理资源
     await close_db()
-    print("👋 应用关闭，数据库连接已关闭")
+    print("[OK] 应用关闭，数据库连接已关闭")
 
 
 # 创建 FastAPI 应用
@@ -54,15 +54,17 @@ async def health():
 
 
 # 引入路由
-from app.routers import materials
+from app.routers import materials, pomodoro, rag, plans
 
 app.include_router(materials.router, prefix="/api/materials", tags=["资料管理"])
+app.include_router(pomodoro.router, prefix="/api/pomodoro", tags=["番茄钟"])
+app.include_router(rag.router, prefix="/api/rag", tags=["RAG/AnythingLLM"])
+app.include_router(plans.router, prefix="/api/plans", tags=["日历/计划"])
 # TODO: 引入其他路由
-# from app.routers import goals, study, review, pomodoro
+# from app.routers import goals, study, review
 # app.include_router(goals.router, prefix="/api/goals", tags=["学习目标"])
 # app.include_router(study.router, prefix="/api/study", tags=["学习会话"])
 # app.include_router(review.router, prefix="/api/review", tags=["复习"])
-# app.include_router(pomodoro.router, prefix="/api/pomodoro", tags=["番茄钟"])
 
 
 if __name__ == "__main__":

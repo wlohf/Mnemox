@@ -1,13 +1,13 @@
 """资料管理服务层"""
 from typing import Optional, List, Dict, Any
-from pathlib import Path
-import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.material import Material, Chapter
 from app.ai.anythingllm_provider import get_anythingllm_provider
 from app.config import settings
+from app.utils.paths import from_repo_relative
+from app.utils.file_extract import extract_text
 
 
 class MaterialService:
@@ -43,6 +43,12 @@ class MaterialService:
             创建的资料对象
         """
         # 创建数据库记录
+        if (content is None or content.strip() == "") and file_path:
+            # 尝试从文件提取文本（PDF/DOCX/TXT/MD）
+            extracted = extract_text(from_repo_relative(file_path))
+            if extracted:
+                content = extracted
+
         material = Material(
             title=title,
             file_path=file_path,
@@ -90,9 +96,9 @@ class MaterialService:
             "description": f"学习资料ID: {material.id}"
         }
         
-        # 上传文档
+        # 上传文档（AnythingLLM 需要可访问的文件路径）
         result = await self.anythingllm.upload_document(
-            file_path=material.file_path,
+            file_path=str(from_repo_relative(material.file_path)),
             folder_name="study-materials",
             workspace_slugs=[workspace_slug],
             metadata=metadata

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     # AnythingLLM RAG 系统配置
     ANYTHINGLLM_ENABLED: bool = False
     ANYTHINGLLM_BASE_URL: str = "http://localhost:3001"
+    # AnythingLLM 的文档处理服务（collector），不同安装方式端口可能不同
+    ANYTHINGLLM_COLLECTOR_URL: str = "http://localhost:8888"
     ANYTHINGLLM_API_KEY: str = ""
     ANYTHINGLLM_WORKSPACE: str = "study-materials"
     

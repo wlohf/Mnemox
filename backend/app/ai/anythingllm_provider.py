@@ -13,7 +13,8 @@ class AnythingLLMProvider:
         self, 
         base_url: str = "http://localhost:3001",
         api_key: Optional[str] = None,
-        default_workspace: str = "study-materials"
+        default_workspace: str = "study-materials",
+        collector_url: str = "http://localhost:8888"
     ):
         """
         初始化 AnythingLLM 提供商
@@ -26,6 +27,7 @@ class AnythingLLMProvider:
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.default_workspace = default_workspace
+        self.collector_url = collector_url.rstrip('/')
         self.headers = {}
         
         if api_key:
@@ -45,8 +47,7 @@ class AnythingLLMProvider:
         """检查文档处理服务是否在线"""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                # Collector 默认运行在 8888 端口
-                response = await client.get("http://localhost:8888/ping")
+                response = await client.get(f"{self.collector_url}/ping")
                 return response.status_code == 200
         except Exception as e:
             print(f"文档处理服务检查失败: {e}")
@@ -318,7 +319,8 @@ def get_anythingllm_provider() -> AnythingLLMProvider:
         _anythingllm_instance = AnythingLLMProvider(
             base_url=getattr(settings, "ANYTHINGLLM_BASE_URL", "http://localhost:3001"),
             api_key=getattr(settings, "ANYTHINGLLM_API_KEY", None),
-            default_workspace=getattr(settings, "ANYTHINGLLM_WORKSPACE", "study-materials")
+            default_workspace=getattr(settings, "ANYTHINGLLM_WORKSPACE", "study-materials"),
+            collector_url=getattr(settings, "ANYTHINGLLM_COLLECTOR_URL", "http://localhost:8888")
         )
     
     return _anythingllm_instance
