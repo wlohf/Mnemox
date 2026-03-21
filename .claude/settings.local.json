@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nIntegrate pomodoro frontend with backend API for data persistence\n\nAdd task_name field to backend Pomodoro model and API schemas, create\nfrontend API service layer, integrate backend calls into Zustand store\nwith optimistic updates and offline fallback, add batch endpoint for\nlocalStorage history migration, and display sync status indicator in UI.\n\nCo-Authored-By: Claude Opus 4.6 \\(1M context\\) <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(source:*)",
+      "Bash(python:*)",
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(curl:*)",
+      "Bash(sqlite3:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(xargs:*)",
+      "Bash(git -C \"E:\\\\xyleisure\\\\StudyAssitant\" diff --name-only)",
+      "Bash(E:/xyleisure/StudyAssitant/backend/venv/Scripts/python.exe -c:*)",
+      "Bash(node -e:*)",
+      "Bash(find:*)",
+      "Bash(npm install:*)",
+      "mcp__vibe_kanban__list_projects",
+      "Bash(wc:*)",
+      "mcp__ace-tool__search_context",
+      "WebSearch",
+      "WebFetch(domain:florinelchis.medium.com)",
+      "WebFetch(domain:www.firecrawl.dev)",
+      "Bash(fi:*)",
+      "Bash(done)",
+      "Bash(grep:*)",
+      "Bash(pip install:*)",
+      "Bash(npx vite build)",
+      "Bash(node:*)",
+      "Bash(./node_modules/.bin/tsc:*)",
+      "Bash(gh repo:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm.cmd install:*)",
+      "Bash(npx.cmd tsc:*)"
+    ]
+  }
+}

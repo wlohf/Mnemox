@@ -1,0 +1,358 @@
+/* ============================================
+   Study Assistant — Modern Design System v2
+   Clean, warm, professional aesthetic
+   ============================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* Typography */
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  /* === Color System === */
+
+  /* Neutrals - Warm stone palette */
+  --gray-50: #fafaf9;
+  --gray-100: #f5f5f4;
+  --gray-200: #e7e5e4;
+  --gray-300: #d6d3d1;
+  --gray-400: #a8a29e;
+  --gray-500: #78716c;
+  --gray-600: #57534e;
+  --gray-700: #44403c;
+  --gray-800: #292524;
+  --gray-900: #1c1917;
+
+  /* Primary - Warm amber accent */
+  --primary-50: #fffbeb;
+  --primary-100: #fef3c7;
+  --primary-200: #fde68a;
+  --primary-300: #fcd34d;
+  --primary-400: #fbbf24;
+  --primary-500: #f59e0b;
+  --primary-600: #d97706;
+  --primary-700: #b45309;
+
+  /* Accent - Teal for actions/interactive */
+  --accent-50: #f0fdfa;
+  --accent-100: #ccfbf1;
+  --accent-200: #99f6e4;
+  --accent-400: #2dd4bf;
+  --accent-500: #14b8a6;
+  --accent-600: #0d9488;
+  --accent-700: #0f766e;
+
+  /* Semantic */
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+
+  /* Layout Colors */
+  --bg-primary: #fafaf9;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f5f5f4;
+  --bg-sidebar: #ffffff;
+  --bg-chat: #fafaf9;
+  --bg-input: #ffffff;
+
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-tertiary: #a8a29e;
+  --text-inverse: #ffffff;
+
+  --border-color: #e7e5e4;
+  --border-light: #f5f5f4;
+  --divider: #e7e5e4;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  --shadow-inner: inset 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-ring: 0 0 0 3px rgba(245, 158, 11, 0.15);
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Border Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.33, 1, 0.68, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+}
+
+/* === Reset & Base === */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+}
+
+/* === Animation Keyframes === */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+/* Utility classes */
+.fade-in { animation: fadeIn 0.3s var(--ease-out); }
+.fade-in-up { animation: fadeInUp 0.4s var(--ease-out); }
+.scale-in { animation: scaleIn 0.2s var(--ease-out); }
+.slide-in-right { animation: slideInRight 0.3s var(--ease-out); }
+
+/* === Panel Splitter === */
+.panel-splitter {
+  transition: background var(--duration-fast);
+}
+.panel-splitter:hover,
+.panel-splitter.active {
+  background: var(--primary-400) !important;
+  opacity: 0.5;
+}
+
+/* === Ant Design Overrides === */
+
+/* Make antd cards look modern */
+.ant-card {
+  border-radius: var(--radius-lg) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: var(--shadow-xs) !important;
+  transition: box-shadow var(--duration-normal) var(--ease-out),
+              transform var(--duration-normal) var(--ease-out) !important;
+}
+
+.ant-card:hover {
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.ant-card .ant-card-head {
+  border-bottom-color: var(--border-light) !important;
+  min-height: 40px !important;
+  padding: 0 var(--space-4) !important;
+  font-size: 13px !important;
+}
+
+.ant-card .ant-card-body {
+  padding: var(--space-4) !important;
+}
+
+/* Modern buttons */
+.ant-btn {
+  border-radius: var(--radius-md) !important;
+  font-weight: 500 !important;
+  transition: all var(--duration-fast) var(--ease-out) !important;
+}
+
+.ant-btn-primary {
+  background: var(--accent-600) !important;
+  border-color: var(--accent-600) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+.ant-btn-primary:hover {
+  background: var(--accent-700) !important;
+  border-color: var(--accent-700) !important;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.ant-btn-primary:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Modern inputs */
+.ant-input,
+.ant-input-affix-wrapper {
+  border-radius: var(--radius-md) !important;
+  border-color: var(--border-color) !important;
+  transition: all var(--duration-fast) var(--ease-out) !important;
+}
+
+.ant-input:focus,
+.ant-input-focused,
+.ant-input-affix-wrapper:focus,
+.ant-input-affix-wrapper-focused {
+  border-color: var(--accent-500) !important;
+  box-shadow: var(--shadow-ring) !important;
+}
+
+/* Modern tags */
+.ant-tag {
+  border-radius: var(--radius-sm) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+/* Modern modal */
+.ant-modal .ant-modal-content {
+  border-radius: var(--radius-xl) !important;
+  box-shadow: var(--shadow-xl) !important;
+  overflow: hidden;
+}
+
+.ant-modal .ant-modal-header {
+  border-bottom-color: var(--border-light) !important;
+}
+
+/* Modern segmented control */
+.ant-segmented {
+  border-radius: var(--radius-md) !important;
+  background: var(--gray-100) !important;
+  padding: 2px !important;
+}
+
+.ant-segmented .ant-segmented-item-selected {
+  border-radius: var(--radius-sm) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+/* Modern drawer */
+.ant-drawer .ant-drawer-content {
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl) !important;
+}
+
+/* Modern progress bar */
+.ant-progress-bg {
+  border-radius: var(--radius-full) !important;
+}
+
+.ant-progress-inner {
+  border-radius: var(--radius-full) !important;
+}
+
+/* Tabs */
+.ant-tabs .ant-tabs-tab {
+  transition: all var(--duration-fast) var(--ease-out) !important;
+}
+
+/* Calendar */
+.ant-picker-calendar {
+  border-radius: var(--radius-lg) !important;
+}
+
+/* === Custom Component Styles === */
+
+/* Empty state enhancement */
+.ant-empty {
+  padding: var(--space-8) 0 !important;
+}
+
+.ant-empty-description {
+  color: var(--text-tertiary) !important;
+}
+
+/* Notification */
+.ant-notification-notice {
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+/* Badge */
+.ant-badge-count {
+  box-shadow: 0 0 0 2px var(--bg-secondary) !important;
+}
+
+/* List items */
+.ant-list-item {
+  transition: background var(--duration-fast) var(--ease-out) !important;
+  border-radius: var(--radius-md) !important;
+}

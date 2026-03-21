@@ -1,0 +1,88 @@
+import Dexie, { type Table } from 'dexie'
+
+// ── Sync metadata mixin ──
+export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete'
+
+export interface SyncMeta {
+  _localId: string        // client-generated UUID, primary key
+  _serverId: number | null // server-assigned id (null before first push)
+  _syncStatus: SyncStatus
+  _updatedAt: string       // ISO datetime – latest local change
+  _lastSyncedAt: string | null // ISO datetime of last successful push/pull
+  _conflictAt: string | null   // ISO datetime when conflict was detected
+  _conflictServerData: string | null // JSON snapshot of server version at conflict time
+}
+
+// ── Local table types ──
+
+export interface LocalNote extends SyncMeta {
+  title: string
+  content: string
+  note_type: string | null
+  material_id: number | null
+  chapter_id: number | null
+  tags: string   // JSON-encoded string[]
+  links: string  // JSON-encoded NoteLink[]
+  created_at: string | null
+}
+
+export interface LocalGoal extends SyncMeta {
+  title: string
+  description: string | null
+  target_level: string | null
+  deadline: string | null  // ISO date
+  status: string           // active | completed | paused
+  material_id: number | null
+  material_title: string | null
+  created_at: string | null
+}
+
+export interface LocalGoalTask extends SyncMeta {
+  goal_id: number | null        // server goal_id (null if parent goal not yet synced)
+  _localGoalId: string | null   // local goal _localId for parent reference
+  chapter_id: number | null
+  chapter_title: string | null
+  title: string
+  description: string | null
+  task_type: string | null
+  planned_date: string | null   // ISO date
+  status: string                // pending | in_progress | completed
+  completed_at: string | null
+  created_at: string | null
+}
+
+// ── Operation queue ──
+
+export type OpType = 'create' | 'update' | 'delete'
+export type ModuleName = 'notes' | 'goals' | 'goalTasks'
+
+export interface QueuedOperation {
+  id?: number             // auto-incremented
+  module: ModuleName
+  opType: OpType
+  localId: string         // the _localId of the affected record
+  payload: string         // JSON serialised data for create/update
+  createdAt: string       // ISO datetime
+}
+
+// ── Database class ──
+
+class StudyDatabase extends Dexie {
+  notes!: Table<LocalNote, string>
+  goals!: Table<LocalGoal, string>
+  goalTasks!: Table<LocalGoalTask, string>
+  opQueue!: Table<QueuedOperation, number>
+
+  constructor() {
+    super('StudyAssistantDB')
+
+    this.version(1).stores({
+      notes:     '_localId, _serverId, _syncStatus, _updatedAt',
+      goals:     '_localId, _serverId, _syncStatus, _updatedAt, status',
+      goalTasks: '_localId, _serverId, _syncStatus, _updatedAt, goal_id, _localGoalId, planned_date, status',
+      opQueue:   '++id, module, localId, createdAt',
+    })
+  }
+}
+
+export const db = new StudyDatabase()

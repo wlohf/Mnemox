@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: study_assistant
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:-changeme}@db:5432/study_assistant
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      CORS_ORIGINS: '["http://localhost"]'
+      DEBUG: "false"
+    volumes:
+      - uploads:/app/data/uploads
+      - chromadb:/app/data/chromadb
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  uploads:
+  chromadb:
