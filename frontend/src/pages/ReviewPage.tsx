@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Button, List, Space, message, Tag, Segmented, Radio, Input, Spin, Alert } from 'antd'
-import { CheckCircleOutlined, ArrowRightOutlined } from '@ant-design/icons'
+import { CheckCircleOutlined, ArrowRightOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { listReviewTasks, completeReviewTask, type ReviewTaskItem } from '../services/reviewApi'
+import { listReviewTasks, completeReviewTask, deleteReviewTask, type ReviewTaskItem } from '../services/reviewApi'
 import { apiFetch } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
@@ -165,6 +165,16 @@ export function ReviewPage() {
                   >
                     {item.item_type === 'chapter' ? '开始AI复习' : '暂不支持'}
                   </Button>,
+                  <Button
+                    key={`del-${item.task_id}`}
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={async () => {
+                      const ok = await deleteReviewTask(item.task_id)
+                      if (ok) { message.success('已删除'); void load() }
+                      else message.error('删除失败')
+                    }}
+                  />,
                 ]}
               >
                 <List.Item.Meta

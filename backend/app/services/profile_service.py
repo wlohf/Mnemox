@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 RECENT_DAYS = 30
 # 最短数据量要求（番茄钟数）才生成画像
 MIN_DATA_THRESHOLD = 3
+# 最少需要的学习天数才生成有意义的画像
+MIN_STUDY_DAYS = 7
 
 
 async def compute_and_save_profile(db: AsyncSession, user_id: int) -> UserProfile:
@@ -54,8 +56,8 @@ async def get_or_compute_profile(db: AsyncSession, user_id: int) -> Optional[Use
 
     should_recompute = (
         profile is None
-        or profile.updated_at is None
-        or (datetime.now() - profile.updated_at).total_seconds() > 3600
+        or profile.last_updated is None
+        or (datetime.now() - profile.last_updated).total_seconds() > 3600
     )
 
     if should_recompute:
@@ -213,6 +215,22 @@ async def _compute_profile(db: AsyncSession, user_id: int) -> UserProfile:
         "early_done_count": early_done_count,
         "interrupted_count": interrupted_count,
         "distracted_rate": round(distracted_rate, 4),
+        "data_insufficient": total_study_days < MIN_STUDY_DAYS,
+        "data_days": total_study_days,
+        "insights": _generate_insights(
+            total_study_days=total_study_days,
+            optimal_hours=optimal_hours,
+            preferred_time_slots=preferred_time_slots,
+            focus_score=focus_score,
+            consistency_score=consistency_score,
+            interruption_rate=interruption_rate,
+            distracted_rate=distracted_rate,
+            distracted_count=distracted_count,
+            avg_session_duration=avg_session_duration,
+            streak=streak,
+            total_pomodoros=total_pomodoros,
+            completion_rate=completion_rate,
+        ),
     }
 
     profile = UserProfile(
@@ -230,7 +248,7 @@ async def _compute_profile(db: AsyncSession, user_id: int) -> UserProfile:
         optimal_hours=optimal_hours,
         weak_points=weak_points,
         recent_performance=recent_performance,
-        updated_at=datetime.now(),
+        last_updated=datetime.now(),
     )
     return profile
 
@@ -257,7 +275,7 @@ async def _upsert_profile(db: AsyncSession, profile: UserProfile) -> None:
         row.optimal_hours = profile.optimal_hours
         row.weak_points = profile.weak_points
         row.recent_performance = profile.recent_performance
-        row.updated_at = profile.updated_at
+        row.last_updated = profile.last_updated
     await db.commit()
 
 
@@ -354,3 +372,90 @@ async def _compute_weak_points(db: AsyncSession, user_id: int) -> list[str]:
         return [str(row.knowledge_point) for row in rows if row.knowledge_point is not None]
     except Exception:
         return []
+
+
+def _generate_insights(
+    total_study_days: int,
+    optimal_hours: Optional[str],
+    preferred_time_slots: Optional[dict],
+    focus_score: float,
+    consistency_score: float,
+    interruption_rate: float,
+    distracted_rate: float,
+    distracted_count: int,
+    avg_session_duration: int,
+    streak: int,
+    total_pomodoros: int,
+    completion_rate: float,
+) -> list[str]:
+    """根据统计数据生成叙述性分析洞察结论列表。"""
+    insights: list[str] = []
+
+    if total_study_days < MIN_STUDY_DAYS:
+        insights.append(f"当前仅有 {total_study_days} 天的学习记录，需要至少 {MIN_STUDY_DAYS} 天数据才能生成准确的分析报告。")
+        return insights
+
+    # 1. 高效时段洞察
+    if optimal_hours:
+        insights.append(
+            f"基于 {total_study_days} 天的学习数据分析，你在 {optimal_hours} 完成的番茄钟数量最多、专注时间最长，"
+            f"这是你的黄金学习时段，建议将高难度任务安排在这个时间段。"
+        )
+
+    # 2. 专注度洞察
+    if focus_score >= 80:
+        insights.append(
+            f"你的番茄钟完成率达到 {focus_score:.0f}%，专注度表现优秀，"
+            f"说明你在启动学习任务后能有效保持专注，很少被打断。"
+        )
+    elif focus_score >= 60:
+        insights.append(
+            f"你的番茄钟完成率为 {focus_score:.0f}%，专注度中等。"
+            f"有约 {100 - focus_score:.0f}% 的学习计划未能完整执行，建议减少外部干扰。"
+        )
+    else:
+        insights.append(
+            f"你的番茄钟完成率仅为 {focus_score:.0f}%，有较多中断情况。"
+            f"建议检查学习环境或将番茄钟时长调短，从 15 分钟开始建立专注习惯。"
+        )
+
+    # 3. 走神/中断洞察
+    if distracted_rate > 0.2:
+        insights.append(
+            f"近30天内有 {distracted_count} 次番茄钟因走神或状态不好而中断（占 {distracted_rate * 100:.0f}%），"
+            f"建议在容易分心的时间段降低任务难度，或增加休息频率。"
+        )
+    elif distracted_count > 0:
+        insights.append(
+            f"近30天偶发 {distracted_count} 次走神中断，整体自控力良好。"
+        )
+
+    # 4. 坚持度洞察
+    if streak >= 14:
+        insights.append(
+            f"你已连续学习 {streak} 天，坚持度表现出色！保持这个节奏，学习效果会持续累积。"
+        )
+    elif streak >= 7:
+        insights.append(
+            f"你已连续学习 {streak} 天，坚持度良好。继续保持，争取突破 14 天连续打卡。"
+        )
+    elif consistency_score < 40:
+        insights.append(
+            f"学习连续性偏低（当前连续 {streak} 天），学习记录较分散。"
+            f"建议固定每天至少完成 1 个番茄钟，养成学习惯性。"
+        )
+
+    # 5. 平均专注时长洞察
+    if avg_session_duration > 0:
+        if avg_session_duration >= 45:
+            insights.append(
+                f"你的平均单次专注时长为 {avg_session_duration} 分钟，属于深度学习型，"
+                f"适合处理需要长时间投入的复杂任务。"
+            )
+        elif avg_session_duration <= 20:
+            insights.append(
+                f"你的平均单次专注时长为 {avg_session_duration} 分钟，倾向于短周期学习。"
+                f"可以尝试逐渐延长到 25-30 分钟，提升单次学习深度。"
+            )
+
+    return insights

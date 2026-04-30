@@ -28,7 +28,7 @@ class LearningEvent(Base):
     session_id = Column(String(50), comment="会话ID（同一学习会话）")
     
     # 元数据
-    metadata = Column(JSON, comment="额外元数据")
+    extra_metadata = Column("metadata", JSON, comment="额外元数据")
 
 
 # 事件类型枚举

@@ -73,7 +73,9 @@ export async function getMe(): Promise<UserInfo | null> {
   const token = getToken()
   if (!token) return null
 
-  const res = await apiFetch('/api/auth/me')
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<UserInfo>('/api/auth/me')
+  } catch {
+    return null
+  }
 }

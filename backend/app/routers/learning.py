@@ -280,10 +280,14 @@ async def get_learning_dashboard(
     ]
 
     review_result = await db.execute(
-        select(ReviewSchedule).where(ReviewSchedule.user_id == current_user.id)
+        select(ReviewSchedule).where(
+            ReviewSchedule.user_id == current_user.id,
+            ReviewSchedule.is_archived == False,
+            ReviewSchedule.status == "pending",
+            ReviewSchedule.scheduled_date <= now,
+        )
     )
-    reviews = review_result.scalars().all()
-    due_reviews = [r for r in reviews if r.scheduled_date and r.scheduled_date <= now and r.status == "pending"]
+    due_reviews = review_result.scalars().all()
 
     # 只查询今天的番茄钟记录，避免加载全部历史
     today_start = datetime.combine(today, datetime.min.time())
@@ -438,7 +442,11 @@ async def analyze_material_for_progress(
     )
 
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="material_analyze")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="material_analyze",
+            user_id=current_user.id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是结构化分析器，只输出 JSON。",
@@ -1219,7 +1227,11 @@ async def evaluate_output(
 
     result_obj = None
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="output_evaluate")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="output_evaluate",
+            user_id=current_user.id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是严格的学习评估器，只返回 JSON。",

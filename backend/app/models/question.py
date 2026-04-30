@@ -1,5 +1,5 @@
 """题目和答题记录相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -56,6 +56,12 @@ class WrongQuestion(Base):
     mastery_status = Column(String(20), default="not_mastered", comment="掌握状态: not_mastered, partial, mastered")
     next_review_at = Column(DateTime, index=True, comment="下次复习时间")
     review_count = Column(Integer, default=0, comment="复习次数")
+    knowledge_point = Column(String(100), comment="知识点标签")
+    recall_difficulty = Column(
+        String(20),
+        comment="回忆难度标签: easy(很快做出来) / hard(有点卡但能做出来) / forgot(完全想不起来)"
+    )
+    mastery_score = Column(Float, default=0.0, comment="掌握度评分 0-100，基于回忆难度+复习次数+间隔天数综合计算")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     
     # 关联关系
@@ -78,3 +84,4 @@ class ReviewSchedule(Base):
     status = Column(String(20), default="pending", index=True, comment="状态: pending, completed, skipped")
     completed_at = Column(DateTime, comment="完成时间")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    is_archived = Column(Boolean, default=False, nullable=False, comment="是否已归档（用户手动删除）")

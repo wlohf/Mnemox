@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type LocalGoalTask } from '../db/studyDb'
 import { enqueueOperation } from '../sync/enqueueOperation'
 import { syncEngine } from '../sync/SyncEngine'
+import { apiFetch, isNetworkOnline } from '../services/apiClient'
 
 export interface OfflineGoalTaskItem {
   _localId: string
@@ -9,6 +10,7 @@ export interface OfflineGoalTaskItem {
   _syncStatus: string
   goal_id: number | null
   _localGoalId: string | null
+  parent_task_id: number | null
   chapter_id: number | null
   chapter_title: string | null
   title: string
@@ -28,6 +30,7 @@ function toOfflineItem(local: LocalGoalTask): OfflineGoalTaskItem {
     _syncStatus: local._syncStatus,
     goal_id: local.goal_id,
     _localGoalId: local._localGoalId,
+    parent_task_id: local.parent_task_id ?? null,
     chapter_id: local.chapter_id,
     chapter_title: local.chapter_title,
     title: local.title,
@@ -90,6 +93,7 @@ export function useOfflineGoalTasks(params?: {
       task_type?: string
       planned_date?: string
       chapter_id?: number
+      parent_task_id?: number | null
     },
   ): Promise<OfflineGoalTaskItem> => {
     const now = new Date().toISOString()
@@ -104,6 +108,7 @@ export function useOfflineGoalTasks(params?: {
       _conflictServerData: null,
       goal_id: goalServerId,
       _localGoalId: goalLocalId,
+      parent_task_id: data.parent_task_id ?? null,
       chapter_id: data.chapter_id ?? null,
       chapter_title: null,
       title: data.title,
@@ -134,6 +139,7 @@ export function useOfflineGoalTasks(params?: {
     if (data.description !== undefined) updates.description = data.description as string | null
     if (data.task_type !== undefined) updates.task_type = data.task_type as string | null
     if (data.planned_date !== undefined) updates.planned_date = data.planned_date as string | null
+    if (data.parent_task_id !== undefined) updates.parent_task_id = data.parent_task_id as number | null
     if (data.status !== undefined) updates.status = data.status as string
     if (data.completed_at !== undefined) updates.completed_at = data.completed_at as string | null
 
@@ -155,9 +161,17 @@ export function useOfflineGoalTasks(params?: {
 
     const now = new Date().toISOString()
 
-    if (existing._syncStatus === 'pending_create') {
+    if (existing._syncStatus === 'pending_create' || !existing._serverId) {
       // Not yet synced to server, just delete locally
       await db.goalTasks.delete(localId)
+      await db.opQueue.where({ module: 'goalTasks', localId }).delete()
+      return true
+    }
+
+    if (isNetworkOnline()) {
+      await apiFetch(`/api/goals/tasks/${existing._serverId}`, { method: 'DELETE' })
+      await db.goalTasks.delete(localId)
+      await db.opQueue.where({ module: 'goalTasks', localId }).delete()
     } else {
       // Mark as pending_delete for sync
       await db.goalTasks.update(localId, {

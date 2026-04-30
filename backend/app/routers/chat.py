@@ -83,7 +83,11 @@ async def _detect_and_create_wrong_questions(
         from app.ai.factory import AIProviderFactory
         import re as _re
 
-        provider = await AIProviderFactory.create_provider(db=db, scenario="wrong_detect")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="wrong_detect",
+            user_id=user_id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是错题检测器，只输出 JSON 数组。",
@@ -858,7 +862,11 @@ async def chat_send_sync(
     messages.append({"role": "user", "content": body.message})
 
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="chat_main")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="chat_main",
+            user_id=current_user.id,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,

@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type LocalGoal } from '../db/studyDb'
 import { enqueueOperation } from '../sync/enqueueOperation'
 import { syncEngine } from '../sync/SyncEngine'
+import { apiFetch, isNetworkOnline } from '../services/apiClient'
 
 export interface OfflineGoalItem {
   _localId: string
@@ -115,5 +116,30 @@ export function useOfflineGoals(statusFilter?: string) {
     return updated ? toOfflineItem(updated) : null
   }
 
-  return { goals, createGoal, updateGoal }
+  const deleteGoal = async (localId: string): Promise<void> => {
+    const existing = await db.goals.get(localId)
+    if (!existing) return
+
+    // 本地尚未同步到服务端，直接本地删除
+    if (!existing._serverId) {
+      await db.goals.delete(localId)
+      await db.opQueue.where({ module: 'goals', localId }).delete()
+      return
+    }
+
+    // 在线时直接调用服务端删除，只有成功才更新本地，避免“提示成功但服务端失败”
+    if (isNetworkOnline()) {
+      await apiFetch(`/api/goals/${existing._serverId}`, { method: 'DELETE' })
+      await db.goals.delete(localId)
+      await db.opQueue.where({ module: 'goals', localId }).delete()
+      return
+    }
+
+    // 离线时进入队列，等待后续同步
+    await db.goals.update(localId, { _syncStatus: 'pending_delete' })
+    await enqueueOperation('goals', 'delete', localId, {})
+    void syncEngine.syncAll()
+  }
+
+  return { goals, createGoal, updateGoal, deleteGoal }
 }

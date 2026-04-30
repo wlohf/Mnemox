@@ -17,16 +17,22 @@ export interface UserProfile {
   weak_points: string[] | null
   recent_performance: Record<string, unknown> | null
   last_updated: string | null
+  data_insufficient: boolean
+  insights: string[]
 }
 
 export async function getProfile(): Promise<UserProfile | null> {
-  const res = await apiFetch('/api/profile')
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<UserProfile>('/api/profile')
+  } catch {
+    return null
+  }
 }
 
 export async function refreshProfile(): Promise<UserProfile | null> {
-  const res = await apiFetch('/api/profile/refresh', { method: 'POST' })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<UserProfile>('/api/profile/refresh', { method: 'POST' })
+  } catch {
+    return null
+  }
 }

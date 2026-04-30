@@ -20,7 +20,7 @@ from ..models.user import User
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt', '.md', '.epub'}
+ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md'}
 MAX_FILE_SIZE = 150 * 1024 * 1024  # 150MB
 
 
@@ -411,7 +411,10 @@ async def analyze_material(
 
     material_service = get_material_service(db)
     try:
-        analysis = await material_service.analyze_material_with_rag(material_id)
+        analysis = await material_service.analyze_material_with_rag(
+            material_id,
+            user_id=current_user.id,
+        )
         return analysis
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -446,7 +449,8 @@ async def ask_question(
     try:
         answer = await material_service.ask_question_about_material(
             material_id=material_id,
-            question=request.question
+            question=request.question,
+            user_id=current_user.id,
         )
         return {
             "question": request.question,
@@ -481,7 +485,10 @@ async def generate_outline(
 
     material_service = get_material_service(db)
     try:
-        outline = await material_service.generate_chapter_outline(material_id)
+        outline = await material_service.generate_chapter_outline(
+            material_id,
+            user_id=current_user.id,
+        )
         return outline
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,14 +1,16 @@
-"""学习目标与任务路由（MVP）"""
-from datetime import date
+﻿"""学习目标与任务路由（MVP）"""
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func, and_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.goal import Goal, Task
+from app.models.pomodoro import Pomodoro
+from app.models.session import StudySession
 from app.models.material import Material, Chapter
 from app.auth import get_current_user
 from app.models.user import User
@@ -39,6 +41,7 @@ class TaskCreate(BaseModel):
     task_type: Optional[str] = "learn"
     planned_date: Optional[date] = None
     chapter_id: Optional[int] = None
+    parent_task_id: Optional[int] = None
 
 
 class TaskUpdate(BaseModel):
@@ -47,6 +50,7 @@ class TaskUpdate(BaseModel):
     task_type: Optional[str] = None
     planned_date: Optional[date] = None
     chapter_id: Optional[int] = None
+    parent_task_id: Optional[int] = None
     status: Optional[str] = None
 
 
@@ -69,6 +73,7 @@ def _task_item(t: Task, chapter_title: Optional[str] = None) -> dict:
     return {
         "id": t.id,
         "goal_id": t.goal_id,
+        "parent_task_id": t.parent_task_id,
         "chapter_id": t.chapter_id,
         "chapter_title": chapter_title,
         "title": t.title,
@@ -136,6 +141,135 @@ async def create_goal(
     return _goal_item(goal)
 
 
+@router.put("/tasks/{task_id}")
+async def update_task(
+    task_id: int,
+    body: TaskUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Verify task belongs to a goal owned by current_user
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # Check that the parent goal belongs to current user
+    goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
+    if not goal_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if body.chapter_id is not None:
+        chapter_result = await db.execute(select(Chapter).where(Chapter.id == body.chapter_id))
+        if not chapter_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="章节不存在")
+        task.chapter_id = body.chapter_id
+
+    fields_set = getattr(body, "model_fields_set", getattr(body, "__fields_set__", set()))
+    if "parent_task_id" in fields_set:
+        if body.parent_task_id is None:
+            task.parent_task_id = None
+        else:
+            if body.parent_task_id == task.id:
+                raise HTTPException(status_code=400, detail="父任务不能是自己")
+            parent_result = await db.execute(
+                select(Task).where(Task.id == body.parent_task_id, Task.goal_id == task.goal_id)
+            )
+            parent_task = parent_result.scalar_one_or_none()
+            if not parent_task:
+                raise HTTPException(status_code=404, detail="父任务不存在")
+
+            check_node = parent_task
+            visited = set()
+            while check_node is not None and check_node.parent_task_id is not None:
+                if check_node.id == task.id:
+                    raise HTTPException(status_code=400, detail="不能将任务移动到自己的子任务下")
+                if check_node.id in visited:
+                    break
+                visited.add(check_node.id)
+                next_result = await db.execute(
+                    select(Task).where(Task.id == check_node.parent_task_id, Task.goal_id == task.goal_id)
+                )
+                check_node = next_result.scalar_one_or_none()
+
+            task.parent_task_id = body.parent_task_id
+    if body.title is not None:
+        task.title = body.title
+    if body.description is not None:
+        task.description = body.description
+    if body.task_type is not None:
+        task.task_type = body.task_type
+    if body.planned_date is not None:
+        task.planned_date = body.planned_date
+    if body.status is not None:
+        task.status = body.status
+
+    await db.flush()
+    await db.refresh(task)
+    return _task_item(task)
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # Check that the parent goal belongs to current user
+    goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
+    if not goal_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    child_result = await db.execute(select(Task.id).where(Task.parent_task_id == task.id).limit(1))
+    if child_result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=400, detail="请先删除或调整该任务的子任务")
+
+    # 先解除其他业务表对 task_id 的引用，避免外键约束导致删除失败（500）
+    pomodoro_result = await db.execute(select(Pomodoro).where(Pomodoro.task_id == task.id))
+    for p in pomodoro_result.scalars().all():
+        p.task_id = None
+
+    session_result = await db.execute(select(StudySession).where(StudySession.task_id == task.id))
+    for s in session_result.scalars().all():
+        s.task_id = None
+
+    await db.delete(task)
+    return {"ok": True}
+
+
+@router.get("/tasks/daily")
+async def list_daily_tasks(
+    day: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Only return tasks whose parent goal belongs to the current user
+    result = await db.execute(
+        select(Task)
+        .join(Goal, Task.goal_id == Goal.id)
+        .where(Task.planned_date == day, Goal.user_id == current_user.id)
+    )
+    tasks = result.scalars().all()
+
+    # Batch load chapter titles to avoid N+1
+    chapter_ids = {t.chapter_id for t in tasks if t.chapter_id}
+    chapter_map = {}
+    if chapter_ids:
+        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_ids)))
+        chapter_map = {c.id: c.title for c in ch_result.scalars().all()}
+
+    out = []
+    for t in tasks:
+        chapter_title = chapter_map.get(t.chapter_id) if t.chapter_id else None
+        out.append(_task_item(t, chapter_title))
+    return out
+
+
 @router.put("/{goal_id}")
 async def update_goal(
     goal_id: int,
@@ -181,20 +315,36 @@ async def delete_goal(
     goal = result.scalar_one_or_none()
     if not goal:
         raise HTTPException(status_code=404, detail="目标不存在")
-    # 级联删除关联的 ReviewSchedule（Task 关联的复习计划）
-    from app.models.question import ReviewSchedule
-    from sqlalchemy import delete
-    task_ids = [t.id for t in (goal.tasks or [])]
+
+    # 显式查询任务，避免异步 Session 上访问 goal.tasks 懒加载导致 MissingGreenlet
+    tasks_result = await db.execute(select(Task.id, Task.chapter_id).where(Task.goal_id == goal.id))
+    task_rows = tasks_result.all()
+    task_ids = [row.id for row in task_rows]
+    chapter_ids = list({row.chapter_id for row in task_rows if row.chapter_id})
+
+    # 先解除外部表对 Task 的引用，避免 Goal 级联删除 Task 时触发外键错误
     if task_ids:
-        chapter_ids = [t.chapter_id for t in (goal.tasks or []) if t.chapter_id]
-        if chapter_ids:
-            await db.execute(
-                delete(ReviewSchedule).where(
-                    ReviewSchedule.item_type == "chapter",
-                    ReviewSchedule.item_id.in_(chapter_ids),
-                    ReviewSchedule.user_id == current_user.id,
-                )
+        await db.execute(
+            update(Pomodoro)
+            .where(Pomodoro.task_id.in_(task_ids))
+            .values(task_id=None)
+        )
+        await db.execute(
+            update(StudySession)
+            .where(StudySession.task_id.in_(task_ids))
+            .values(task_id=None)
+        )
+
+    # 级联删除关联的 ReviewSchedule（Task 关联章节的复习计划）
+    if chapter_ids:
+        from app.models.question import ReviewSchedule
+        await db.execute(
+            delete(ReviewSchedule).where(
+                ReviewSchedule.item_type == "chapter",
+                ReviewSchedule.item_id.in_(chapter_ids),
+                ReviewSchedule.user_id == current_user.id,
             )
+        )
 
     await db.delete(goal)
     return {"ok": True}
@@ -210,7 +360,11 @@ async def list_goal_tasks(
     if not goal_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="目标不存在")
 
-    result = await db.execute(select(Task).where(Task.goal_id == goal_id))
+    result = await db.execute(
+        select(Task)
+        .where(Task.goal_id == goal_id)
+        .order_by(Task.parent_task_id.is_not(None), Task.created_at.asc(), Task.id.asc())
+    )
     tasks = result.scalars().all()
 
     # Batch load chapter titles to avoid N+1
@@ -243,8 +397,16 @@ async def create_goal_task(
         if not chapter_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="章节不存在")
 
+    if body.parent_task_id is not None:
+        parent_result = await db.execute(
+            select(Task).where(Task.id == body.parent_task_id, Task.goal_id == goal_id)
+        )
+        if not parent_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="父任务不存在")
+
     task = Task(
         goal_id=goal_id,
+        parent_task_id=body.parent_task_id,
         chapter_id=body.chapter_id,
         title=body.title,
         description=body.description,
@@ -258,91 +420,91 @@ async def create_goal_task(
     return _task_item(task)
 
 
-@router.put("/tasks/{task_id}")
-async def update_task(
-    task_id: int,
-    body: TaskUpdate,
+@router.get("/{goal_id}/time-summary")
+async def get_goal_time_summary(
+    goal_id: int,
+    range: str = Query("all"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Verify task belongs to a goal owned by current_user
-    result = await db.execute(select(Task).where(Task.id == task_id))
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    # Check that the parent goal belongs to current user
-    goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
+    goal_result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.user_id == current_user.id))
     if not goal_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="目标不存在")
 
-    if body.chapter_id is not None:
-        chapter_result = await db.execute(select(Chapter).where(Chapter.id == body.chapter_id))
-        if not chapter_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="章节不存在")
-        task.chapter_id = body.chapter_id
-    if body.title is not None:
-        task.title = body.title
-    if body.description is not None:
-        task.description = body.description
-    if body.task_type is not None:
-        task.task_type = body.task_type
-    if body.planned_date is not None:
-        task.planned_date = body.planned_date
-    if body.status is not None:
-        task.status = body.status
+    task_result = await db.execute(select(Task).where(Task.goal_id == goal_id))
+    tasks = list(task_result.scalars().all())
+    task_map = {t.id: t for t in tasks}
 
-    await db.flush()
-    await db.refresh(task)
-    return _task_item(task)
+    now = datetime.now()
+    period = (range or "all").strip().lower()
+    if period not in {"all", "week", "month"}:
+        raise HTTPException(status_code=400, detail="range 仅支持 all/week/month")
 
+    pomodoro_filters = [Pomodoro.user_id == current_user.id, Pomodoro.task_id.is_not(None)]
+    if period == "week":
+        week_start = now - timedelta(days=now.weekday())
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        pomodoro_filters.append(Pomodoro.created_at >= week_start)
+    elif period == "month":
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        pomodoro_filters.append(Pomodoro.created_at >= month_start)
 
-@router.delete("/tasks/{task_id}")
-async def delete_task(
-    task_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(select(Task).where(Task.id == task_id))
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    # Check that the parent goal belongs to current user
-    goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
-    if not goal_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    await db.delete(task)
-    return {"ok": True}
-
-
-@router.get("/tasks/daily")
-async def list_daily_tasks(
-    day: date = Query(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    # Only return tasks whose parent goal belongs to the current user
-    result = await db.execute(
-        select(Task)
-        .join(Goal, Task.goal_id == Goal.id)
-        .where(Task.planned_date == day, Goal.user_id == current_user.id)
+    duration_result = await db.execute(
+        select(Pomodoro.task_id, func.sum(Pomodoro.duration))
+        .where(and_(*pomodoro_filters))
+        .group_by(Pomodoro.task_id)
     )
-    tasks = result.scalars().all()
+    direct_minutes = {
+        int(task_id): float(minutes or 0)
+        for task_id, minutes in duration_result.all()
+        if task_id is not None and int(task_id) in task_map
+    }
 
-    # Batch load chapter titles to avoid N+1
-    chapter_ids = {t.chapter_id for t in tasks if t.chapter_id}
-    chapter_map = {}
-    if chapter_ids:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_ids)))
-        chapter_map = {c.id: c.title for c in ch_result.scalars().all()}
+    children_map: dict[int, list[Task]] = {}
+    root_tasks: list[Task] = []
+    for task in tasks:
+        if task.parent_task_id and task.parent_task_id in task_map:
+            children_map.setdefault(task.parent_task_id, []).append(task)
+        else:
+            root_tasks.append(task)
 
-    out = []
-    for t in tasks:
-        chapter_title = chapter_map.get(t.chapter_id) if t.chapter_id else None
-        out.append(_task_item(t, chapter_title))
-    return out
+    def _build(node: Task, visited: set[int]) -> dict:
+        if node.id in visited:
+            return {
+                "task_id": node.id,
+                "title": node.title,
+                "task_type": node.task_type,
+                "self_minutes": round(direct_minutes.get(node.id, 0.0), 1),
+                "total_minutes": round(direct_minutes.get(node.id, 0.0), 1),
+                "children": [],
+            }
+
+        next_visited = set(visited)
+        next_visited.add(node.id)
+        child_nodes = sorted(children_map.get(node.id, []), key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id))
+        children = [_build(child, next_visited) for child in child_nodes]
+        self_minutes = float(direct_minutes.get(node.id, 0.0))
+        total_minutes = self_minutes + sum(float(child["total_minutes"]) for child in children)
+
+        return {
+            "task_id": node.id,
+            "title": node.title,
+            "task_type": node.task_type,
+            "self_minutes": round(self_minutes, 1),
+            "total_minutes": round(total_minutes, 1),
+            "children": children,
+        }
+
+    roots = sorted(root_tasks, key=lambda x: (x.created_at is None, x.created_at or datetime.min, x.id))
+    tree = [_build(root, set()) for root in roots]
+
+    overall_minutes = round(sum(float(item["total_minutes"]) for item in tree), 1)
+    return {
+        "goal_id": goal_id,
+        "range": period,
+        "total_minutes": overall_minutes,
+        "tasks": tree,
+    }
 
 
 # ============ 动态任务生成 API ============
@@ -508,3 +670,4 @@ async def _generate_weekly_tasks(goal: Goal, db: AsyncSession, week_start: date)
             await db.flush()
     
     return tasks
+

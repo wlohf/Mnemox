@@ -26,16 +26,19 @@ class WrongQuestionCreate(BaseModel):
     explanation: Optional[str] = None
     difficulty: Optional[int] = 2
     user_answer: Optional[str] = None
+    knowledge_point: Optional[str] = None
 
 
 class WrongQuestionUpdate(BaseModel):
     mastery_status: Optional[str] = None
     next_review_at: Optional[datetime] = None
     increment_review_count: bool = False
+    recall_difficulty: Optional[str] = None  # easy / hard / forgot
 
 
 class WrongQuestionReview(BaseModel):
     quality: int  # 0-5
+    recall_difficulty: Optional[str] = None  # easy / hard / forgot
 
 
 async def _ensure_default_chapter(db: AsyncSession, user_id: int) -> int:
@@ -87,10 +90,37 @@ def _to_item(wq: WrongQuestion) -> dict:
         "wrong_count": wq.wrong_count,
         "mastery_status": wq.mastery_status,
         "review_count": wq.review_count,
+        "knowledge_point": wq.knowledge_point,
+        "recall_difficulty": wq.recall_difficulty,
+        "mastery_score": wq.mastery_score,
         "next_review_at": wq.next_review_at.isoformat() if wq.next_review_at else None,
         "last_wrong_at": wq.last_wrong_at.isoformat() if wq.last_wrong_at else None,
         "created_at": wq.created_at.isoformat() if wq.created_at else None,
     }
+
+
+def _calc_mastery_score(
+    quality: int,
+    recall_difficulty: Optional[str],
+    review_count: int,
+    interval_days: int,
+) -> float:
+    """
+    综合掌握度评分（0-100）。
+
+    公式：
+      base = recall_difficulty 映射基础分（easy=80, hard=50, forgot=10）
+      quality_bonus = quality / 5 × 20（SM-2 质量加成，最高 20 分）
+      repetition_bonus = min(review_count, 5) × 2（复习次数加成，最高 10 分）
+      interval_bonus = min(interval_days, 30) / 30 × 10（间隔越长说明记忆越牢，最高 10 分）
+      score = base + quality_bonus + repetition_bonus + interval_bonus
+    """
+    difficulty_base = {"easy": 70, "hard": 40, "forgot": 5}
+    base = difficulty_base.get(recall_difficulty or "", 30)
+    quality_bonus = (quality / 5.0) * 20.0
+    repetition_bonus = min(review_count, 5) * 2.0
+    interval_bonus = min(interval_days, 30) / 30.0 * 10.0
+    return round(min(100.0, max(0.0, base + quality_bonus + repetition_bonus + interval_bonus)), 1)
 
 
 @router.get("")
@@ -149,6 +179,9 @@ async def create_wrong_question(
         mastery_status="not_mastered",
         next_review_at=now,
         review_count=0,
+        knowledge_point=body.knowledge_point,
+        recall_difficulty="forgot",
+        mastery_score=0.0,
     )
     db.add(wrong)
     await db.flush()
@@ -177,7 +210,7 @@ async def create_wrong_question(
         tracker = EventTracker(db, user_id=current_user.id)
         await tracker.track(
             event_type=EventType.QUESTION_WRONG,
-            event_category="practice",
+            category="practice",
             event_data={
                 "wrong_question_id": wrong.id,
                 "question_type": body.question_type,
@@ -213,6 +246,8 @@ async def update_wrong_question(
         item.next_review_at = body.next_review_at
     if body.increment_review_count:
         item.review_count = (item.review_count or 0) + 1
+    if body.recall_difficulty and body.recall_difficulty in ("easy", "hard", "forgot"):
+        item.recall_difficulty = body.recall_difficulty
 
     await db.flush()
     await db.refresh(item)
@@ -265,6 +300,16 @@ async def review_wrong_question(
     item.mastery_status = _calc_mastery_status(body.quality)
     item.next_review_at = next_review_at
 
+    # 更新回忆难度标签 + 掌握度评分
+    if body.recall_difficulty and body.recall_difficulty in ("easy", "hard", "forgot"):
+        item.recall_difficulty = body.recall_difficulty
+    item.mastery_score = _calc_mastery_score(
+        quality=body.quality,
+        recall_difficulty=body.recall_difficulty or getattr(item, "recall_difficulty", None),
+        review_count=item.review_count or 1,
+        interval_days=days,
+    )
+
     # 同步更新 ReviewSchedule（保持一致性）
     if review_task:
         review_task.repetitions = new_reps
@@ -300,7 +345,7 @@ async def review_wrong_question(
         )
         await tracker.track(
             event_type=event_type,
-            event_category="review",
+            category="review",
             event_data={
                 "wrong_question_id": wrong_question_id,
                 "quality": body.quality,

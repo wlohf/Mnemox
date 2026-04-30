@@ -55,6 +55,8 @@ class ProfileResponse(BaseModel):
     weak_points: Optional[Any]
     recent_performance: Optional[Any]
     last_updated: Optional[str]
+    data_insufficient: bool = False
+    insights: list[str] = []
 
     model_config = {"from_attributes": True}
 
@@ -76,10 +78,12 @@ def _build_response(uid: int, profile: Any) -> ProfileResponse:
         consistency_score=_f(profile.consistency_score, 50.0),
         focus_score=_f(profile.focus_score, 50.0),
         planning_score=_f(profile.planning_score, 50.0),
-        streak_days=_i(perf.get("streak_days", 0)),
+        streak_days=_i(perf.get("streak", 0)),
         weak_points=profile.weak_points,
         recent_performance=profile.recent_performance,
         last_updated=last_updated,
+        data_insufficient=bool(perf.get("data_insufficient", False)),
+        insights=list(perf.get("insights", [])),
     )
 
 

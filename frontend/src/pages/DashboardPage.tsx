@@ -1,71 +1,165 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Statistic, List, Button, Tag, Space } from 'antd'
-import { DashboardOutlined } from '@ant-design/icons'
+import { Spin } from 'antd'
 import { getDashboard, type DashboardData } from '../services/learningApi'
 import { PageShell } from '../components/PageShell'
 
 export function DashboardPage() {
   const navigate = useNavigate()
   const [data, setData] = useState<DashboardData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [filter, setFilter] = useState<'all' | 'review' | 'task'>('all')
 
   const load = async () => {
+    setLoading(true)
     const d = await getDashboard()
     setData(d)
+    setLoading(false)
   }
 
-  useEffect(() => {
-    void load()
-  }, [])
+  useEffect(() => { void load() }, [])
+
+  const allItems = [
+    ...(data?.recommended_actions || []).map(a => ({ ...a, _kind: a.type === 'review' ? 'review' : 'task' as 'review' | 'task' })),
+    ...(data?.today_tasks || []).filter(t => t.status !== 'completed').map(t => ({ type: t.task_type || 'task', title: t.title, item_id: t.id, _kind: 'task' as 'task' })),
+  ]
+  const filtered = filter === 'all' ? allItems : allItems.filter(i => i._kind === filter)
 
   return (
-    <PageShell
-      title={<><DashboardOutlined style={{ marginRight: 8 }} />今日驾驶舱</>}
-      onBack={() => navigate('/')}
-      rightExtra={<Button onClick={() => void load()}>刷新</Button>}
-    >
-      <Row gutter={[16, 16]}>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="今日任务" value={data?.today_task_count || 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="待完成" value={data?.today_pending_count || 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="到期复习" value={data?.due_review_count || 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="学习分钟" value={data?.today_study_minutes || 0} /></Card></Col>
-      </Row>
+    <PageShell title="今日概览" onBack={() => navigate('/')} maxWidth={860}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-tertiary)', letterSpacing: '0.02em' }}>
+          {new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
+        </div>
+      </div>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="今日最该做的事">
-            <List
-              dataSource={data?.recommended_actions || []}
-              locale={{ emptyText: '暂无推荐动作' }}
-              renderItem={(a) => (
-                <List.Item>
-                  <Space>
-                    <Tag color={a.type === 'review' ? 'orange' : 'blue'}>{a.type === 'review' ? '复习' : '任务'}</Tag>
-                    <span>{a.title}</span>
-                  </Space>
-                </List.Item>
-              )}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="今日任务清单">
-            <List
-              dataSource={data?.today_tasks || []}
-              locale={{ emptyText: '今天暂无任务' }}
-              renderItem={(t) => (
-                <List.Item>
-                  <Space>
-                    <Tag>{t.task_type || 'learn'}</Tag>
-                    <span>{t.title}</span>
-                    <Tag color={t.status === 'completed' ? 'green' : t.status === 'in_progress' ? 'orange' : 'default'}>{t.status}</Tag>
-                  </Space>
-                </List.Item>
-              )}
-            />
-          </Card>
-        </Col>
-      </Row>
+      <Spin spinning={loading}>
+        {/* Stats row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 32 }}>
+          {[
+            { label: '今日任务', value: data?.today_task_count ?? 0, color: 'var(--text-primary)' },
+            { label: '待复习', value: data?.due_review_count ?? 0, color: 'var(--amber-400)' },
+            { label: '专注分钟', value: data?.today_study_minutes ?? 0, color: 'var(--brand-400)' },
+          ].map(s => (
+            <div key={s.label} style={{ 
+              background: 'var(--bg-surface)', 
+              borderRadius: 'var(--radius-lg)', 
+              padding: '24px 32px', 
+              boxShadow: 'var(--shadow-sm)', 
+              border: '1px solid var(--border-light)'
+            }}>
+              <div style={{ fontSize: 36, fontWeight: 700, color: s.color, lineHeight: 1, fontFamily: 'Space Grotesk' }}>{s.value}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginTop: 8, fontWeight: 500 }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Filter tabs */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          {(['all', 'review', 'task'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              style={{
+                padding: '6px 16px', borderRadius: 999, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                border: filter === f ? 'none' : '1px solid var(--border-light)',
+                background: filter === f ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                color: filter === f ? 'var(--brand-400)' : 'var(--text-secondary)',
+                transition: 'all 150ms',
+              }}
+            >
+              {{ all: '全部', review: '复习', task: '任务' }[f]}
+            </button>
+          ))}
+        </div>
+
+        {/* Task list */}
+        <div style={{ 
+          background: 'var(--bg-surface)', 
+          borderRadius: 'var(--radius-lg)', 
+          overflow: 'hidden', 
+          marginBottom: 32, 
+          boxShadow: 'var(--shadow-sm)',
+          border: '1px solid var(--border-light)'
+        }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: '48px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 14 }}>
+              暂无待办项目，你可以去对话页添加学习任务
+            </div>
+          ) : filtered.map((item, i) => (
+            <div
+              key={i}
+              onClick={() => navigate(item._kind === 'review' ? '/review' : '/goals')}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '16px 24px',
+                borderBottom: i < filtered.length - 1 ? '1px solid var(--border-light)' : 'none',
+                cursor: 'pointer',
+                transition: 'background 0.2s',
+              }}
+              onMouseOver={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
+              onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                <div style={{
+                  width: 20, height: 20, borderRadius: '50%',
+                  border: `2px solid ${item._kind === 'review' ? 'var(--amber-400)' : 'var(--border-color)'}`,
+                  flexShrink: 0,
+                }} />
+                <span style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 500 }}>{item.title}</span>
+              </div>
+              <span style={{
+                fontSize: 12, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
+                background: item._kind === 'review' ? 'rgba(251, 191, 36, 0.1)' : 'rgba(99, 102, 241, 0.1)',
+                color: item._kind === 'review' ? 'var(--amber-400)' : 'var(--brand-400)',
+              }}>
+                {item._kind === 'review' ? '复习' : '任务'}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Pomodoro CTA */}
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(129, 140, 248, 0.05))', 
+          borderRadius: 'var(--radius-lg)',
+          padding: '24px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+          boxShadow: 'var(--shadow-sm)',
+          border: '1px solid rgba(99, 102, 241, 0.2)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: '50%',
+              background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontSize: 24, boxShadow: '0 4px 12px rgba(99, 102, 241, 0.4)'
+            }}>
+              ⏱
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>开启番茄专注</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
+                今日已完成 {data?.today_pomodoro_count ?? 0} 个番茄钟
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate('/pomodoro')}
+            style={{
+              padding: '12px 32px', borderRadius: 'var(--radius-md)', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))', border: 'none',
+              color: '#fff', flexShrink: 0,
+              boxShadow: '0 4px 16px rgba(99, 102, 241, 0.3)',
+              transition: 'transform 0.2s',
+            }}
+            onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
+            onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+          >
+            开始专注
+          </button>
+        </div>
+
+      </Spin>
     </PageShell>
   )
 }

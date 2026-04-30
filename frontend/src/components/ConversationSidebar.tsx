@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Input, Button, Dropdown, Modal, Tag, Empty, Tooltip } from 'antd'
 import {
   PlusOutlined,
@@ -59,7 +59,7 @@ export function ConversationSidebar({
   const [renameValue, setRenameValue] = useState('')
   const [draggingConversationId, setDraggingConversationId] = useState<number | null>(null)
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null)
-  const [historyMode, setHistoryMode] = useState<'all' | 'recent'>('all')
+  const [displayLimit, setDisplayLimit] = useState(9)
   const [hoveredId, setHoveredId] = useState<number | null>(null)
   const searchInputRef = useRef<any>(null)
   const searchSectionRef = useRef<HTMLDivElement | null>(null)
@@ -126,6 +126,7 @@ export function ConversationSidebar({
 
   const handleSearch = (value: string) => {
     searchConversations(value)
+    setDisplayLimit(9) // 搜索时重置展示数量
   }
 
   const handleRename = async (id: number) => {
@@ -155,18 +156,6 @@ export function ConversationSidebar({
       await loadConversations()
     }
   }
-
-  const recentConversations = useMemo(() => {
-    return [...conversations]
-      .sort((a, b) => dayjs(b.updated_at).valueOf() - dayjs(a.updated_at).valueOf())
-      .slice(0, 12)
-  }, [conversations])
-
-  useEffect(() => {
-    if (activeProjectId !== null || searchQuery.trim()) {
-      setHistoryMode('all')
-    }
-  }, [activeProjectId, searchQuery])
 
   useEffect(() => {
     if (collapsed || !expandTarget) return
@@ -369,7 +358,9 @@ export function ConversationSidebar({
   }
 
   const renderTimeGroupedList = (list: typeof conversations) => {
-    const grouped = splitByTime(list)
+    const limited = list.slice(0, displayLimit)
+    const hasMore = list.length > displayLimit
+    const grouped = splitByTime(limited)
     const sections = [
       { key: 'today', label: '今天', data: grouped.today },
       { key: 'week', label: '近7天', data: grouped.week },
@@ -395,43 +386,17 @@ export function ConversationSidebar({
             </div>
           )
         })}
+        {hasMore && (
+          <div
+            style={{ textAlign: 'center', padding: '6px 0 10px', cursor: 'pointer' }}
+            onClick={() => setDisplayLimit((prev) => prev + 9)}
+          >
+            <span style={{ fontSize: 12, color: 'var(--accent-500)', userSelect: 'none' }}>
+              展开更多（剩余 {list.length - displayLimit} 条）
+            </span>
+          </div>
+        )}
       </>
-    )
-  }
-
-  const renderHistoryQuickEntry = () => {
-    const isActive = historyMode === 'recent'
-    return (
-      <div
-        style={{
-          margin: '2px 8px 6px',
-          padding: '8px 12px',
-          borderRadius: 'var(--radius-md)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          cursor: 'pointer',
-          background: isActive ? 'var(--accent-50)' : 'var(--gray-50)',
-          transition: 'all var(--duration-fast) var(--ease-out)',
-        }}
-        onClick={() => setHistoryMode((prev) => (prev === 'recent' ? 'all' : 'recent'))}
-      >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-          <HistoryOutlined style={{ color: 'var(--text-tertiary)' }} />
-          最近对话
-        </span>
-        <span style={{
-          fontSize: 11,
-          color: 'var(--text-inverse)',
-          background: 'var(--gray-400)',
-          borderRadius: 'var(--radius-full)',
-          padding: '0 6px',
-          lineHeight: '18px',
-          fontWeight: 500,
-        }}>
-          {recentConversations.length}
-        </span>
-      </div>
     )
   }
 
@@ -563,6 +528,8 @@ export function ConversationSidebar({
             height: 38,
             fontSize: 13.5,
             fontWeight: 500,
+            background: 'var(--primary-600)',
+            borderColor: 'var(--primary-600)',
           }}
         >
           新对话
@@ -592,7 +559,7 @@ export function ConversationSidebar({
       {/* Project filter tabs */}
       <div ref={categorySectionRef} style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: 5 }}>
         <Tag
-          color={activeProjectId === null ? 'green' : undefined}
+          color={activeProjectId === null ? 'default' : undefined}
           style={{
             cursor: 'pointer',
             margin: 0,
@@ -620,7 +587,7 @@ export function ConversationSidebar({
         {projects.map((p) => (
           <Tag
             key={p.id}
-            color={activeProjectId === p.id ? 'green' : undefined}
+            color={activeProjectId === p.id ? 'default' : undefined}
             style={{
               cursor: 'pointer',
               margin: 0,
@@ -697,10 +664,7 @@ export function ConversationSidebar({
         {conversations.length === 0 ? (
           renderEmptyState()
         ) : (
-          <>
-            {activeProjectId === null && !searchQuery.trim() && renderHistoryQuickEntry()}
-            {renderTimeGroupedList(historyMode === 'recent' ? recentConversations : conversations)}
-          </>
+          renderTimeGroupedList(conversations)
         )}
       </div>
     </div>

@@ -1,0 +1,9 @@
+﻿username,profile_type,profile_confidence,best_study_window,total_minutes,avg_daily_minutes,completion_rate,active_days,task_progress,risk_level,should_push,intervention_title,recommendation_top1
+synthetic_balanced_explorer_8,晨间冲刺型,96.0,11:00-12:00,7100.0,118.3,84.5,44,113/173,low,False,状态不错：保持节奏继续前进,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_daytime_steady_3,高强度稳定型,90.0,14:00-15:00,8545.0,142.4,80.1,47,131/189,low,False,状态不错：保持节奏继续前进,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_exam_crammer_7,均衡成长型,62.0,16:00-17:00,4715.0,78.6,76.9,35,93/180,medium,True,进度提醒：再完成一个专注块会更稳,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_fragmented_5,均衡成长型,62.0,20:00-21:00,2850.0,47.5,55.9,30,68/177,medium,True,进度提醒：再完成一个专注块会更稳,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_high_intensity_6,晨间冲刺型,96.0,8:00-9:00,11975.0,199.6,92.3,51,148/189,low,False,状态不错：保持节奏继续前进,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_morning_strategist_1,晨间冲刺型,96.0,8:00-9:00,9815.0,163.6,86.9,49,136/183,low,False,状态不错：保持节奏继续前进,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_night_owl_2,夜间高效型,96.0,22:00-23:00,6510.0,108.5,88.8,42,101/183,low,False,状态不错：保持节奏继续前进,每日先完成 1 个最小任务，再处理复习，降低启动阻力。
+synthetic_weekend_sprinter_4,均衡成长型,62.0,14:00-15:00,3155.0,52.6,77.9,33,94/183,medium,True,进度提醒：再完成一个专注块会更稳,每日先完成 1 个最小任务，再处理复习，降低启动阻力。

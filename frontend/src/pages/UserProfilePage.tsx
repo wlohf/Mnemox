@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Statistic, Tag, Button, Spin, Empty, Typography, Space } from 'antd'
-import { UserOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Card, Row, Col, Statistic, Tag, Button, Spin, Empty, Typography, Space, Alert, List } from 'antd'
+import { UserOutlined, ReloadOutlined, BulbOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { PageShell } from '../components/PageShell'
 import { getProfile, refreshProfile, type UserProfile } from '../services/profileApi'
@@ -73,7 +73,7 @@ export function UserProfilePage() {
         itemStyle: { color: '#6366f1' },
       }],
     }],
-  } : {}
+  } : null
 
   // 时段热力图：preferred_time_slots 是 { "0": n, "1": n, ... } 或 null
   const timeSlotData = profile?.preferred_time_slots
@@ -158,6 +158,33 @@ export function UserProfilePage() {
         />
       ) : (
         <>
+          {/* 数据不足提示 */}
+          {profile.data_insufficient && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`当前仅有 ${profile.total_study_days} 天的学习记录，需要至少 7 天数据才能生成准确的分析报告，以下数据仅供参考。`}
+            />
+          )}
+
+          {/* 洞察结论 */}
+          {profile.insights && profile.insights.length > 0 && (
+            <Card
+              size="small"
+              title={<Space><BulbOutlined style={{ color: '#f59e0b' }} /><span>数据分析洞察</span></Space>}
+              style={{ marginBottom: 16 }}
+            >
+              <List
+                dataSource={profile.insights}
+                renderItem={(insight, idx) => (
+                  <List.Item style={{ padding: '8px 0', borderBottom: idx < profile.insights.length - 1 ? '1px solid var(--border-color)' : 'none' }}>
+                    <Text style={{ fontSize: 13, lineHeight: 1.7 }}>• {insight}</Text>
+                  </List.Item>
+                )}
+              />
+            </Card>
+          )}
           {/* 顶部统计 */}
           <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
             <Col xs={12} sm={6}>
@@ -191,7 +218,11 @@ export function UserProfilePage() {
             {/* 雷达图 */}
             <Col xs={24} md={10}>
               <Card size="small" title="学习能力雷达">
-                <ReactECharts option={radarOption} style={{ height: 240 }} />
+                {radarOption ? (
+                  <ReactECharts option={radarOption} style={{ height: 240 }} />
+                ) : (
+                  <Empty description="暂无数据" style={{ height: 240, display: 'flex', alignItems: 'center', justifyContent: 'center' }} />
+                )}
                 <Row gutter={8} style={{ marginTop: 8 }}>
                   {[
                     { label: '自控力', val: profile.self_control_score },

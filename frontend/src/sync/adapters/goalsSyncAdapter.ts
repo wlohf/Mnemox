@@ -28,13 +28,10 @@ export const goalsSyncAdapter: ModuleSyncAdapter = {
       material_id: payload.material_id ?? undefined,
     }
 
-    const res = await apiFetch('/api/goals', {
+    const server = await apiFetch<ServerGoal>('/api/goals', {
       method: 'POST',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushCreate failed: ${res.status}`)
-
-    const server: ServerGoal = await res.json()
 
     // Update local record
     await db.goals.update(op.localId, {
@@ -67,13 +64,11 @@ export const goalsSyncAdapter: ModuleSyncAdapter = {
     if (payload.deadline !== undefined) body.deadline = payload.deadline
     if (payload.status !== undefined) body.status = payload.status
 
-    const res = await apiFetch(`/api/goals/${local._serverId}`, {
+    const server = await apiFetch<ServerGoal>(`/api/goals/${local._serverId}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushUpdate failed: ${res.status}`)
 
-    const server: ServerGoal = await res.json()
     await db.goals.update(op.localId, {
       _syncStatus: 'synced',
       _lastSyncedAt: new Date().toISOString(),
@@ -89,18 +84,19 @@ export const goalsSyncAdapter: ModuleSyncAdapter = {
       return
     }
 
-    const res = await apiFetch(`/api/goals/${local._serverId}`, {
-      method: 'DELETE',
-    })
-    if (!res.ok && res.status !== 404) throw new Error(`pushDelete failed: ${res.status}`)
+    try {
+      await apiFetch(`/api/goals/${local._serverId}`, { method: 'DELETE' })
+    } catch (error: unknown) {
+      const status = (error as { status?: number })?.status
+      if (status !== 404) {
+        throw error
+      }
+    }
     await db.goals.delete(op.localId)
   },
 
   async pullAll() {
-    const res = await apiFetch('/api/goals')
-    if (!res.ok) throw new Error(`pullAll failed: ${res.status}`)
-
-    const serverGoals: ServerGoal[] = await res.json()
+    const serverGoals = await apiFetch<ServerGoal[]>('/api/goals')
     const serverMap = new Map(serverGoals.map((g) => [g.id, g]))
 
     const allLocal = await db.goals.toArray()

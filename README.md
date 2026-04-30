@@ -10,7 +10,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://typescriptlang.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [核心功能](#核心功能) · [技术栈](#技术栈)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [核心功能](#核心功能) · [此次更新说明](#此次更新说明) · [技术栈](#技术栈)
 
 </div>
 
@@ -154,6 +154,27 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 薄弱知识点 Tag 展示
 - 一键刷新重新计算画像
 
+### 9. 学习行为 EDA 报告
+- `/eda` 页面提供最近 7 / 30 / 90 天学习趋势分析
+- pandas + scipy 聚合学习时长、番茄钟完成率、任务完成率、时段效率
+- ECharts 展示日趋势、小时分布、周内热力图、停止原因占比、能力雷达
+- 自动生成图表解读、关键洞察和建议动作，便于复盘学习节奏
+
+### 10. AI 主动干预
+- `/intervention` 页面生成每日学习报告和推送文案
+- 根据今日学习时长、待办积压、到期复习、任务完成率评估风险等级
+- AI 失败时使用模板兜底，确保干预报告稳定可用
+
+### 11. Anki 风格记忆卡
+- `/anki` 页面支持手动创建、CSV 导入导出、AI 批量生成卡片
+- 使用 SM-2 风格调度字段：到期时间、间隔天数、简易系数、复习评分
+- 已接入 IndexedDB 离线缓存和同步适配器
+
+### 12. 个性化界面与系统设置
+- 新增设置面板：主题、背景图、AI 供应商、激励语录、提示词、系统更新
+- 支持跟随系统 / 暖色 / 深色主题，自定义背景图和透明度
+- 支持应用版本检查与自动检查间隔配置
+
 ---
 
 ## 技术栈
@@ -165,6 +186,8 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 | UI 组件库 | Ant Design |
 | 数据可视化 | ECharts |
 | 状态管理 | Zustand |
+| 离线缓存 | Dexie / IndexedDB |
+| Markdown 编辑 | Toast UI Editor / react-markdown |
 | 后端框架 | FastAPI + Python 3.10+ |
 | 数据库 ORM | SQLAlchemy 2.0（异步） |
 | 数据库 | SQLite（本地）/ PostgreSQL（生产）|
@@ -174,6 +197,23 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 | 文件解析 | PyPDF2 + python-docx |
 | 容器化 | Docker + Docker Compose |
 | 数据库迁移 | Alembic |
+
+---
+
+## 此次更新说明
+
+更新日期：2026-04-30
+
+本次更新围绕「学习数据闭环」补齐了分析、干预、复习和系统设置能力：
+
+- **学习分析**：新增 EDA 报告页面与 `/api/analytics` 接口，支持学习趋势、时段效率、目标完成预测、图表洞察和报告文本生成。
+- **主动干预**：新增 `/api/interventions` 与前端干预页面，按学习时长、任务积压、到期复习自动判断风险等级，并生成每日提醒。
+- **Anki 记忆卡**：新增 AnkiCard 数据模型、卡片管理接口、AI 生成、CSV 导入导出、SM-2 风格复习调度和离线同步。
+- **计划与目标体验**：优化目标拆解、计划页面、今日聚焦动作、离线目标/任务同步和重规划流程。
+- **笔记编辑**：新增 Toast UI Markdown 实时编辑器，支持图片上传、任务列表快捷输入、代码高亮和数学公式样式。
+- **界面与设置**：重构主布局与页面外观，新增主题切换、自定义背景、系统版本检查、激励语录和统计弹窗。
+- **后端稳定性**：完善数据库初始化、Alembic 环境、配置校验、上传目录处理、RAG 自动索引和多 AI 供应商路由。
+- **安全与仓库卫生**：示例配置统一使用占位符，移除配置说明中的明文密钥，并忽略本地 `.aionrs/` 会话目录。
 
 ---
 
@@ -264,8 +304,10 @@ StudyAssistant/
 │   └── requirements.txt
 ├── frontend/
 │   └── src/
-│       ├── pages/             # 10 个功能页面
-│       └── services/          # API 调用层
+│       ├── pages/             # Dashboard / Anki / EDA / Intervention 等功能页面
+│       ├── services/          # API 调用层
+│       ├── sync/              # 离线同步引擎与适配器
+│       └── stores/            # Zustand 状态
 ├── data/
 │   ├── study.db               # SQLite 数据库
 │   └── uploads/               # 上传的学习资料
@@ -295,12 +337,16 @@ StudyAssistant/
 - [x] 番茄钟中断原因分类（提前完成 / 临时中断 / 走神）+ 画像分析
 - [x] 自定义 Prompt 管理（10 种场景，可视化编辑）
 - [x] 用户画像可视化页面（雷达图 + 24小时热力图 + 薄弱点）
+- [x] 学习行为 EDA 分析报告（pandas + scipy + ECharts）
+- [x] AI 主动干预推送文案与每日学习报告
+- [x] Anki 风格记忆卡（AI 生成 / CSV 导入导出 / SM-2 调度）
+- [x] Toast UI Markdown 实时编辑器
+- [x] 主题、背景、系统版本检查等设置面板
 
 ### 进行中
 
-- [ ] 学习行为 EDA 分析报告（pandas + Jupyter）
-- [ ] AI 主动干预推送（每日学习报告）
 - [ ] 聊天框场景模式选择器（费曼 / 苏格拉底 / 教练 快速切换）
+- [ ] 自动更新包分发与发布清单维护
 
 ---
 

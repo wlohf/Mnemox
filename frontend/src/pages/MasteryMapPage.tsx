@@ -26,8 +26,8 @@ export function MasteryMapPage() {
   }, [data])
 
   return (
-    <Layout style={{ minHeight: '100vh', background: '#f7f8fa' }}>
-      <Header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', paddingInline: 16 }}>
+    <Layout style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
+      <Header style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-light)', paddingInline: 16 }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '100%' }}>
           <Space>
             <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回学习页</Button>

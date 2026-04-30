@@ -27,6 +27,7 @@ export function isNetworkOnline(): boolean {
 }
 
 let _redirecting = false
+let _lastNetworkToastAt = 0
 
 export async function apiFetch<T = any>(
   url: string,
@@ -52,6 +53,11 @@ export async function apiFetch<T = any>(
     // TypeError from fetch usually means network failure
     if (err instanceof TypeError) {
       _networkOnline = false
+      const now = Date.now()
+      if (now - _lastNetworkToastAt > 5000) {
+        _lastNetworkToastAt = now
+        message.error('网络连接异常，请检查网络后重试')
+      }
     }
     throw err
   }
@@ -64,6 +70,7 @@ export async function apiFetch<T = any>(
     if (!_redirecting) {
       _redirecting = true
       clearToken()
+      message.warning('登录状态已过期，请重新登录')
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
       }
@@ -76,7 +83,9 @@ export async function apiFetch<T = any>(
 
   if (!res.ok) {
     const errorText = await res.text()
-    throw new Error(errorText || `HTTP ${res.status}`)
+    const error = new Error(errorText || `HTTP ${res.status}`) as Error & { status?: number }
+    error.status = res.status
+    throw error
   }
 
   return res.json() as Promise<T>

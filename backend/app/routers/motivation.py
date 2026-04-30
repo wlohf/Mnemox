@@ -144,6 +144,23 @@ def _apply_sort(quotes: List[MotivationQuote], sort_mode: str) -> List[Motivatio
     return items
 
 
+def _normalize_quote_content(content: str) -> str:
+    # 统一大小写并压缩多余空白，保证展示层稳定去重
+    return " ".join((content or "").split()).strip().lower()
+
+
+def _dedupe_quotes(quotes: List[MotivationQuote]) -> List[MotivationQuote]:
+    seen: set[str] = set()
+    deduped: List[MotivationQuote] = []
+    for quote in quotes:
+        key = _normalize_quote_content(str(getattr(quote, "content", "")))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(quote)
+    return deduped
+
+
 async def _ensure_presets(db: AsyncSession, user_id: int) -> None:
     result = await db.execute(
         select(func.count()).select_from(MotivationQuote)
@@ -197,6 +214,25 @@ async def _find_quote_for_user(db: AsyncSession, user_id: int, quote_id: int) ->
     return result.scalar_one_or_none()
 
 
+async def _find_duplicate_quote_by_content(db: AsyncSession, user_id: int, content: str) -> Optional[MotivationQuote]:
+    normalized = _normalize_quote_content(content)
+    if not normalized:
+        return None
+
+    result = await db.execute(
+        select(MotivationQuote).where(MotivationQuote.user_id == user_id)
+    )
+    quotes = list(result.scalars().all())
+    return next(
+        (
+            quote
+            for quote in quotes
+            if _normalize_quote_content(str(getattr(quote, "content", ""))) == normalized
+        ),
+        None,
+    )
+
+
 @router.get("/quotes", response_model=List[QuoteOut])
 async def list_quotes(
     source_type: Optional[str] = Query(None),
@@ -213,6 +249,7 @@ async def list_quotes(
     quotes = list(result.scalars().all())
     mode = sort_mode if sort_mode in SORT_MODES else "created_desc"
     quotes = _apply_sort(quotes, mode)
+    quotes = _dedupe_quotes(quotes)
     return [_to_quote(q) for q in quotes]
 
 
@@ -226,6 +263,10 @@ async def add_quote(
     content = (body.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="语录内容不能为空")
+
+    duplicated = await _find_duplicate_quote_by_content(db, user_id, content)
+    if duplicated is not None:
+        return _to_quote(duplicated)
 
     quote = MotivationQuote(
         user_id=user_id,
@@ -340,6 +381,7 @@ async def get_current_quote(
 
     sort_mode = str(getattr(settings, "sort_mode", "created_desc") or "created_desc")
     ordered = _apply_sort(quotes, sort_mode)
+    ordered = _dedupe_quotes(ordered)
     if not ordered:
         return None
 
@@ -412,7 +454,11 @@ async def generate_quote(
     )
 
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="motivation")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="motivation",
+            user_id=current_user.id,
+        )
         reply = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是贴心的学习教练。",
@@ -424,6 +470,10 @@ async def generate_quote(
     text = (reply or "").strip().strip("\"“”")
     if not text:
         raise HTTPException(status_code=500, detail="生成激励失败")
+
+    duplicated = await _find_duplicate_quote_by_content(db, user_id, text)
+    if duplicated is not None:
+        return _to_quote(duplicated)
 
     quote = MotivationQuote(
         user_id=user_id,

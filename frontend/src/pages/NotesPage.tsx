@@ -3,19 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Row, Col, Input, List, Button, Space, Tag, Modal, message, Select, Upload } from 'antd'
 import { ArrowLeftOutlined, PlusOutlined, SaveOutlined, DeleteOutlined, PictureOutlined, ImportOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeHighlight from 'rehype-highlight'
-import rehypeKatex from 'rehype-katex'
-import 'highlight.js/styles/github-dark.css'
-import 'katex/dist/katex.min.css'
 import { useOfflineNotes, type OfflineNoteItem } from '../hooks/useOfflineNotes'
 import { uploadImage } from '../services/imageApi'
 import { importObsidianNote } from '../services/obsidianImportApi'
+import { MarkdownLiveEditor, type MarkdownLiveEditorHandle, type MarkdownLiveEditorImageResult } from '../components/MarkdownLiveEditor'
 
 const { Header, Content } = Layout
-const { TextArea } = Input
 
 export function NotesPage() {
   const navigate = useNavigate()
@@ -31,8 +24,7 @@ export function NotesPage() {
 
   // Image upload state
   const [uploading, setUploading] = useState(false)
-  const selectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
-  const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+  const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
 
   // Obsidian import modal state
   const [importOpen, setImportOpen] = useState(false)
@@ -75,66 +67,39 @@ export function NotesPage() {
 
   const extractTags = (n: OfflineNoteItem): string[] => n.tags || []
 
-  // Insert text at cursor position in the content
-  const insertAtCursor = (text: string) => {
-    const { start, end } = selectionRef.current
-    const before = content.slice(0, start)
-    const after = content.slice(end)
-    const newContent = before + text + after
-    setContent(newContent)
-    const newPos = start + text.length
-    selectionRef.current = { start: newPos, end: newPos }
-  }
-
-  // Handle image file upload and insert markdown
-  const handleImageUpload = async (file: File) => {
+  const doUploadImage = async (file: File) => {
     setUploading(true)
     const result = await uploadImage(file)
     setUploading(false)
     if (!result) {
       message.error('图片上传失败')
+      return null
+    }
+    return result
+  }
+
+  const handleEditorImageUpload = async (file: File): Promise<MarkdownLiveEditorImageResult | null> => {
+    const result = await doUploadImage(file)
+    if (!result) return null
+    return {
+      url: result.url,
+      markdown: result.markdown,
+      alt: result.original_name || result.filename,
+    }
+  }
+
+  const handleImageUpload = async (file: File) => {
+    const result = await doUploadImage(file)
+    if (!result) return
+    const markdown = result.markdown || `![${result.original_name || 'image'}](${result.url})`
+    const insertText = markdown.endsWith('\n') ? markdown : `${markdown}\n`
+    if (!editorRef.current) {
+      setContent((prev) => `${prev}${insertText}`)
+      message.success('图片已插入')
       return
     }
-    insertAtCursor(result.markdown + '\n')
+    editorRef.current.insertText(insertText)
     message.success('图片已插入')
-  }
-
-  // Paste handler
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault()
-        const file = item.getAsFile()
-        if (file) void handleImageUpload(file)
-        return
-      }
-    }
-  }
-
-  // Drag-drop handler
-  const handleDrop = (e: React.DragEvent) => {
-    const files = e.dataTransfer?.files
-    if (!files) return
-    for (const file of files) {
-      if (file.type.startsWith('image/')) {
-        e.preventDefault()
-        void handleImageUpload(file)
-        return
-      }
-    }
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer?.types?.includes('Files')) {
-      e.preventDefault()
-    }
-  }
-
-  const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    const el = e.currentTarget
-    selectionRef.current = { start: el.selectionStart, end: el.selectionEnd }
   }
 
   // Obsidian import handler (still uses online API for the import itself)
@@ -218,8 +183,8 @@ export function NotesPage() {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh', background: '#f7f8fa' }}>
-      <Header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', paddingInline: 16 }}>
+    <Layout style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
+      <Header style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-light)', paddingInline: 16 }}>
         <div style={{ maxWidth: 1280, margin: '0 auto', height: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space>
             <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回学习页</Button>
@@ -293,7 +258,7 @@ export function NotesPage() {
             </Col>
 
             <Col xs={24} lg={16}>
-              <Card size="small" title={active ? '编辑笔记' : '笔记内容'}>
+              <Card size="small" title={active ? '笔记内容' : '笔记内容'}>
                 <Input
                   placeholder="笔记标题"
                   value={title}
@@ -306,66 +271,30 @@ export function NotesPage() {
                   onChange={(e) => setTagsText(e.target.value)}
                   style={{ marginBottom: 10 }}
                 />
-                <Row gutter={12}>
-                  <Col xs={24} xl={12}>
-                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>编辑区</span>
-                      <Space size={4}>
-                        {uploading && <span style={{ color: '#1890ff' }}>上传中...</span>}
-                        <Upload
-                          accept="image/*"
-                          showUploadList={false}
-                          beforeUpload={(file) => {
-                            void handleImageUpload(file)
-                            return false
-                          }}
-                        >
-                          <Button size="small" icon={<PictureOutlined />}>插入图片</Button>
-                        </Upload>
-                      </Space>
-                    </div>
-                    <div
-                      onPaste={handlePaste}
-                      onDrop={handleDrop}
-                      onDragOver={handleDragOver}
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>实时渲染编辑区</span>
+                  <Space size={4}>
+                    {uploading && <span style={{ color: '#1890ff' }}>上传中...</span>}
+                    <Upload
+                      accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                      showUploadList={false}
+                      beforeUpload={(file) => {
+                        void handleImageUpload(file)
+                        return false
+                      }}
                     >
-                      <TextArea
-                        ref={(el) => { textAreaRef.current = el?.resizableTextArea?.textArea ?? null }}
-                        value={content}
-                        onChange={(e) => setContent(e.target.value)}
-                        onSelect={handleSelect}
-                        onClick={handleSelect}
-                        onKeyUp={handleSelect}
-                        autoSize={{ minRows: 20, maxRows: 26 }}
-                        placeholder="支持 Markdown，可粘贴或拖入图片..."
-                      />
-                    </div>
-                  </Col>
-                  <Col xs={24} xl={12}>
-                    <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>预览区</div>
-                    <div style={{ minHeight: 360, maxHeight: 620, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 12, background: '#fff' }}>
-                      {content.trim() ? (
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm, remarkMath]}
-                          rehypePlugins={[rehypeHighlight, rehypeKatex]}
-                          components={{
-                            img: ({ node, ...props }) => (
-                              <img
-                                {...props}
-                                style={{ maxWidth: '100%', borderRadius: 6, cursor: 'pointer' }}
-                                onClick={() => props.src && window.open(props.src, '_blank')}
-                              />
-                            ),
-                          }}
-                        >
-                          {content}
-                        </ReactMarkdown>
-                      ) : (
-                        <span style={{ color: '#999' }}>暂无内容预览</span>
-                      )}
-                    </div>
-                  </Col>
-                </Row>
+                      <Button size="small" icon={<PictureOutlined />}>插入图片</Button>
+                    </Upload>
+                  </Space>
+                </div>
+                <MarkdownLiveEditor
+                  ref={editorRef}
+                  value={content}
+                  onChange={setContent}
+                  height="620px"
+                  onUploadImage={handleEditorImageUpload}
+                  placeholder="支持 Markdown；可直接输入、粘贴图片、拖拽图片或点击工具栏图片按钮..."
+                />
               </Card>
             </Col>
           </Row>
@@ -401,7 +330,7 @@ export function NotesPage() {
           <div>
             <div style={{ marginBottom: 6, fontWeight: 500 }}>附件图片（可选）</div>
             <Upload
-              accept="image/*"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
               multiple
               beforeUpload={(_file, fileList) => {
                 setImportAttachments((prev) => [...prev, ...fileList.filter((f) => !prev.some((p) => p.name === f.name && p.size === f.size))])

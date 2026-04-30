@@ -1,7 +1,7 @@
 """数据库初始化脚本"""
 import asyncio
 from app.database import Base, engine
-from app.models import material, goal, session, question, pomodoro, note
+import app.models  # noqa: F401
 
 
 async def init_database():

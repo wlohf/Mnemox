@@ -126,7 +126,8 @@ class MaterialService:
 
     async def analyze_material_with_rag(
         self,
-        material_id: int
+        material_id: int,
+        user_id: int,
     ) -> Dict[str, Any]:
         """使用 RAG 检索 + AI 分析资料"""
         if not settings.RAG_ENABLED:
@@ -144,7 +145,11 @@ class MaterialService:
 
         from app.ai.factory import AIProviderFactory
 
-        provider = await AIProviderFactory.create_provider(db=self.db, scenario="chat_main")
+        provider = await AIProviderFactory.create_provider(
+            db=self.db,
+            scenario="chat_main",
+            user_id=user_id,
+        )
         results = []
 
         for question in questions:
@@ -163,7 +168,8 @@ class MaterialService:
     async def ask_question_about_material(
         self,
         material_id: int,
-        question: str
+        question: str,
+        user_id: int,
     ) -> str:
         """向 AI 提问关于某份资料的问题"""
         if not settings.RAG_ENABLED:
@@ -178,7 +184,11 @@ class MaterialService:
 
         from app.ai.factory import AIProviderFactory
 
-        provider = await AIProviderFactory.create_provider(db=self.db, scenario="chat_main")
+        provider = await AIProviderFactory.create_provider(
+            db=self.db,
+            scenario="chat_main",
+            user_id=user_id,
+        )
         prompt = f"关于《{material.title}》的以下内容：\n\n{context}\n\n问题：{question}"
         reply = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
@@ -188,7 +198,8 @@ class MaterialService:
 
     async def generate_chapter_outline(
         self,
-        material_id: int
+        material_id: int,
+        user_id: int,
     ) -> Dict[str, Any]:
         """为资料生成章节大纲"""
         if not settings.RAG_ENABLED:
@@ -204,7 +215,11 @@ class MaterialService:
 
         from app.ai.factory import AIProviderFactory
 
-        provider = await AIProviderFactory.create_provider(db=self.db, scenario="chat_main")
+        provider = await AIProviderFactory.create_provider(
+            db=self.db,
+            scenario="chat_main",
+            user_id=user_id,
+        )
         prompt = f"""请为以下学习资料生成详细的章节学习大纲：
 
 资料标题：{material.title}

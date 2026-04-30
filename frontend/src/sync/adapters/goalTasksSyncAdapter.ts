@@ -5,6 +5,7 @@ import { apiFetch } from '../../services/apiClient'
 interface ServerTask {
   id: number
   goal_id: number
+  parent_task_id?: number | null
   chapter_id: number | null
   chapter_title: string | null
   title: string
@@ -36,15 +37,14 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
       task_type: payload.task_type ?? local.task_type ?? 'learn',
       planned_date: payload.planned_date ?? local.planned_date ?? undefined,
       chapter_id: payload.chapter_id ?? local.chapter_id ?? undefined,
+      parent_task_id: payload.parent_task_id ?? local.parent_task_id ?? undefined,
     }
 
-    const res = await apiFetch(`/api/goals/${local.goal_id}/tasks`, {
+    const server = await apiFetch<ServerTask>(`/api/goals/${local.goal_id}/tasks`, {
       method: 'POST',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushCreate failed: ${res.status}`)
 
-    const server: ServerTask = await res.json()
     await db.goalTasks.update(op.localId, {
       _serverId: server.id,
       _syncStatus: 'synced',
@@ -63,15 +63,14 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
     if (payload.description !== undefined) body.description = payload.description
     if (payload.task_type !== undefined) body.task_type = payload.task_type
     if (payload.planned_date !== undefined) body.planned_date = payload.planned_date
+    if (payload.parent_task_id !== undefined) body.parent_task_id = payload.parent_task_id
     if (payload.status !== undefined) body.status = payload.status
 
-    const res = await apiFetch(`/api/goals/tasks/${local._serverId}`, {
+    const server = await apiFetch<ServerTask>(`/api/goals/tasks/${local._serverId}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushUpdate failed: ${res.status}`)
 
-    const server: ServerTask = await res.json()
     await db.goalTasks.update(op.localId, {
       _syncStatus: 'synced',
       _lastSyncedAt: new Date().toISOString(),
@@ -87,10 +86,14 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
       return
     }
 
-    const res = await apiFetch(`/api/goals/tasks/${local._serverId}`, {
-      method: 'DELETE',
-    })
-    if (!res.ok && res.status !== 404) throw new Error(`pushDelete failed: ${res.status}`)
+    try {
+      await apiFetch(`/api/goals/tasks/${local._serverId}`, { method: 'DELETE' })
+    } catch (error: unknown) {
+      const status = (error as { status?: number })?.status
+      if (status !== 404) {
+        throw error
+      }
+    }
     await db.goalTasks.delete(op.localId)
   },
 
@@ -101,10 +104,11 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
     const allServerTasks: ServerTask[] = []
     for (const goal of allGoals) {
       if (!goal._serverId) continue
-      const res = await apiFetch(`/api/goals/${goal._serverId}/tasks`)
-      if (res.ok) {
-        const tasks: ServerTask[] = await res.json()
+      try {
+        const tasks = await apiFetch<ServerTask[]>(`/api/goals/${goal._serverId}/tasks`)
         allServerTasks.push(...tasks)
+      } catch {
+        // Skip goals that fail to fetch
       }
     }
 
@@ -137,6 +141,7 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
           _conflictServerData: null,
           goal_id: st.goal_id,
           _localGoalId: goalLocalIdMap.get(st.goal_id) ?? null,
+          parent_task_id: st.parent_task_id ?? null,
           chapter_id: st.chapter_id,
           chapter_title: st.chapter_title,
           title: st.title,
@@ -150,6 +155,7 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
       } else if (local._syncStatus === 'synced') {
         await db.goalTasks.update(local._localId, {
           goal_id: st.goal_id,
+          parent_task_id: st.parent_task_id ?? null,
           chapter_id: st.chapter_id,
           chapter_title: st.chapter_title,
           title: st.title,
@@ -166,6 +172,7 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
         if (serverUpdatedAt > local._updatedAt) {
           await db.goalTasks.update(local._localId, {
             goal_id: st.goal_id,
+            parent_task_id: st.parent_task_id ?? null,
             chapter_id: st.chapter_id,
             chapter_title: st.chapter_title,
             title: st.title,

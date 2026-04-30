@@ -42,9 +42,7 @@ export interface AIRoutingItem {
 
 export async function getAllProviders(): Promise<AIProvider[] | null> {
   try {
-    const res = await apiFetch(API_BASE)
-    if (!res.ok) return null
-    return await res.json()
+    return await apiFetch<AIProvider[]>(API_BASE)
   } catch {
     return null
   }
@@ -55,13 +53,11 @@ export async function updateProvider(
   data: ProviderUpdate
 ): Promise<AIProvider | null> {
   try {
-    const res = await apiFetch(`${API_BASE}/${providerName}`, {
+    return await apiFetch<AIProvider>(`${API_BASE}/${providerName}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -71,13 +67,11 @@ export async function createProvider(
   data: ProviderCreate
 ): Promise<AIProvider | null> {
   try {
-    const res = await apiFetch(API_BASE, {
+    return await apiFetch<AIProvider>(API_BASE, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -85,10 +79,8 @@ export async function createProvider(
 
 export async function deleteProvider(providerName: string): Promise<boolean> {
   try {
-    const res = await apiFetch(`${API_BASE}/${providerName}`, {
-      method: 'DELETE',
-    })
-    return res.ok
+    await apiFetch(`${API_BASE}/${providerName}`, { method: 'DELETE' })
+    return true
   } catch {
     return false
   }
@@ -98,13 +90,11 @@ export async function setActiveProvider(
   providerName: string
 ): Promise<AIProvider | null> {
   try {
-    const res = await apiFetch(`${API_BASE}/active`, {
+    return await apiFetch<AIProvider>(`${API_BASE}/active`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_name: providerName }),
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -114,11 +104,9 @@ export async function testProvider(
   providerName: string
 ): Promise<TestResult | null> {
   try {
-    const res = await apiFetch(`${API_BASE}/test/${providerName}`, {
+    return await apiFetch<TestResult>(`${API_BASE}/test/${providerName}`, {
       method: 'POST',
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -126,9 +114,7 @@ export async function testProvider(
 
 export async function getRoutingSettings(): Promise<AIRoutingItem[] | null> {
   try {
-    const res = await apiFetch(`${API_BASE}/routing`)
-    if (!res.ok) return null
-    return await res.json()
+    return await apiFetch<AIRoutingItem[]>(`${API_BASE}/routing`)
   } catch {
     return null
   }
@@ -139,13 +125,11 @@ export async function updateRoutingSetting(
   providerName?: string | null
 ): Promise<AIRoutingItem | null> {
   try {
-    const res = await apiFetch(`${API_BASE}/routing/${scenario}`, {
+    return await apiFetch<AIRoutingItem>(`${API_BASE}/routing/${scenario}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_name: providerName ?? null }),
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -177,9 +161,7 @@ export interface RagSettingsUpdate {
 
 export async function getRagSettings(): Promise<RagSettings | null> {
   try {
-    const res = await apiFetch('/api/rag/settings')
-    if (!res.ok) return null
-    return await res.json()
+    return await apiFetch<RagSettings>('/api/rag/settings')
   } catch {
     return null
   }
@@ -189,13 +171,11 @@ export async function updateRagSettings(
   data: RagSettingsUpdate
 ): Promise<{ ok: boolean; api_key_masked: string; base_url: string; model: string } | null> {
   try {
-    const res = await apiFetch('/api/rag/settings', {
+    return await apiFetch('/api/rag/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    if (!res.ok) return null
-    return await res.json()
   } catch {
     return null
   }
@@ -203,11 +183,7 @@ export async function updateRagSettings(
 
 export async function testRagEmbedding(): Promise<TestResult | null> {
   try {
-    const res = await apiFetch('/api/rag/test-embedding', {
-      method: 'POST',
-    })
-    if (!res.ok) return null
-    return await res.json()
+    return await apiFetch<TestResult>('/api/rag/test-embedding', { method: 'POST' })
   } catch {
     return null
   }

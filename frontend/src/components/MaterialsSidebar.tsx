@@ -151,7 +151,7 @@ export function MaterialsSidebar({
           multiple
           beforeUpload={(file) => onUpload(file as unknown as File)}
           showUploadList={false}
-          accept=".pdf,.doc,.docx,.txt,.md,.epub"
+          accept=".pdf,.docx,.txt,.md"
         >
           <p><UploadOutlined style={{ fontSize: 24 }} /></p>
           <p style={{ fontSize: 13, margin: '8px 0 4px' }}>点击或拖拽文件到此处上传</p>

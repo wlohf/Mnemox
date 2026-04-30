@@ -20,6 +20,12 @@ llama-index-embeddings-openai>=0.3.0
 llama-index-vector-stores-chroma>=0.4.0
 chromadb>=0.5.0
 
+# Data analysis
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+openpyxl>=3.1.0
+
 # File extraction
 PyPDF2>=3.0.0
 python-docx>=1.0.0

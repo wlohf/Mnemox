@@ -1,20 +1,64 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Button, Row, Col, Statistic, Segmented } from 'antd'
-import { ArrowLeftOutlined, BarChartOutlined } from '@ant-design/icons'
+import { Card, Row, Col, Statistic, Segmented, Button, Modal, Input, message } from 'antd'
+import { PlayCircleFilled, PauseCircleFilled, StopFilled } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { usePomodoroStore, type DateRange } from '../stores/pomodoroStore'
-
-const { Header, Content } = Layout
+import { PageShell } from '../components/PageShell'
 
 export function PomodoroPage() {
   const navigate = useNavigate()
-  const { getStats, getCumulativeStats, getTaskDistribution } = usePomodoroStore()
+  const { 
+    getStats, getCumulativeStats, getTaskDistribution,
+    isRunning, isPaused, currentTask, duration, remainingTime,
+    startTimer, pauseTimer, resumeTimer, completeTimer, tick 
+  } = usePomodoroStore()
+  
   const [range, setRange] = useState<DateRange>('week')
+  const [stopReasonModalVisible, setStopReasonModalVisible] = useState(false)
+  const [stopReason, setStopReason] = useState('')
+
+  useEffect(() => {
+    let timer: number
+    if (isRunning && !isPaused) {
+      timer = window.setInterval(() => {
+        tick()
+      }, 1000)
+    }
+    return () => clearInterval(timer)
+  }, [isRunning, isPaused, tick])
 
   const stats = getStats()
   const cumulative = getCumulativeStats()
   const distribution = getTaskDistribution(range)
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  }
+
+  const handleStart = () => {
+    startTimer('专注学习', 25)
+    message.success('番茄钟已启动')
+  }
+
+  const handleStop = () => {
+    setStopReasonModalVisible(true)
+  }
+
+  const confirmStop = () => {
+    // We treat stopping early as completion of elapsed time
+    completeTimer()
+    message.success('番茄钟已停止')
+    setStopReasonModalVisible(false)
+    setStopReason('')
+  }
+
+  const handleTakeBreak = () => {
+    startTimer('休息', 5)
+    message.success('开始休息')
+  }
 
   const weekOption = useMemo(() => ({
     tooltip: {
@@ -32,22 +76,22 @@ export function PomodoroPage() {
       data: stats.weeklyData.map((d) => ['日', '一', '二', '三', '四', '五', '六'][new Date(d.date).getDay()]),
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: '#999', fontSize: 10 },
+      axisLabel: { color: 'var(--text-secondary)', fontSize: 10 },
     },
     yAxis: {
       type: 'value',
       minInterval: 1,
       axisLine: { show: false },
       axisTick: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(0,0,0,0.05)' } },
-      axisLabel: { color: '#999', fontSize: 10 },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
+      axisLabel: { color: 'var(--text-secondary)', fontSize: 10 },
     },
     series: [{
       type: 'bar',
       data: stats.weeklyData.map((d) => d.count),
       barWidth: '50%',
       itemStyle: {
-        color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#ff7875' }, { offset: 1, color: '#ff4d4f' }] },
+        color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'var(--brand-400)' }, { offset: 1, color: 'var(--brand-600)' }] },
         borderRadius: [4, 4, 0, 0],
       },
     }],
@@ -67,7 +111,7 @@ export function PomodoroPage() {
       orient: 'vertical',
       right: 10,
       top: 'center',
-      textStyle: { fontSize: 11, color: '#666' },
+      textStyle: { fontSize: 11, color: 'var(--text-secondary)' },
     },
     series: [{
       type: 'pie',
@@ -81,70 +125,144 @@ export function PomodoroPage() {
         itemStyle: { color: t.color },
       })),
       label: { show: false },
-      itemStyle: { borderColor: '#fff', borderWidth: 2 },
+      itemStyle: { borderColor: 'var(--bg-surface)', borderWidth: 2 },
     }],
   }), [distribution])
 
+  // Timer SVG logic
+  const totalDuration = duration * 60
+  const progress = isRunning || isPaused ? Math.max(0, 1 - remainingTime / totalDuration) : 0
+  const radius = 120
+  const circumference = 2 * Math.PI * radius
+  const strokeDashoffset = circumference - progress * circumference
+
+  const isBreak = currentTask === '休息'
+  const primaryColor = isBreak ? 'var(--teal-400)' : 'var(--brand-500)'
+  const glowColor = isBreak ? 'rgba(45, 212, 191, 0.4)' : 'rgba(99, 102, 241, 0.4)'
+  const containerBg = isRunning && !isPaused ? (isBreak ? 'rgba(45, 212, 191, 0.05)' : 'rgba(99, 102, 241, 0.05)') : 'var(--bg-surface)'
+
   return (
-    <Layout style={{ minHeight: '100vh', background: '#f7f8fa' }}>
-      <Header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', paddingInline: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '100%' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
-              返回学习页
-            </Button>
-            <span style={{ fontSize: 16, fontWeight: 600 }}>
-              <BarChartOutlined style={{ marginRight: 8 }} />番茄工作法统计
-            </span>
+    <PageShell 
+      title="番茄专注" 
+      onBack={() => navigate('/')} 
+      maxWidth={1000}
+      rightExtra={
+        <Segmented
+          value={range}
+          onChange={(value) => setRange(value as DateRange)}
+          options={[
+            { label: '日', value: 'day' },
+            { label: '周', value: 'week' },
+            { label: '月', value: 'month' },
+            { label: '全部', value: 'all' },
+          ]}
+        />
+      }
+    >
+      <div style={{ 
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', 
+        background: containerBg, borderRadius: 'var(--radius-xl)', padding: '48px 0', marginBottom: 32,
+        border: '1px solid var(--border-light)', transition: 'background 0.5s ease', position: 'relative', overflow: 'hidden'
+      }}>
+        {/* Background glow when running */}
+        {isRunning && !isPaused && (
+          <div style={{
+            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 400, height: 400, borderRadius: '50%',
+            background: primaryColor, filter: 'blur(100px)', opacity: 0.15, animation: 'pulse 4s ease-in-out infinite alternate', pointerEvents: 'none'
+          }} />
+        )}
+
+        {/* Timer UI */}
+        <div style={{ position: 'relative', width: 280, height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 32 }}>
+          {/* SVG Progress Ring */}
+          <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', transform: 'rotate(-90deg)' }}>
+            <circle cx="140" cy="140" r={radius} fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+            <circle cx="140" cy="140" r={radius} fill="transparent" stroke={primaryColor} strokeWidth="8" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} style={{ transition: 'stroke-dashoffset 1s linear, stroke 0.3s ease' }} />
+          </svg>
+
+          {/* Time Display */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: 1, textShadow: `0 0 20px ${glowColor}` }}>
+            <div style={{ fontSize: 64, fontWeight: 700, fontFamily: 'Space Grotesk', lineHeight: 1, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', color: 'var(--text-primary)' }}>
+              {formatTime(remainingTime || (25 * 60))}
+            </div>
+            <div style={{ fontSize: 16, color: 'var(--text-secondary)', marginTop: 8, fontWeight: 500 }}>
+              {isRunning || isPaused ? (isBreak ? '休息中' : '专注中') : '准备就绪'}
+            </div>
           </div>
-          <Segmented
-            value={range}
-            onChange={(value) => setRange(value as DateRange)}
-            options={[
-              { label: '日', value: 'day' },
-              { label: '周', value: 'week' },
-              { label: '月', value: 'month' },
-              { label: '全部', value: 'all' },
-            ]}
-          />
         </div>
-      </Header>
 
-      <Content style={{ padding: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-          <Row gutter={[16, 16]}>
-            <Col xs={12} md={6}>
-              <Card size="small"><Statistic title="累计番茄" value={cumulative.totalCount} suffix="个" /></Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small"><Statistic title="累计时长" value={cumulative.totalHours.toFixed(1)} suffix="小时" /></Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small"><Statistic title="日均分钟" value={cumulative.dailyAverageMinutes.toFixed(1)} suffix="分钟" /></Card>
-            </Col>
-            <Col xs={12} md={6}>
-              <Card size="small"><Statistic title="活跃天数" value={cumulative.activeDays} suffix="天" /></Card>
-            </Col>
-          </Row>
-
-          <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-            <Col xs={24} lg={14}>
-              <Card size="small" title="任务时长分布">
-                {distribution.length === 0 ? (
-                  <div style={{ textAlign: 'center', color: '#999', padding: '48px 0' }}>暂无数据，先完成一个番茄吧</div>
-                ) : (
-                  <ReactECharts option={pieOption} style={{ height: 320 }} />
-                )}
-              </Card>
-            </Col>
-            <Col xs={24} lg={10}>
-              <Card size="small" title="本周趋势">
-                <ReactECharts option={weekOption} style={{ height: 320 }} />
-              </Card>
-            </Col>
-          </Row>
+        {/* Controls */}
+        <div style={{ display: 'flex', gap: 24, alignItems: 'center', zIndex: 1 }}>
+          {!isRunning && !isPaused ? (
+            <>
+              <Button type="primary" size="large" shape="round" icon={<PlayCircleFilled />} onClick={handleStart} style={{ height: 52, padding: '0 40px', fontSize: 16 }}>
+                开始专注
+              </Button>
+              <Button size="large" shape="round" onClick={handleTakeBreak} style={{ height: 52, padding: '0 32px' }}>
+                休息一下 (5m)
+              </Button>
+            </>
+          ) : (
+            <>
+              {isPaused ? (
+                <Button type="primary" size="large" shape="circle" icon={<PlayCircleFilled />} onClick={resumeTimer} style={{ width: 64, height: 64, fontSize: 28 }} />
+              ) : (
+                <Button size="large" shape="circle" icon={<PauseCircleFilled />} onClick={pauseTimer} style={{ width: 64, height: 64, fontSize: 28, background: 'rgba(255,255,255,0.1)', border: '1px solid var(--border-light)', color: 'var(--text-primary)' }} />
+              )}
+              <Button danger size="large" shape="circle" icon={<StopFilled />} onClick={handleStop} style={{ width: 64, height: 64, fontSize: 24, background: 'rgba(251, 113, 133, 0.1)', border: 'none', color: 'var(--error)' }} />
+            </>
+          )}
         </div>
-      </Content>
-    </Layout>
+      </div>
+
+      <Row gutter={[16, 16]}>
+        <Col xs={12} md={6}>
+          <Card size="small"><Statistic title="累计番茄" value={cumulative.totalCount} suffix="个" valueStyle={{ color: 'var(--text-primary)' }} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card size="small"><Statistic title="累计时长" value={cumulative.totalHours.toFixed(1)} suffix="小时" valueStyle={{ color: 'var(--text-primary)' }} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card size="small"><Statistic title="日均分钟" value={cumulative.dailyAverageMinutes.toFixed(1)} suffix="分钟" valueStyle={{ color: 'var(--text-primary)' }} /></Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card size="small"><Statistic title="活跃天数" value={cumulative.activeDays} suffix="天" valueStyle={{ color: 'var(--text-primary)' }} /></Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} lg={14}>
+          <Card size="small" title="任务时长分布">
+            {distribution.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: '48px 0' }}>暂无数据，先完成一个番茄吧</div>
+            ) : (
+              <ReactECharts option={pieOption} style={{ height: 320 }} />
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} lg={10}>
+          <Card size="small" title="本周趋势">
+            <ReactECharts option={weekOption} style={{ height: 320 }} />
+          </Card>
+        </Col>
+      </Row>
+
+      <Modal
+        title="停止专注"
+        open={stopReasonModalVisible}
+        onOk={confirmStop}
+        onCancel={() => setStopReasonModalVisible(false)}
+        okText="确认停止"
+        okButtonProps={{ danger: true }}
+      >
+        <p style={{ color: 'var(--text-secondary)' }}>请输入提前停止的原因（可选）：</p>
+        <Input.TextArea
+          value={stopReason}
+          onChange={(e) => setStopReason(e.target.value)}
+          placeholder="例如：被打断、任务已完成..."
+          rows={3}
+        />
+      </Modal>
+    </PageShell>
   )
 }

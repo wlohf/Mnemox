@@ -82,9 +82,13 @@ class SyncEngine {
 
     try {
       await this.processQueue()
-      // Pull latest from server
+      // Pull latest from server — each adapter is isolated so one failure won't block others
       for (const adapter of this.adapters.values()) {
-        await adapter.pullAll()
+        try {
+          await adapter.pullAll()
+        } catch (e) {
+          console.warn(`[SyncEngine] pullAll failed for module=${adapter.module}`, e)
+        }
       }
       this.setState({ status: 'idle', online: true })
     } catch {

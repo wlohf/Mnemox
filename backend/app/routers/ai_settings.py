@@ -162,9 +162,12 @@ DEFAULT_PROVIDER_NAMES = {p["provider_name"] for p in DEFAULT_PROVIDERS}
 
 ROUTING_SCENARIOS = {
     "chat_main": "主对话",
+    "wrong_detect": "错题检测",
     "memory_extract": "记忆提炼",
+    "reflection": "学习反思",
     "material_analyze": "资料分析",
     "output_evaluate": "输出评估",
+    "review": "复习评估",
     "note_metadata": "笔记元信息",
     "motivation": "今日激励",
 }

@@ -86,17 +86,18 @@ class AIProviderFactory:
         """
         创建 AI 提供商实例
 
-        优先从数据库读取激活的提供商配置，回退到 .env 配置。
+        有 user_id 时优先从数据库读取当前用户的提供商配置，回退到 .env 配置。
 
         Args:
-            provider_name: 提供商名称，为 None 时使用数据库中激活的提供商或 .env 默认值
+            provider_name: 提供商名称，为 None 时使用当前用户激活的提供商或 .env 默认值
             db: 可选的数据库会话
+            user_id: 当前用户 ID；未提供时不会查询用户级数据库配置
 
         Returns:
             AI 提供商实例
         """
-        # 数据库优先
-        if db is not None:
+        # 只有提供 user_id 时才读取用户级数据库配置，避免跨用户误用激活提供商。
+        if db is not None and user_id is not None:
             from app.models.ai_settings import AIProviderSetting
 
             resolved_provider_name = provider_name
@@ -104,9 +105,10 @@ class AIProviderFactory:
             if not resolved_provider_name and scenario:
                 from app.models.ai_routing import AIRoutingSetting
 
-                route_query = select(AIRoutingSetting).where(AIRoutingSetting.scenario == scenario)
-                if user_id is not None:
-                    route_query = route_query.where(AIRoutingSetting.user_id == user_id)
+                route_query = select(AIRoutingSetting).where(
+                    AIRoutingSetting.scenario == scenario,
+                    AIRoutingSetting.user_id == user_id,
+                )
                 route_result = await db.execute(route_query)
                 route_row = route_result.scalar_one_or_none()
                 if route_row and route_row.provider_name:
@@ -114,16 +116,16 @@ class AIProviderFactory:
 
             if resolved_provider_name:
                 provider_query = select(AIProviderSetting).where(
-                    AIProviderSetting.provider_name == resolved_provider_name.lower()
+                    AIProviderSetting.provider_name == resolved_provider_name.lower(),
+                    AIProviderSetting.user_id == user_id,
                 )
-                if user_id is not None:
-                    provider_query = provider_query.where(AIProviderSetting.user_id == user_id)
                 result = await db.execute(provider_query)
                 row = result.scalar_one_or_none()
             else:
-                active_query = select(AIProviderSetting).where(AIProviderSetting.is_active == True)
-                if user_id is not None:
-                    active_query = active_query.where(AIProviderSetting.user_id == user_id)
+                active_query = select(AIProviderSetting).where(
+                    AIProviderSetting.is_active == True,
+                    AIProviderSetting.user_id == user_id,
+                )
                 result = await db.execute(active_query)
                 row = result.scalar_one_or_none()
 

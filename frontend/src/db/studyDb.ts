@@ -40,6 +40,7 @@ export interface LocalGoal extends SyncMeta {
 export interface LocalGoalTask extends SyncMeta {
   goal_id: number | null        // server goal_id (null if parent goal not yet synced)
   _localGoalId: string | null   // local goal _localId for parent reference
+  parent_task_id: number | null
   chapter_id: number | null
   chapter_title: string | null
   title: string
@@ -51,10 +52,41 @@ export interface LocalGoalTask extends SyncMeta {
   created_at: string | null
 }
 
+export interface LocalAnkiCard extends SyncMeta {
+  front: string
+  back: string
+  source: string
+  tags: string | null
+  note: string | null
+  due_at: string | null
+  interval_days: number
+  ease_factor: number
+  repetitions: number
+  last_quality: number | null
+  created_at: string | null
+}
+
+export interface LocalWrongQuestion extends SyncMeta {
+  content: string
+  question_type: string | null
+  answer: string | null
+  explanation: string | null
+  difficulty: number | null
+  chapter_id: number | null
+  chapter_title: string
+  wrong_count: number
+  mastery_status: string
+  review_count: number
+  knowledge_point: string | null
+  next_review_at: string | null
+  last_wrong_at: string | null
+  created_at: string | null
+}
+
 // ── Operation queue ──
 
 export type OpType = 'create' | 'update' | 'delete'
-export type ModuleName = 'notes' | 'goals' | 'goalTasks'
+export type ModuleName = 'notes' | 'goals' | 'goalTasks' | 'ankiCards' | 'wrongQuestions'
 
 export interface QueuedOperation {
   id?: number             // auto-incremented
@@ -71,6 +103,8 @@ class StudyDatabase extends Dexie {
   notes!: Table<LocalNote, string>
   goals!: Table<LocalGoal, string>
   goalTasks!: Table<LocalGoalTask, string>
+  ankiCards!: Table<LocalAnkiCard, string>
+  wrongQuestions!: Table<LocalWrongQuestion, string>
   opQueue!: Table<QueuedOperation, number>
 
   constructor() {
@@ -81,6 +115,31 @@ class StudyDatabase extends Dexie {
       goals:     '_localId, _serverId, _syncStatus, _updatedAt, status',
       goalTasks: '_localId, _serverId, _syncStatus, _updatedAt, goal_id, _localGoalId, planned_date, status',
       opQueue:   '++id, module, localId, createdAt',
+    })
+
+    this.version(2).stores({
+      notes:     '_localId, _serverId, _syncStatus, _updatedAt',
+      goals:     '_localId, _serverId, _syncStatus, _updatedAt, status',
+      goalTasks: '_localId, _serverId, _syncStatus, _updatedAt, goal_id, _localGoalId, parent_task_id, planned_date, status',
+      opQueue:   '++id, module, localId, createdAt',
+    })
+
+    this.version(3).stores({
+      notes:          '_localId, _serverId, _syncStatus, _updatedAt',
+      goals:          '_localId, _serverId, _syncStatus, _updatedAt, status',
+      goalTasks:      '_localId, _serverId, _syncStatus, _updatedAt, goal_id, _localGoalId, parent_task_id, planned_date, status',
+      ankiCards:      '_localId, _serverId, _syncStatus, _updatedAt, due_at',
+      wrongQuestions: '_localId, _serverId, _syncStatus, _updatedAt',
+      opQueue:        '++id, module, localId, createdAt',
+    })
+
+    this.version(4).stores({
+      notes:          '_localId, _serverId, _syncStatus, _updatedAt',
+      goals:          '_localId, _serverId, _syncStatus, _updatedAt, status',
+      goalTasks:      '_localId, _serverId, _syncStatus, _updatedAt, goal_id, _localGoalId, parent_task_id, planned_date, status',
+      ankiCards:      '_localId, _serverId, _syncStatus, _updatedAt, due_at',
+      wrongQuestions: '_localId, _serverId, _syncStatus, _updatedAt',
+      opQueue:        '++id, module, localId, [module+localId], createdAt',
     })
   }
 }

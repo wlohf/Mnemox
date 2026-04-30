@@ -1,5 +1,6 @@
 """笔记系统路由（MVP）"""
 import json
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,7 @@ from app.auth import get_current_user
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class NoteLinkIn(BaseModel):
@@ -100,8 +102,8 @@ def _safe_tags(raw: Optional[str]) -> List[str]:
         arr = json.loads(raw)
         if isinstance(arr, list):
             return [str(x).strip() for x in arr if str(x).strip()][:12]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("解析笔记标签失败，raw=%s, err=%s", raw, e)
     return []
 
 
@@ -250,7 +252,11 @@ async def suggest_note_metadata(
     )
 
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="note_metadata")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="note_metadata",
+            user_id=current_user.id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是笔记整理助手，只输出 JSON。",

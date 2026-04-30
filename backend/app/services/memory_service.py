@@ -1,5 +1,6 @@
 """AI 记忆服务：摘要与长期记忆提炼"""
 import json
+import logging
 import random
 import re
 from datetime import datetime, timedelta
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage, ChatConversation
 from app.models.memory import ConversationSummary, UserMemory
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_json_loads(text: str, fallback):
@@ -90,7 +93,12 @@ def _parse_llm_memories(raw: str) -> List[dict]:
     return out
 
 
-async def _extract_facts_with_llm(user_message: str, assistant_reply: str, db: AsyncSession) -> List[dict]:
+async def _extract_facts_with_llm(
+    user_message: str,
+    assistant_reply: str,
+    db: AsyncSession,
+    user_id: int,
+) -> List[dict]:
     """使用 LLM 做结构化记忆提炼；失败时返回空列表。"""
     # 避免极短无信息消息也请求模型
     if len((user_message or "").strip()) < 6:
@@ -112,7 +120,11 @@ async def _extract_facts_with_llm(user_message: str, assistant_reply: str, db: A
     try:
         from app.ai.factory import AIProviderFactory
 
-        provider = await AIProviderFactory.create_provider(db=db, scenario="memory_extract")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="memory_extract",
+            user_id=user_id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是结构化信息提炼器，只输出 JSON。",
@@ -131,6 +143,11 @@ async def build_memory_prompt_fragment(
     user_id: int = 1,
 ) -> str:
     """构建可注入 system prompt 的长期记忆片段。"""
+    # 顺带触发记忆衰减（低频，不阻塞）
+    try:
+        await decay_old_memories(db, user_id=user_id)
+    except Exception:
+        pass
     query = select(UserMemory).where(
         UserMemory.status == "active",
         UserMemory.user_id == user_id,
@@ -203,6 +220,27 @@ async def build_memory_prompt_fragment(
 
     return "\n用户长期记忆（请作为个性化参考）：\n" + "\n".join(lines)
 
+
+async def decay_old_memories(db: AsyncSession, user_id: int = 1) -> None:
+    """对超过7天未访问的记忆降低 confidence（每次衰减5%，低于0.2则归档）。"""
+    from sqlalchemy import update
+    cutoff = datetime.now() - timedelta(days=7)
+    result = await db.execute(
+        select(UserMemory).where(
+            UserMemory.user_id == user_id,
+            UserMemory.status == "active",
+            UserMemory.is_locked != 1,
+            UserMemory.last_seen_at < cutoff,
+        )
+    )
+    rows = result.scalars().all()
+    for mem in rows:
+        new_conf = max(0.0, (mem.confidence or 0.5) * 0.95)
+        mem.confidence = new_conf
+        if new_conf < 0.2:
+            mem.status = "ignored"
+    if rows:
+        await db.flush()
 
 async def get_relevant_memories(
     db: AsyncSession,
@@ -356,7 +394,7 @@ async def upsert_user_memories_from_turn(
     user_id: int = 1,
 ) -> None:
     """从本轮对话提炼长期记忆：优先 LLM，失败回退启发式。"""
-    facts = await _extract_facts_with_llm(user_message, assistant_reply, db)
+    facts = await _extract_facts_with_llm(user_message, assistant_reply, db, user_id=user_id)
     if not facts:
         facts = _heuristic_extract_facts(user_message)
     if not facts:
@@ -535,7 +573,11 @@ async def run_conversation_reflection(conversation_id: int, db: AsyncSession, us
     try:
         from app.ai.factory import AIProviderFactory
 
-        provider = await AIProviderFactory.create_provider(db=db, scenario="reflection")
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="reflection",
+            user_id=user_id,
+        )
         raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
             system_prompt="你是结构化学习分析器，只输出 JSON。",
@@ -595,8 +637,8 @@ async def run_conversation_reflection(conversation_id: int, db: AsyncSession, us
                 )
             )
             conv_material_ids = [row[0] for row in assoc_result.all()]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("读取会话关联资料失败 conversation_id=%s err=%s", conversation_id, e)
 
     # Store memory candidates
     if memory_candidates and isinstance(memory_candidates, list):

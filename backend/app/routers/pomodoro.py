@@ -13,6 +13,7 @@ from ..auth import get_current_user
 from ..models.user import User
 from ..services.event_tracker import EventTracker
 from ..models.learning_event import EventType
+from ..models.goal import Task, Goal
 
 
 router = APIRouter()
@@ -21,6 +22,7 @@ router = APIRouter()
 class PomodoroCreate(BaseModel):
     """创建番茄钟请求"""
     chapter_id: Optional[int] = None
+    task_id: Optional[int] = None
     task_name: Optional[str] = None
     duration: float = 25.0  # 默认25分钟
 
@@ -37,6 +39,7 @@ class PomodoroResponse(BaseModel):
     """番茄钟响应"""
     id: int
     chapter_id: Optional[int]
+    task_id: Optional[int]
     task_name: Optional[str]
     started_at: str
     ended_at: Optional[str]
@@ -78,9 +81,19 @@ async def start_pomodoro(
     - **chapter_id**: 关联章节ID（可选）
     - **duration**: 时长（分钟，默认25）
     """
+    if data.task_id is not None:
+        task_result = await db.execute(
+            select(Task)
+            .join(Goal, Task.goal_id == Goal.id)
+            .where(Task.id == data.task_id, Goal.user_id == current_user.id)
+        )
+        if not task_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="任务不存在")
+
     pomodoro = Pomodoro(
         user_id=current_user.id,
         chapter_id=data.chapter_id,
+        task_id=data.task_id,
         task_name=data.task_name,
         started_at=datetime.now(),
         duration=data.duration,
@@ -107,6 +120,7 @@ async def start_pomodoro(
     return PomodoroResponse(
         id=pomodoro.id,
         chapter_id=pomodoro.chapter_id,
+        task_id=pomodoro.task_id,
         task_name=pomodoro.task_name,
         started_at=started_at.isoformat(),
         ended_at=ended_at.isoformat() if ended_at is not None else None,
@@ -193,6 +207,7 @@ async def complete_pomodoro(
     return PomodoroResponse(
         id=pomodoro.id,
         chapter_id=pomodoro.chapter_id,
+        task_id=pomodoro.task_id,
         task_name=pomodoro.task_name,
         started_at=started_at.isoformat(),
         ended_at=ended_at_iso,
@@ -226,6 +241,7 @@ async def get_recent_pomodoros(
         PomodoroResponse(
             id=p.id,
             chapter_id=p.chapter_id,
+            task_id=p.task_id,
             task_name=p.task_name,
             started_at=(p.started_at if p.started_at is not None else p.created_at).isoformat(),
             ended_at=p.ended_at.isoformat() if p.ended_at else None,
@@ -482,6 +498,15 @@ async def batch_create_pomodoros(
     """
     created_ids = []
     for i, record in enumerate(data.records):
+        if record.task_id is not None:
+            task_result = await db.execute(
+                select(Task)
+                .join(Goal, Task.goal_id == Goal.id)
+                .where(Task.id == record.task_id, Goal.user_id == current_user.id)
+            )
+            if not task_result.scalar_one_or_none():
+                continue
+
         completed_at = None
         if i < len(data.completed_ats):
             completed_at_value = data.completed_ats[i]
@@ -496,6 +521,7 @@ async def batch_create_pomodoros(
         pomodoro = Pomodoro(
             user_id=current_user.id,
             chapter_id=record.chapter_id,
+            task_id=record.task_id,
             task_name=record.task_name,
             started_at=completed_at - timedelta(minutes=record.duration),
             ended_at=completed_at,

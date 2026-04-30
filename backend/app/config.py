@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # Auth
     SECRET_KEY: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
+
+    # App Update
+    APP_VERSION: str = "1.0.0"
+    APP_UPDATE_MANIFEST_URL: str = ""
     
     class Config:
         env_file = ".env"
@@ -103,11 +107,16 @@ class Settings(BaseSettings):
 # 全局配置实例
 settings = Settings()
 
-# 启动时校验 SECRET_KEY
-if settings.SECRET_KEY == "change-me-in-production":
-    warnings.warn(
-        "\n⚠️  CRITICAL: SECRET_KEY 仍为默认值 'change-me-in-production'！"
-        "\n   请在 .env 文件中设置一个安全的随机密钥。"
-        "\n   例如: SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')\n",
-        stacklevel=1,
+# 启动时校验 SECRET_KEY：开发环境警告，非调试环境拒绝启动。
+_INSECURE_SECRET_KEY = "change-me-in-production"
+_secret_key = settings.SECRET_KEY.strip()
+if settings.SECRET_KEY == _INSECURE_SECRET_KEY or len(_secret_key) < 32:
+    _secret_message = (
+        "\n⚠️  CRITICAL: SECRET_KEY 未安全配置！"
+        "\n   请在 .env 文件中设置一个至少 32 字符的随机密钥。"
+        "\n   例如: SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')\n"
     )
+    if settings.DEBUG:
+        warnings.warn(_secret_message, stacklevel=1)
+    else:
+        raise RuntimeError(_secret_message)

@@ -33,9 +33,11 @@ export async function listNotes(params?: {
   if (params?.link_id !== undefined) query.set('link_id', String(params.link_id))
   if (params?.tag) query.set('tag', params.tag)
   const qs = query.toString()
-  const res = await apiFetch(`/api/notes${qs ? `?${qs}` : ''}`)
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<NoteItem[]>(`/api/notes${qs ? `?${qs}` : ''}`)
+  } catch {
+    return []
+  }
 }
 
 export async function createNote(data: {
@@ -47,36 +49,46 @@ export async function createNote(data: {
   tags?: string[]
   links?: NoteLink[]
 }): Promise<NoteItem | null> {
-  const res = await apiFetch('/api/notes', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<NoteItem>('/api/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function updateNote(id: number, data: Record<string, any>): Promise<NoteItem | null> {
-  const res = await apiFetch(`/api/notes/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<NoteItem>(`/api/notes/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function deleteNote(id: number): Promise<boolean> {
-  const res = await apiFetch(`/api/notes/${id}`, { method: 'DELETE' })
-  return res.ok
+  try {
+    await apiFetch(`/api/notes/${id}`, { method: 'DELETE' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function suggestNoteMetadata(content: string, context?: string): Promise<{ title: string; tags: string[] } | null> {
-  const res = await apiFetch('/api/notes/suggest-metadata', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, context }),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<{ title: string; tags: string[] }>('/api/notes/suggest-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, context }),
+    })
+  } catch {
+    return null
+  }
 }

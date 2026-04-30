@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Layout, Card, List, Button, Tag, message, Spin, Typography,
+  Card, List, Button, Tag, message, Spin, Typography,
   Space, Tooltip, Badge, Input, Divider
 } from 'antd'
 import {
-  EditOutlined, ReloadOutlined, CheckOutlined, ArrowLeftOutlined,
+  EditOutlined, ReloadOutlined,
   InfoCircleOutlined, SaveOutlined
 } from '@ant-design/icons'
 import { PageShell } from '../components/PageShell'
@@ -15,7 +15,7 @@ import {
 } from '../services/promptApi'
 
 const { TextArea } = Input
-const { Text, Paragraph } = Typography
+const { Text } = Typography
 
 // 每种模式的使用说明
 const MODE_DESCRIPTIONS: Record<string, { desc: string; variables?: string[] }> = {
@@ -55,6 +55,8 @@ export function PromptsPage() {
       setSelectedKey(defaultKey)
       const tpl = data.templates.find(t => t.mode_key === defaultKey)
       setEditContent(tpl?.content ?? '')
+    } else {
+      message.error('加载 Prompt 模板失败，请稍后重试')
     }
     setLoading(false)
   }, [searchParams])
@@ -136,7 +138,7 @@ export function PromptsPage() {
                   <div style={{ width: '100%' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Text style={{ fontSize: 13, fontWeight: tpl.mode_key === selectedKey ? 600 : 400 }}>
-                        {tpl.mode_name}
+                        {tpl.name}
                       </Text>
                       {tpl.is_custom && (
                         <Badge dot color="blue" />
@@ -155,7 +157,7 @@ export function PromptsPage() {
             title={
               <Space>
                 <EditOutlined />
-                <span>{selected?.mode_name ?? ''}</span>
+                <span>{selected?.name ?? ''}</span>
                 {selected?.is_custom && <Tag color="blue">已自定义</Tag>}
                 {dirty && <Tag color="orange">未保存</Tag>}
               </Space>
@@ -189,9 +191,9 @@ export function PromptsPage() {
             {/* 说明 */}
             {modeInfo.desc && (
               <div style={{
-                background: 'var(--bg-secondary, #faf5ed)',
-                border: '1px solid var(--border-color, #e8e0d4)',
-                borderRadius: 6,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius-md)',
                 padding: '8px 12px',
                 marginBottom: 12,
                 fontSize: 12,

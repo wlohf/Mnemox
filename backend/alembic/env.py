@@ -9,20 +9,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config import settings
 from app.database import Base
 
-# Import ALL models so Base.metadata picks them up
-from app.models.user import User  # noqa
-from app.models.material import Material, Chapter  # noqa
-from app.models.goal import Goal, Task  # noqa
-from app.models.session import StudySession, Conversation  # noqa
-from app.models.question import Question, QuizRecord, WrongQuestion, ReviewSchedule  # noqa
-from app.models.pomodoro import Pomodoro, DailyStat  # noqa
-from app.models.note import Note, NoteLink  # noqa
-from app.models.chat import ChatProject, ChatProjectMaterial, ChatConversation, ChatMessage  # noqa
-from app.models.ai_settings import AIProviderSetting  # noqa
-from app.models.ai_routing import AIRoutingSetting  # noqa
-from app.models.memory import ConversationSummary, UserMemory  # noqa
-from app.models.progress import MaterialProfile, OutputEvaluation  # noqa
-from app.models.daily_plan import DailyPlan  # noqa
+# Import the package-level registry so Base.metadata includes every current model.
+import app.models  # noqa: F401
 
 config = context.config
 

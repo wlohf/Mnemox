@@ -1,4 +1,5 @@
 """复习任务路由（基于 review_schedule）"""
+import logging
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
@@ -14,6 +15,7 @@ from app.auth import get_current_user
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ReviewCompleteRequest(BaseModel):
@@ -199,6 +201,7 @@ async def get_due_review_count(
             ReviewSchedule.scheduled_date <= now,
             ReviewSchedule.status == "pending",
             ReviewSchedule.user_id == current_user.id,
+            ReviewSchedule.is_archived == False,
         )
     )
     due_items = result.scalars().all()
@@ -218,7 +221,7 @@ async def list_review_tasks(
     await _sync_chapters_to_review_schedule(db, user_id=current_user.id)
 
     now = datetime.now()
-    query = select(ReviewSchedule).where(ReviewSchedule.user_id == current_user.id)
+    query = select(ReviewSchedule).where(ReviewSchedule.user_id == current_user.id, ReviewSchedule.is_archived == False)
     if item_type != "all":
         query = query.where(ReviewSchedule.item_type == item_type)
     if scope == "due":
@@ -337,6 +340,27 @@ async def complete_review_task(
     return _to_task_item(task, wrong)
 
 
+@router.delete("/tasks/{task_id}")
+async def delete_review_task(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """删除复习任务"""
+    result = await db.execute(
+        select(ReviewSchedule).where(
+            ReviewSchedule.id == task_id,
+            ReviewSchedule.user_id == current_user.id,
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="复习任务不存在")
+    task.is_archived = True
+    await db.flush()
+    return {"ok": True}
+
+
 @router.post("/tasks/chapter/{chapter_id}/enqueue")
 async def enqueue_chapter_review_task(
     chapter_id: int,
@@ -418,18 +442,18 @@ async def get_review_content(
     if task.item_type != "chapter":
         raise HTTPException(status_code=400, detail="暂只支持章节复习的AI评估")
     
-    chapter_result = await db.execute(select(Chapter).where(Chapter.id == task.item_id))
-    chapter = chapter_result.scalar_one_or_none()
-    if not chapter:
+    chapter_result = await db.execute(
+        select(Chapter, Material)
+        .join(Material, Chapter.material_id == Material.id)
+        .where(
+            Chapter.id == task.item_id,
+            Material.user_id == current_user.id,
+        )
+    )
+    row = chapter_result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="章节不存在")
-    
-    # Get material for context
-    material_result = await db.execute(select(Material).where(Material.id == chapter.material_id))
-    material = material_result.scalar_one_or_none()
-    
-    # Generate AI content
-    from app.ai.factory import AIProviderFactory
-    provider = AIProviderFactory.create_provider()
+    chapter, _material = row
     
     prompt = f"""你是一位专业的学习助手。用户正在复习以下章节：
 
@@ -469,6 +493,13 @@ async def get_review_content(
 """
     
     try:
+        from app.ai.factory import AIProviderFactory
+
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="review",
+            user_id=current_user.id,
+        )
         response = await provider.chat([{"role": "user", "content": prompt}])
         
         # Parse JSON from response
@@ -487,6 +518,7 @@ async def get_review_content(
             "questions": data.get("questions", []),
         }
     except Exception as e:
+        logger.warning("AI 复习内容生成失败: %s", e)
         # Fallback if AI fails
         return {
             "summary": [
@@ -524,15 +556,22 @@ async def submit_review_answers(
     if not task:
         raise HTTPException(status_code=404, detail="复习任务不存在")
     
+    if task.item_type != "chapter":
+        raise HTTPException(status_code=400, detail="暂只支持章节复习的AI评估")
+
     # Get chapter
-    chapter_result = await db.execute(select(Chapter).where(Chapter.id == task.item_id))
-    chapter = chapter_result.scalar_one_or_none()
-    if not chapter:
+    chapter_result = await db.execute(
+        select(Chapter, Material)
+        .join(Material, Chapter.material_id == Material.id)
+        .where(
+            Chapter.id == task.item_id,
+            Material.user_id == current_user.id,
+        )
+    )
+    row = chapter_result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="章节不存在")
-    
-    # AI evaluate answers
-    from app.ai.factory import AIProviderFactory
-    provider = AIProviderFactory.create_provider()
+    chapter, _material = row
     
     answers_text = "\n".join([
         f"问题{i+1}：{ans.get('question', '')}\n用户答案：{ans.get('answer', '')}"
@@ -565,6 +604,13 @@ async def submit_review_answers(
 """
     
     try:
+        from app.ai.factory import AIProviderFactory
+
+        provider = await AIProviderFactory.create_provider(
+            db=db,
+            scenario="review",
+            user_id=current_user.id,
+        )
         response = await provider.chat([{"role": "user", "content": prompt}])
         
         import json
@@ -580,7 +626,8 @@ async def submit_review_answers(
         quality = int(data.get("quality", 3))
         feedback = data.get("feedback", "")
         
-    except Exception:
+    except Exception as e:
+        logger.warning("AI 复习答案评估失败: %s", e)
         # Fallback scoring
         score = 60
         quality = 3

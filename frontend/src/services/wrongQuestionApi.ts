@@ -13,6 +13,9 @@ export interface WrongQuestionItem {
   wrong_count: number
   mastery_status: 'not_mastered' | 'partial' | 'mastered'
   review_count: number
+  knowledge_point?: string | null
+  recall_difficulty?: 'easy' | 'hard' | 'forgot' | null
+  mastery_score?: number | null
   next_review_at?: string | null
   last_wrong_at?: string | null
   created_at?: string | null
@@ -26,9 +29,11 @@ export async function listWrongQuestions(params?: {
   if (params?.mastery_status) query.set('mastery_status', params.mastery_status)
   if (params?.due_only) query.set('due_only', 'true')
   const qs = query.toString()
-  const res = await apiFetch(`/api/wrong-questions${qs ? `?${qs}` : ''}`)
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<WrongQuestionItem[]>(`/api/wrong-questions${qs ? `?${qs}` : ''}`)
+  } catch {
+    return []
+  }
 }
 
 export async function createWrongQuestion(data: {
@@ -38,40 +43,60 @@ export async function createWrongQuestion(data: {
   answer?: string
   explanation?: string
   difficulty?: number
+  knowledge_point?: string
 }): Promise<WrongQuestionItem | null> {
-  const res = await apiFetch('/api/wrong-questions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<WrongQuestionItem>('/api/wrong-questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function updateWrongQuestion(
   id: number,
-  data: { mastery_status?: string; next_review_at?: string; increment_review_count?: boolean }
+  data: {
+    mastery_status?: string
+    next_review_at?: string
+    increment_review_count?: boolean
+    recall_difficulty?: 'easy' | 'hard' | 'forgot'
+  }
 ): Promise<WrongQuestionItem | null> {
-  const res = await apiFetch(`/api/wrong-questions/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<WrongQuestionItem>(`/api/wrong-questions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
-export async function reviewWrongQuestion(id: number, quality: number): Promise<WrongQuestionItem | null> {
-  const res = await apiFetch(`/api/wrong-questions/${id}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quality }),
-  })
-  if (!res.ok) return null
-  return res.json()
+export async function reviewWrongQuestion(
+  id: number,
+  quality: number,
+  recall_difficulty?: 'easy' | 'hard' | 'forgot'
+): Promise<WrongQuestionItem | null> {
+  try {
+    return await apiFetch<WrongQuestionItem>(`/api/wrong-questions/${id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quality, recall_difficulty }),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function deleteWrongQuestion(id: number): Promise<boolean> {
-  const res = await apiFetch(`/api/wrong-questions/${id}`, { method: 'DELETE' })
-  return res.ok
+  try {
+    await apiFetch(`/api/wrong-questions/${id}`, { method: 'DELETE' })
+    return true
+  } catch {
+    return false
+  }
 }

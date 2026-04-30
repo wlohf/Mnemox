@@ -54,6 +54,7 @@ class PromptItem(BaseModel):
     name: str
     content: str
     is_custom: bool
+    updated_at: Optional[str] = None
 
 
 async def get_user_prompt(db: AsyncSession, user_id: int, mode_key: str) -> str:
@@ -81,6 +82,13 @@ async def list_prompts(
         select(PromptTemplate).where(PromptTemplate.user_id == user_id)
     )
     custom_rows = {str(row.mode_key): str(row.content) for row in result.scalars().all()}
+    result = await db.execute(
+        select(PromptTemplate).where(PromptTemplate.user_id == user_id)
+    )
+    custom_time_rows = {
+        str(row.mode_key): (row.updated_at.isoformat() if row.updated_at else None)
+        for row in result.scalars().all()
+    }
 
     items: list[PromptItem] = []
     for mode_key, name in MODE_KEYS.items():
@@ -91,6 +99,7 @@ async def list_prompts(
             name=name,
             content=content,
             is_custom=is_custom,
+            updated_at=custom_time_rows.get(mode_key),
         ))
     return items
 

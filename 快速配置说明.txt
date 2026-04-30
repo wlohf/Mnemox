@@ -3,9 +3,9 @@
 ================================================
 
 您的API信息:
-- API Key:  sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
-- API地址:  https://api.224442.xyz
-- 模型:     glm-4.7
+- API Key:  your_api_key_here
+- API地址:  https://your-api-host.example.com
+- 模型:     your-model-name
 
 ================================================
   自动配置（推荐）
@@ -30,9 +30,9 @@
 内容:
 DATABASE_URL=sqlite+aiosqlite:///./data/study.db
 DEFAULT_AI_PROVIDER=openai
-OPENAI_API_KEY=sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
-OPENAI_MODEL=glm-4.7
-OPENAI_BASE_URL=https://api.224442.xyz/v1
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL=your-model-name
+OPENAI_BASE_URL=https://your-api-host.example.com/v1
 ANYTHINGLLM_ENABLED=true
 ANYTHINGLLM_BASE_URL=http://localhost:3001
 ANYTHINGLLM_WORKSPACE=study-materials
@@ -49,9 +49,9 @@ A. Web界面配置（推荐）:
    2. 访问: http://localhost:3001
    3. 首次进入选择配置:
       - LLM Provider: OpenAI
-      - API Key: sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
-      - Base URL: https://api.224442.xyz/v1
-      - Model: glm-4.7
+      - API Key: your_api_key_here
+      - Base URL: https://your-api-host.example.com/v1
+      - Model: your-model-name
       - Embedding: Native (推荐，免费)
 
 B. 配置文件（高级）:
@@ -59,9 +59,9 @@ B. 配置文件（高级）:
    
    内容:
    LLM_PROVIDER=openai
-   OPEN_AI_KEY=sk-rqTCXXlp0rB2inE_rINqZQPJUwvOcKrpoHgYQkpYYbdxtLXOH5AxCXuQJP0
-   OPEN_MODEL_PREF=glm-4.7
-   OPEN_AI_BASE_PATH=https://api.224442.xyz/v1
+   OPEN_AI_KEY=your_api_key_here
+   OPEN_MODEL_PREF=your-model-name
+   OPEN_AI_BASE_PATH=https://your-api-host.example.com/v1
    EMBEDDING_ENGINE=native
    VECTOR_DB=lancedb
    SERVER_PORT=3001

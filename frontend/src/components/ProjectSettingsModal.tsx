@@ -42,12 +42,7 @@ export function ProjectSettingsModal({ open, projectId, onClose }: ProjectSettin
   const loadMaterials = async () => {
     setMaterialsLoading(true)
     try {
-      const res = await apiFetch('/api/materials/?skip=0&limit=200')
-      if (!res.ok) {
-        setMaterials([])
-        return
-      }
-      const arr = await res.json()
+      const arr = await apiFetch<any[]>('/api/materials/?skip=0&limit=200')
       const list: MaterialItem[] = (arr || []).map((m: any) => ({
         id: m.id,
         title: m.title,

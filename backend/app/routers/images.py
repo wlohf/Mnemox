@@ -12,7 +12,7 @@ from app.models.user import User
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 

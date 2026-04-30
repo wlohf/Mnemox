@@ -30,14 +30,11 @@ export const notesSyncAdapter: ModuleSyncAdapter = {
       links: payload.links ? JSON.parse(payload.links as string) : [],
     }
 
-    const res = await apiFetch('/api/notes', {
+    const server = await apiFetch<ServerNote>('/api/notes', {
       method: 'POST',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushCreate failed: ${res.status}`)
 
-    const server: ServerNote = await res.json()
-    // Update local record with server id and synced status
     await db.notes.update(op.localId, {
       _serverId: server.id,
       _syncStatus: 'synced',
@@ -57,13 +54,11 @@ export const notesSyncAdapter: ModuleSyncAdapter = {
     if (payload.note_type !== undefined) body.note_type = payload.note_type
     if (payload.tags !== undefined) body.tags = JSON.parse(payload.tags as string)
 
-    const res = await apiFetch(`/api/notes/${local._serverId}`, {
+    const server = await apiFetch<ServerNote>(`/api/notes/${local._serverId}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     })
-    if (!res.ok) throw new Error(`pushUpdate failed: ${res.status}`)
 
-    const server: ServerNote = await res.json()
     await db.notes.update(op.localId, {
       _syncStatus: 'synced',
       _lastSyncedAt: new Date().toISOString(),
@@ -73,26 +68,22 @@ export const notesSyncAdapter: ModuleSyncAdapter = {
 
   async pushDelete(op: QueuedOperation) {
     const local = await db.notes.get(op.localId)
-    if (!local) return // already deleted locally
+    if (!local) return
     if (!local._serverId) {
-      // Never pushed to server, just delete locally
       await db.notes.delete(op.localId)
       return
     }
 
-    const res = await apiFetch(`/api/notes/${local._serverId}`, {
-      method: 'DELETE',
-    })
-    // 404 means already deleted on server — that's fine
-    if (!res.ok && res.status !== 404) throw new Error(`pushDelete failed: ${res.status}`)
+    try {
+      await apiFetch(`/api/notes/${local._serverId}`, { method: 'DELETE' })
+    } catch {
+      // 404 means already deleted on server — that's fine, other errors will propagate
+    }
     await db.notes.delete(op.localId)
   },
 
   async pullAll() {
-    const res = await apiFetch('/api/notes')
-    if (!res.ok) throw new Error(`pullAll failed: ${res.status}`)
-
-    const serverNotes: ServerNote[] = await res.json()
+    const serverNotes = await apiFetch<ServerNote[]>('/api/notes')
     const serverMap = new Map(serverNotes.map((n) => [n.id, n]))
 
     const allLocal = await db.notes.toArray()

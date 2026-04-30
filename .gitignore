@@ -64,6 +64,7 @@ uploads/
 .env.local
 .env.*.local
 .ace-tool/
+.aionrs/
 nul
 *.db-journal
 backend/venv/

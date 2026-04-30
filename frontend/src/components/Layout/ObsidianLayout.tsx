@@ -20,6 +20,7 @@ import {
   Col,
   Switch,
   Tag,
+  Dropdown,
   Segmented,
   Checkbox,
   Tabs,
@@ -43,19 +44,26 @@ import {
   BarChartOutlined,
   SettingOutlined,
   MessageOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
   PictureOutlined,
   CloseCircleFilled,
   LogoutOutlined,
   UserOutlined,
+  BookOutlined,
+  CheckSquareOutlined,
+  QuestionCircleOutlined,
+  FileTextOutlined,
+  CreditCardOutlined,
+  DashboardOutlined,
+  MenuOutlined,
 } from '@ant-design/icons'
-import ReactECharts from 'echarts-for-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
+import { useThemeStore } from '../../stores/themeStore'
 import * as pomodoroApi from '../../services/pomodoroApi'
-import { AISettingsDrawer } from '../AISettingsDrawer'
+import { SettingsModal } from '../SettingsModal'
+import { StatsModal } from './StatsModal'
+import { MotivationModal } from './MotivationModal'
 import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator, type ProgressFeedback } from '../../services/chatApi'
 import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
@@ -67,12 +75,13 @@ import { useAuthStore } from '../../stores/authStore'
 import { listReviewTasks, getDueReviewCount, type ReviewTaskItem } from '../../services/reviewApi'
 import { createNote, suggestNoteMetadata } from '../../services/noteApi'
 import { getDashboard, startLearningPipeline, startBatchLearningPipeline, generateDailyPlan, type DashboardData } from '../../services/learningApi'
+import { getDailyIntervention, type DailyInterventionReport } from '../../services/interventionApi'
+import { createMemory } from '../../services/memoryApi'
 import {
   getCurrentQuote,
   listQuotes,
   addCustomQuote,
   deleteQuote,
-  generateAIQuote,
   getMotivationSettings,
   updateMotivationSettings,
   type MotivationQuote,
@@ -81,30 +90,16 @@ import {
 import { apiFetch } from '../../services/apiClient'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { TodayFocusActions } from './TodayFocusActions'
+import { MarkdownLiveEditor, type MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
 
-const QUOTE_SORT_OPTIONS = [
-  { label: '最新优先', value: 'created_desc' },
-  { label: '最早优先', value: 'created_asc' },
-  { label: '来源优先（自定义→AI→预设）', value: 'source_priority' },
-  { label: '作者 A→Z', value: 'author_asc' },
-  { label: '内容 A→Z', value: 'content_asc' },
-]
-
-const QUOTE_ROTATION_OPTIONS = [
-  { label: '30分钟', value: 30 * 60 },
-  { label: '1小时', value: 60 * 60 },
-  { label: '3小时', value: 3 * 60 * 60 },
-  { label: '6小时', value: 6 * 60 * 60 },
-  { label: '12小时', value: 12 * 60 * 60 },
-  { label: '1天', value: 24 * 60 * 60 },
-]
 
 interface PomodoroConfig {
   duration: number
   taskName: string
+  taskId: number | null
 }
 
 interface Material {
@@ -138,6 +133,7 @@ interface WrongQuestionPreview {
 export function ObsidianLayout() {
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
+  const { bgImage, bgOpacity } = useThemeStore()
   // 使用zustand store管理番茄钟
   const {
     isRunning,
@@ -162,12 +158,16 @@ export function ObsidianLayout() {
   const [pomodoroConfig, setPomodoroConfig] = useState<PomodoroConfig>({
     duration: 25,
     taskName: '',
+    taskId: null,
   })
   const [showPomodoroModal, setShowPomodoroModal] = useState(false)
   const [showStopReasonModal, setShowStopReasonModal] = useState(false)
   const [selectedStopReason, setSelectedStopReason] = useState<'early_done' | 'interrupted' | 'distracted' | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
-  const [focusMode, setFocusMode] = useState(true)
+  const [focusMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('layout_focus_mode')
+    return saved === null ? true : saved === 'true'
+  })
   const [statsRange, setStatsRange] = useState<DateRange>('week')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerNotifiedRef = useRef(false)
@@ -200,10 +200,10 @@ export function ObsidianLayout() {
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
   const [currentPlan, setCurrentPlan] = useState('')
   const [weeklyPlans, setWeeklyPlans] = useState<DailyPlan[]>([])
-  const [showAISettings, setShowAISettings] = useState(false)
+  const planEditorRef = useRef<MarkdownLiveEditorHandle | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
   const [motivationQuote, setMotivationQuote] = useState<MotivationQuote | null>(null)
   const [refreshOffset, setRefreshOffset] = useState(0)
-  const [aiGenerating, setAiGenerating] = useState(false)
   const [showMotivationModal, setShowMotivationModal] = useState(false)
   const [allQuotes, setAllQuotes] = useState<MotivationQuote[]>([])
   const [newQuoteContent, setNewQuoteContent] = useState('')
@@ -218,6 +218,48 @@ export function ObsidianLayout() {
   const [projectSearchQuery, setProjectSearchQuery] = useState('')
   const [projectSearchResults, setProjectSearchResults] = useState<ProjectSearchResult[]>([])
   const [projectSearchLoading, setProjectSearchLoading] = useState(false)
+
+  // 提醒设置（响应式，监听 localStorage 变化）
+  const [interventionEnabled, setInterventionEnabled] = useState(
+    () => localStorage.getItem('intervention_enabled') !== 'false'
+  )
+  const [interventionIntervalMin, setInterventionIntervalMin] = useState(
+    () => parseInt(localStorage.getItem('intervention_interval_min') || '30', 10)
+  )
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'intervention_enabled') setInterventionEnabled(e.newValue !== 'false')
+      if (e.key === 'intervention_interval_min') setInterventionIntervalMin(parseInt(e.newValue || '30', 10))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+  const DEFAULT_CARD_ORDER = ['motivation', 'calendar', 'current', 'review', 'progress', 'pomodoro']
+  const ALL_CARDS = [
+    { id: 'motivation', label: '每日格言' },
+    { id: 'calendar', label: '今天与计划' },
+    { id: 'current', label: '近期任务' },
+    { id: 'review', label: '复习与错题' },
+    { id: 'progress', label: '学习数据' },
+    { id: 'pomodoro', label: '番茄工作法' }
+  ]
+  const [cardOrder, setCardOrder] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('right_card_order')
+      if (saved) return JSON.parse(saved) as string[]
+    } catch { /* ignore */ }
+    return DEFAULT_CARD_ORDER
+  })
+  const [visibleCards, setVisibleCards] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('right_visible_cards')
+      if (saved) return JSON.parse(saved) as string[]
+    } catch { /* ignore */ }
+    return DEFAULT_CARD_ORDER
+  })
+  const [sortMode, setSortMode] = useState(false)
+  const dragCardRef = useRef<string | null>(null)
 
   // Chat store
   const {
@@ -273,6 +315,7 @@ export function ObsidianLayout() {
   const [reviewDueCount, setReviewDueCount] = useState(0)
   const [reviewPreviewTasks, setReviewPreviewTasks] = useState<ReviewTaskItem[]>([])
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
+  const [dailyIntervention, setDailyIntervention] = useState<DailyInterventionReport | null>(null)
 
   const topPendingTask = useMemo(
     () => (dashboardData?.today_tasks || []).find((task) => task.status !== 'completed'),
@@ -281,9 +324,6 @@ export function ObsidianLayout() {
 
   // Backend readiness polling (Feature 1)
   const [backendReady, setBackendReady] = useState(false)
-
-  // Plan checklist view mode (Feature 3)
-  const [planViewMode, setPlanViewMode] = useState<'edit' | 'checklist'>('edit')
 
   // Coach mode (Feature 5)
   const [chatMode, setChatMode] = useState<'normal' | 'coach'>('normal')
@@ -311,19 +351,16 @@ export function ObsidianLayout() {
   const loadMaterials = useCallback(async () => {
     setMaterialsLoading(true)
     try {
-      const res = await apiFetch('/api/materials/?skip=0&limit=100')
-      if (res.ok) {
-        const arr = await res.json()
-        const mapped: Material[] = (arr || []).map((m: any) => ({
-          id: m.id,
-          name: m.title,
-          uploadTime: (m.created_at || '').slice(0, 10) || dayjs().format('YYYY-MM-DD'),
-          file_type: m.file_type,
-          file_path: m.file_path,
-          project_ids: m.project_ids || [],
-        }))
-        setMaterials(mapped.reverse())
-      }
+      const arr = await apiFetch<any[]>('/api/materials/?skip=0&limit=100')
+      const mapped: Material[] = (arr || []).map((m: any) => ({
+        id: m.id,
+        name: m.title,
+        uploadTime: (m.created_at || '').slice(0, 10) || dayjs().format('YYYY-MM-DD'),
+        file_type: m.file_type,
+        file_path: m.file_path,
+        project_ids: m.project_ids || [],
+      }))
+      setMaterials(mapped.reverse())
     } catch {
       // backend may not be ready yet
     } finally {
@@ -362,12 +399,7 @@ export function ObsidianLayout() {
     }
     setProjectSearchLoading(true)
     try {
-      const res = await apiFetch(`/api/materials/search?query=${encodeURIComponent(q)}&project_id=${activeProjectId}`)
-      if (!res.ok) {
-        const err = await res.json().catch(() => null)
-        throw new Error(err?.detail || '搜索失败')
-      }
-      const data = await res.json()
+      const data = await apiFetch<any[]>(`/api/materials/search?query=${encodeURIComponent(q)}&project_id=${activeProjectId}`)
       setProjectSearchResults(data || [])
     } catch (e: any) {
       message.error(e?.message || '搜索失败')
@@ -382,22 +414,6 @@ export function ObsidianLayout() {
       void loadCurrentQuote(next)
       return next
     })
-  }
-
-  const handleGenerateAIQuote = async () => {
-    setAiGenerating(true)
-    try {
-      const created = await generateAIQuote()
-      if (!created) {
-        message.error('生成失败，请稍后重试')
-        return
-      }
-      setMotivationQuote(created)
-      await loadAllQuotes()
-      message.success('已生成新的激励语录')
-    } finally {
-      setAiGenerating(false)
-    }
   }
 
   const handleAddCustomQuote = async () => {
@@ -588,6 +604,7 @@ export function ObsidianLayout() {
       await loadWrongQuestions()
       await loadReviewOverview()
       await loadDashboardOverview()
+      await loadDailyIntervention()
       // Sync pomodoro data
       await syncPendingRecords()
     }
@@ -828,27 +845,40 @@ export function ObsidianLayout() {
     }
   }
 
-  // ---- Feature 3: Plan task helpers ----
-  const parsePlanLines = (text: string) => {
-    return text.split('\n').map((line, index) => {
-      const unchecked = /^- \[ \] (.*)/.exec(line)
-      const checked = /^- \[x\] (.*)/.exec(line)
-      if (unchecked) return { index, type: 'task' as const, checked: false, label: unchecked[1], raw: line }
-      if (checked) return { index, type: 'task' as const, checked: true, label: checked[1], raw: line }
-      return { index, type: 'text' as const, checked: false, label: line, raw: line }
-    })
-  }
+  const loadDailyIntervention = async () => {
+    try {
+      const report = await getDailyIntervention()
+      setDailyIntervention(report)
+      if (!report || !report.should_push) return
 
-  const toggleTaskLine = (text: string, lineIndex: number): string => {
-    const lines = text.split('\n')
-    const line = lines[lineIndex]
-    if (!line) return text
-    if (/^- \[ \] /.test(line)) {
-      lines[lineIndex] = line.replace('- [ ] ', '- [x] ')
-    } else if (/^- \[x\] /.test(line)) {
-      lines[lineIndex] = line.replace('- [x] ', '- [ ] ')
+      // 每2小时最多提醒一次（key 包含时间段）
+      const slot = Math.floor(new Date().getHours() / 2)
+      const key = `intervention_notified_${report.date}_slot${slot}`
+      if (localStorage.getItem(key)) return
+      localStorage.setItem(key, '1')
+
+      const notifyFn = report.risk_level === 'high' ? notification.warning : notification.info
+      notifyFn({
+        message: report.push_title,
+        description: (
+          <div>
+            <div style={{ marginBottom: 8 }}>{report.push_body}</div>
+            {report.suggestions.slice(0, 2).map((s, i) => (
+              <div key={i} style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>• {s}</div>
+            ))}
+          </div>
+        ),
+        placement: 'topRight',
+        duration: report.risk_level === 'high' ? 0 : 6,
+        btn: (
+          <Button size="small" type="primary" onClick={() => navigate('/intervention')}>
+            查看详情
+          </Button>
+        ),
+      })
+    } catch {
+      setDailyIntervention(null)
     }
-    return lines.join('\n')
   }
 
   const getCompletionStats = (text: string): { completed: number; total: number } => {
@@ -872,10 +902,20 @@ export function ObsidianLayout() {
       void loadWrongQuestions()
       void loadReviewOverview()
       void loadDashboardOverview()
+      void loadDailyIntervention()
     }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [loadMaterials, loadProjects, loadConversations, backendReady])
+
+    // 定时主动检查学习状态（响应式，依赖用户设置）
+    const interventionTimer = interventionEnabled
+      ? setInterval(() => { if (backendReady) void loadDailyIntervention() }, interventionIntervalMin * 60 * 1000)
+      : null
+
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      if (interventionTimer) clearInterval(interventionTimer)
+    }
+  }, [loadMaterials, loadProjects, loadConversations, backendReady, interventionEnabled, interventionIntervalMin])
 
   const handleChatScroll = () => {
     const el = chatScrollRef.current
@@ -990,12 +1030,21 @@ export function ObsidianLayout() {
       setShowPomodoroModal(true)
       return
     }
-    startTimer(pomodoroConfig.taskName, pomodoroConfig.duration)
+    startTimer(pomodoroConfig.taskName, pomodoroConfig.duration, pomodoroConfig.taskId)
   }
 
   const handleCompletePomodoro = () => {
     completeTimer()
     message.success('番茄钟完成！已记录到统计中')
+    // 写入学习行为记忆，供 AI 感知学习状态
+    if (pomodoroConfig.taskName) {
+      void createMemory({
+        memory_key: 'last_pomodoro_task',
+        memory_value: `${pomodoroConfig.taskName}（${pomodoroConfig.duration}分钟，${new Date().toLocaleDateString('zh-CN')}）`,
+        category: 'style',
+        confidence: 0.9,
+      })
+    }
   }
 
   const handleAbandonPomodoro = () => {
@@ -1004,7 +1053,7 @@ export function ObsidianLayout() {
   }
 
   const handleConfirmStopReason = async (reason: 'early_done' | 'interrupted' | 'distracted') => {
-    const { currentBackendId, duration, startedAt, pausedTotalMs } = usePomodoroStore.getState()
+    const { currentBackendId, startedAt, pausedTotalMs } = usePomodoroStore.getState()
     if (currentBackendId) {
       const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt - pausedTotalMs) : 0
       const actualMinutes = Math.max(0.1, Math.round(elapsedMs / 1000 / 60 * 10) / 10)
@@ -1023,12 +1072,31 @@ export function ObsidianLayout() {
 
   const handleStartFocusFromToday = () => {
     if (!pomodoroConfig.taskName && topPendingTask?.title) {
-      setPomodoroConfig((prev) => ({ ...prev, taskName: topPendingTask.title }))
-      startTimer(topPendingTask.title, pomodoroConfig.duration)
+      setPomodoroConfig((prev) => ({ ...prev, taskName: topPendingTask.title, taskId: topPendingTask.id }))
+      startTimer(topPendingTask.title, pomodoroConfig.duration, topPendingTask.id)
       return
     }
     handleStartPomodoro()
   }
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('pending_pomodoro_task')
+      if (!raw) return
+      const parsed = JSON.parse(raw) as { taskId?: number; title?: string }
+      const pendingTitle = parsed?.title?.trim() || ''
+      if (pendingTitle) {
+        setPomodoroConfig((prev) => ({
+          ...prev,
+          taskName: pendingTitle,
+          taskId: parsed.taskId ?? null,
+        }))
+      }
+      localStorage.removeItem('pending_pomodoro_task')
+    } catch {
+      localStorage.removeItem('pending_pomodoro_task')
+    }
+  }, [])
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -1156,11 +1224,7 @@ export function ObsidianLayout() {
   // 删除资料
   const deleteMaterial = async (id: number) => {
     try {
-      const res = await apiFetch(`/api/materials/${id}`, { method: 'DELETE' })
-      if (!res.ok) {
-        const err = await res.json().catch(() => null)
-        throw new Error(err?.detail || '删除失败')
-      }
+      await apiFetch(`/api/materials/${id}`, { method: 'DELETE' })
 
       setMaterials((prev) => prev.filter((m) => m.id !== id))
       setSelectedMaterialIds((prev) => {
@@ -1184,18 +1248,15 @@ export function ObsidianLayout() {
     const startStr = start.format('YYYY-MM-DD')
     const endStr = end.format('YYYY-MM-DD')
     try {
-      const res = await apiFetch(`/api/plans/?start=${startStr}&end=${endStr}`)
-      if (res.ok) {
-        const arr = await res.json()
-        const list: DailyPlan[] = (arr || []).map((p: any) => ({ date: p.date, content: p.content || '' }))
-        setWeeklyPlans(list)
-        // 合并到缓存，使日历上的小绿点即时显示
-        setDailyPlans((prev) => {
-          const next = { ...prev }
-          for (const p of list) next[p.date] = p.content
-          return next
-        })
-      }
+      const arr = await apiFetch<any[]>(`/api/plans/?start=${startStr}&end=${endStr}`)
+      const list: DailyPlan[] = (arr || []).map((p: any) => ({ date: p.date, content: p.content || '' }))
+      setWeeklyPlans(list)
+      // 合并到缓存，使日历上的小绿点即时显示
+      setDailyPlans((prev) => {
+        const next = { ...prev }
+        for (const p of list) next[p.date] = p.content
+        return next
+      })
     } catch {
       // ignore
     }
@@ -1207,14 +1268,9 @@ export function ObsidianLayout() {
     const dateStr = date.format('YYYY-MM-DD')
       ; (async () => {
         try {
-          const res = await apiFetch(`/api/plans/${dateStr}`)
-          if (res.ok) {
-            const j = await res.json()
-            setCurrentPlan(j.content || '')
-            setDailyPlans((prev) => ({ ...prev, [dateStr]: j.content || '' }))
-          } else {
-            setCurrentPlan(dailyPlans[dateStr] || '')
-          }
+          const j = await apiFetch<any>(`/api/plans/${dateStr}`)
+          setCurrentPlan(j.content || '')
+          setDailyPlans((prev) => ({ ...prev, [dateStr]: j.content || '' }))
         } catch {
           setCurrentPlan(dailyPlans[dateStr] || '')
         } finally {
@@ -1228,15 +1284,11 @@ export function ObsidianLayout() {
       const dateStr = selectedDate.format('YYYY-MM-DD')
         ; (async () => {
           try {
-            const res = await apiFetch(`/api/plans/${dateStr}`, {
+            await apiFetch(`/api/plans/${dateStr}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ content: currentPlan }),
             })
-            if (!res.ok) {
-              const err = await res.json().catch(() => null)
-              throw new Error(err?.detail || '保存失败')
-            }
             setDailyPlans((prev) => ({ ...prev, [dateStr]: currentPlan }))
             message.success('计划已保存')
             setShowPlanModal(false)
@@ -1247,6 +1299,14 @@ export function ObsidianLayout() {
         })()
     }
   }
+
+  useEffect(() => {
+    if (!showPlanModal) return
+    const timer = window.setTimeout(() => {
+      planEditorRef.current?.focus()
+    }, 100)
+    return () => window.clearTimeout(timer)
+  }, [showPlanModal])
 
   const dateCellRender = (value: Dayjs) => {
     const dateStr = value.format('YYYY-MM-DD')
@@ -1265,7 +1325,7 @@ export function ObsidianLayout() {
         justifyContent: 'center',
         alignItems: 'center',
         height: '100vh',
-        background: '#faf6f0',
+        background: 'var(--bg-primary)',
         gap: 16,
       }}>
         <Spin size="large" />
@@ -1275,18 +1335,126 @@ export function ObsidianLayout() {
     )
   }
 
+  const navItems = [
+    { key: '/', icon: <MessageOutlined />, label: '学习助手' },
+    { key: '/dashboard', icon: <DashboardOutlined />, label: '今日概览' },
+    { key: '/review', icon: <BookOutlined />, label: '复习' },
+    { key: '/goals', icon: <CheckSquareOutlined />, label: '任务目标' },
+    { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本' },
+    { key: '/notes', icon: <FileTextOutlined />, label: '笔记' },
+    { key: '/anki', icon: <CreditCardOutlined />, label: 'Anki卡片' },
+    { key: '/plans', icon: <CalendarOutlined />, label: '学习计划' },
+  ]
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      {/* 左侧边栏 */}
+    <Layout style={{ minHeight: '100vh', position: 'relative' }}>
+      {/* Outer 64px Global Icon Sidebar */}
+      <Sider
+        width={64}
+        style={{
+          background: 'var(--bg-surface)',
+          borderRight: '1px solid var(--border-light)',
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: '16px 0',
+          zIndex: 100,
+        }}
+      >
+        <div style={{ 
+          width: 40, height: 40, borderRadius: '12px', 
+          background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 32,
+          boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)'
+        }}>
+          S
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, width: '100%', alignItems: 'center' }}>
+          {navItems.map(item => {
+            const isActive = window.location.pathname === item.key || (item.key !== '/' && window.location.pathname.startsWith(item.key))
+            return (
+              <Tooltip key={item.key} title={item.label} placement="right">
+                <div
+                  onClick={() => navigate(item.key)}
+                  style={{
+                    width: 44, height: 44, borderRadius: '12px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', fontSize: 20,
+                    color: isActive ? 'var(--brand-400)' : 'var(--text-secondary)',
+                    background: isActive ? 'var(--primary-100)' : 'transparent',
+                    transition: 'all 0.2s',
+                    position: 'relative',
+                  }}
+                >
+                  {isActive && (
+                    <div style={{
+                      position: 'absolute', left: -10, top: 12, bottom: 12, width: 4, 
+                      background: 'var(--brand-500)', borderRadius: '0 4px 4px 0'
+                    }} />
+                  )}
+                  {item.icon}
+                </div>
+              </Tooltip>
+            )
+          })}
+        </div>
+        
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
+          <Tooltip title={isRunning ? `🍅 ${formatTime(remainingTime)}` : isPaused ? `⏸ ${formatTime(remainingTime)}` : '专注番茄钟'} placement="right">
+            <div 
+              onClick={() => setShowPomodoroModal(true)}
+              style={{ 
+                width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', 
+                color: isRunning ? 'var(--error)' : isPaused ? 'var(--warning)' : 'var(--brand-400)', 
+                fontSize: 20, 
+                background: isRunning ? 'rgba(251, 113, 133, 0.1)' : isPaused ? 'rgba(251, 191, 36, 0.1)' : 'rgba(99, 102, 241, 0.1)', 
+                borderRadius: '12px', transition: 'all 0.2s',
+                border: isRunning || isPaused ? `1px solid ${isRunning ? 'var(--error)' : 'var(--warning)'}` : 'none'
+              }}
+              onMouseOver={(e) => {
+                if (!isRunning && !isPaused) e.currentTarget.style.background = 'rgba(99, 102, 241, 0.2)'
+              }}
+              onMouseOut={(e) => {
+                if (!isRunning && !isPaused) e.currentTarget.style.background = 'rgba(99, 102, 241, 0.1)'
+              }}
+            >
+              ⏱
+            </div>
+          </Tooltip>
+          <Tooltip title="设置" placement="right">
+            <div style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 20 }} onClick={() => setShowSettings(true)}>
+              <SettingOutlined />
+            </div>
+          </Tooltip>
+        </div>
+      </Sider>
+
+      {bgImage && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none',
+          backgroundImage: `url(${bgImage})`,
+          backgroundSize: 'cover', backgroundPosition: 'center',
+          opacity: bgOpacity,
+        }} />
+      )}
+      {/* 第二层左侧边栏（对话/资料库） */}
       <Sider
         width={effectiveLeftWidth}
         style={{
-          background: 'var(--bg-secondary)',
-          borderRight: '1px solid #ede4d9',
+          background: 'var(--bg-surface)',
+          borderRight: '1px solid var(--border-light)',
           overflow: 'hidden',
           height: '100vh',
           position: 'fixed',
-          left: 0,
+          left: 64, // Shifted right by 64px
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
         {leftCollapsed ? (
@@ -1323,7 +1491,7 @@ export function ObsidianLayout() {
                   </span>
                 ),
                 children: (
-                  <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: '#faf5ed' }}>
+                  <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-primary)' }}>
                     <ConversationSidebar
                       expandTarget={leftExpandTarget}
                       onExpandTargetHandled={() => setLeftExpandTarget(null)}
@@ -1347,7 +1515,7 @@ export function ObsidianLayout() {
                   </span>
                 ),
                 children: (
-                <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: '#faf5ed' }}>
+                <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-primary)' }}>
                   {/* 资料 */}
                   <div style={{ padding: '16px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -1519,7 +1687,7 @@ export function ObsidianLayout() {
                                   }
                                 }}
                                 title="开始学习"
-                                style={{ color: '#52c41a', fontSize: 11 }}
+                                style={{ color: 'var(--success)', fontSize: 11 }}
                               >
                                 学习
                               </Button>,
@@ -1646,11 +1814,11 @@ export function ObsidianLayout() {
                                 multiple
                                 beforeUpload={handleUpload}
                                 showUploadList={false}
-                                accept=".pdf,.doc,.docx,.txt,.md,.epub"
+                                accept=".pdf,.docx,.txt,.md"
                               >
                                 <p><UploadOutlined style={{ fontSize: 24, color: 'var(--text-secondary)' }} /></p>
                                 <p style={{ fontSize: 13, color: 'var(--text-primary)', margin: '8px 0 4px' }}>点击或拖拽文件到此处上传</p>
-                                <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
+                                <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
                               </Upload.Dragger>
                             </div>
                           ),
@@ -1809,7 +1977,7 @@ export function ObsidianLayout() {
           className={`panel-splitter${dragging === 'left' ? ' active' : ''}`}
           style={{
             position: 'fixed',
-            left: effectiveLeftWidth - 3,
+            left: effectiveLeftWidth + 64 - 3,
             top: 0,
             width: 6,
             height: '100vh',
@@ -1822,100 +1990,51 @@ export function ObsidianLayout() {
       )}
 
       {/* 中间内容区 */}
-      <Layout style={{ marginLeft: effectiveLeftWidth, marginRight: rightWidth, background: 'var(--bg-primary)' }}>
-        <Content style={{ padding: '0', background: 'var(--bg-primary)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <Layout style={{ marginLeft: effectiveLeftWidth + 64, marginRight: rightWidth, background: 'transparent' }}>
+        <Content style={{ padding: '0', background: 'transparent', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
           <div style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 24px', display: 'flex', flexDirection: 'column', flex: 1 }}>
-            {/* Top toolbar - clean and minimal */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '14px 0 10px',
-              borderBottom: '1px solid var(--border-light)',
-              marginBottom: 4,
-              flexWrap: 'wrap',
-            }}>
-              <Button
-                type="text"
-                size="small"
-                icon={leftCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-                onClick={() => {
-                  if (leftCollapsed) {
-                    setLeftCollapsed(false)
-                    return
-                  }
-                  setLeftExpandTarget(null)
-                  setLeftCollapsed(true)
+            {/* Top toolbar removed, replaced by PageShell global nav */}
+            <div style={{ height: 16 }} />
+              <TodayFocusActions
+                todayTaskCount={dashboardData?.today_task_count || 0}
+                pendingCount={dashboardData?.today_pending_count || 0}
+                dueReviewCount={reviewDueCount}
+                studyMinutes={dashboardData?.today_study_minutes || 0}
+                focusMinutes={pomodoroConfig.duration}
+                onOpenGoals={() => navigate('/goals')}
+                onOpenReview={() => navigate('/review')}
+                onStartFocus={handleStartFocusFromToday}
+                onOpenFeynman={() => {
+                  navigate('/goals')
+                  message.info('请在任务中点击“评估输出”，完成今日费曼复盘')
                 }}
-                style={{ color: 'var(--text-tertiary)' }}
-              />
-              <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>AI 学习助手</span>
-              <div style={{ flex: 1 }} />
-
-              {/* Mode toggle */}
-              <Segmented
-                size="small"
-                value={focusMode ? 'focus' : 'full'}
-                onChange={(v) => setFocusMode(v === 'focus')}
-                options={[
-                  { label: '全量', value: 'full' },
-                  { label: '聚焦', value: 'focus' },
-                ]}
-                style={{ borderRadius: 'var(--radius-sm)' }}
+                onOpenEDA={() => navigate('/eda')}
+                onOpenIntervention={() => navigate('/intervention')}
               />
 
-              {/* Quick nav buttons */}
-              <div style={{ display: 'flex', gap: 4 }}>
-                <Badge count={reviewDueCount} size="small" offset={[-4, 0]}>
-                  <Button size="small" type="text" onClick={() => navigate('/review')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                    复习
-                  </Button>
-                </Badge>
-                <Button size="small" type="text" onClick={() => navigate('/goals')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                  任务
-                </Button>
-                <Button size="small" type="text" onClick={() => navigate('/wrong-questions')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                  错题
-                </Button>
-                {!focusMode && (
-                  <>
-                    <Button size="small" type="text" onClick={() => navigate('/notes')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                      笔记
-                    </Button>
-                    <Button size="small" type="text" onClick={() => navigate('/dashboard')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                      驾驶舱
-                    </Button>
-                    <Button size="small" type="text" onClick={() => navigate('/profile')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                      我的画像
-                    </Button>
-                    <Button size="small" type="text" onClick={() => navigate('/prompts')} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                      Prompt
-                    </Button>
-                  </>
-                )}
-              </div>
-
-              <Button
-                type="text"
-                icon={<SettingOutlined />}
-                onClick={() => setShowAISettings(true)}
-                style={{ color: 'var(--text-tertiary)' }}
-                title="AI 提供商设置"
-              />
-            </div>
-            <TodayFocusActions
-              todayTaskCount={dashboardData?.today_task_count || 0}
-              pendingCount={dashboardData?.today_pending_count || 0}
-              dueReviewCount={reviewDueCount}
-              studyMinutes={dashboardData?.today_study_minutes || 0}
-              onOpenGoals={() => navigate('/goals')}
-              onOpenReview={() => navigate('/review')}
-              onStartFocus={handleStartFocusFromToday}
-              onOpenFeynman={() => {
-                navigate('/goals')
-                message.info('请在任务中点击“评估输出”，完成今日费曼复盘')
-              }}
-            />
+              {dailyIntervention && (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    border: '1px solid var(--border-light)',
+                    borderRadius: 'var(--radius-md)',
+                    background: dailyIntervention.risk_level === 'high' ? 'rgba(251, 113, 133, 0.1)' : dailyIntervention.risk_level === 'medium' ? 'rgba(251, 191, 36, 0.1)' : 'rgba(45, 212, 191, 0.1)',
+                    padding: '8px 10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>{dailyIntervention.push_title}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {dailyIntervention.push_body}
+                    </div>
+                  </div>
+                  <Button size="small" onClick={() => navigate('/intervention')}>查看</Button>
+                </div>
+              )}
 
             {!focusMode && <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8, padding: '6px 0' }}>
               <Tag style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>{activeConversationId ? `对话 #${activeConversationId}` : '未选择对话'}</Tag>
@@ -1951,7 +2070,7 @@ export function ObsidianLayout() {
             </div>}
 
             {!focusMode && activeProjectId && (
-              <div style={{ marginBottom: 8, padding: '8px 10px', border: '1px solid #f0e8dd', borderRadius: 8, background: '#faf6f0' }}>
+              <div style={{ marginBottom: 8, padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>当前项目默认资料（自动注入）</span>
                   <Button
@@ -1981,8 +2100,8 @@ export function ObsidianLayout() {
             {!focusMode && (selectedMaterialIds.size > 0 || detectedMaterials.length > 0) && (
               <div style={{
                 padding: '8px 12px',
-                background: '#fef9ef',
-                borderRadius: 6,
+                background: 'var(--accent-50)',
+                borderRadius: 'var(--radius-md)',
                 marginBottom: 4,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: selectedMaterialIds.size > 0 ? 4 : 0 }}>
@@ -2109,10 +2228,10 @@ export function ObsidianLayout() {
                 <div style={{
                   padding: '6px 12px',
                   marginBottom: 6,
-                  background: 'linear-gradient(90deg, #fef9ef, #fdf2e9)',
-                  borderRadius: 8,
+                  background: 'var(--accent-50)',
+                  borderRadius: 'var(--radius-md)',
                   fontSize: 12,
-                  color: '#6b5b48',
+                  color: 'var(--accent-700)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
@@ -2138,16 +2257,16 @@ export function ObsidianLayout() {
                 <div style={{
                   padding: '10px 16px',
                   marginBottom: 8,
-                  background: 'linear-gradient(135deg, #fef9ef, #fdf2e9)',
-                  borderRadius: 12,
-                  border: '1px solid #f5e6d3',
+                  background: 'var(--accent-50)',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border-light)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 10,
                   animation: 'fadeIn 0.3s ease',
                 }}>
                   <span style={{ fontSize: 20 }}>{progressFeedback.emoji}</span>
-                  <span style={{ fontSize: 13, color: '#8b6914', flex: 1 }}>
+                  <span style={{ fontSize: 13, color: 'var(--accent-700)', flex: 1 }}>
                     {progressFeedback.message}
                   </span>
                   <Button
@@ -2160,7 +2279,7 @@ export function ObsidianLayout() {
                   </Button>
                 </div>
               )}
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-xl)', padding: 12, boxShadow: 'var(--shadow-md)' }}>
+              <div style={{ background: 'var(--bg-secondary)', border: 'none', borderRadius: 'var(--radius-xl)', padding: 12, boxShadow: 'var(--shadow-md)' }}>
               {/* Coach mode toggle */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                 <Segmented
@@ -2221,7 +2340,7 @@ export function ObsidianLayout() {
                       <img
                         src={`data:image/png;base64,${img}`}
                         alt={`待发送图片 ${idx + 1}`}
-                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: '1px solid #ede4d9' }}
+                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-light)' }}
                       />
                       <CloseCircleFilled
                         onClick={() => setPendingImages(prev => prev.filter((_, i) => i !== idx))}
@@ -2232,7 +2351,7 @@ export function ObsidianLayout() {
                           fontSize: 18,
                           color: '#ff4d4f',
                           cursor: 'pointer',
-                          background: '#fff',
+                          background: 'var(--bg-elevated)',
                           borderRadius: '50%',
                         }}
                       />
@@ -2244,7 +2363,7 @@ export function ObsidianLayout() {
               <input
                 ref={imageInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   const file = e.target.files?.[0]
@@ -2346,7 +2465,7 @@ export function ObsidianLayout() {
         width={rightWidth}
         style={{
           background: 'var(--bg-secondary)',
-          borderLeft: '1px solid var(--border-color)',
+          borderLeft: '1px solid var(--border-light)',
           overflow: 'hidden',
           height: '100vh',
           position: 'fixed',
@@ -2354,193 +2473,179 @@ export function ObsidianLayout() {
         }}
       >
         <div style={{ height: '100%', overflowY: 'auto', padding: '16px' }}>
-        {/* 今日激励 */}
-        {!focusMode && <Card
-          size="small"
-          title={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 14 }}>💪</span>
-              <span style={{ fontSize: 13, fontWeight: 500 }}>今日激励</span>
-            </div>
-          }
-          extra={
-            <div style={{ display: 'flex', gap: 2 }}>
-              <Button type="text" size="small" onClick={handleRefreshQuote} title="换一句" style={{ fontSize: 13 }}>🔄</Button>
-              <Button
-                type="text"
-                size="small"
-                onClick={() => {
-                  setShowMotivationModal(true)
-                  void loadMotivationSettings()
-                  void loadAllQuotes()
-                }}
-                title="管理"
-                style={{ fontSize: 13 }}
-              >
-                ⚙️
-              </Button>
-            </div>
-          }
-          style={{ marginBottom: 12 }}
-        >
-          <div style={{ textAlign: 'center', padding: '12px 4px' }}>
-            <div style={{ fontSize: 14, fontStyle: 'italic', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-              {motivationQuote?.content || '加载中...'}
-            </div>
-            {motivationQuote?.author && (
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
-                —— {motivationQuote.author}
-              </div>
-            )}
-          </div>
-          <div style={{ textAlign: 'center', marginTop: 10 }}>
-            <Button type="dashed" size="small" loading={aiGenerating} onClick={handleGenerateAIQuote} style={{ borderRadius: 'var(--radius-sm)' }}>
-              ✨ AI 生成激励
+        {/* 设置小组件按钮 */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                {
+                  key: 'sort',
+                  label: sortMode ? '完成排序' : '开启排序模式',
+                  icon: sortMode ? <CheckSquareOutlined /> : <MenuOutlined />,
+                  onClick: () => setSortMode(v => !v)
+                },
+                { type: 'divider' },
+                ...ALL_CARDS.map(card => ({
+                  key: card.id,
+                  label: (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                      <span>{card.label}</span>
+                      <Switch 
+                        size="small" 
+                        checked={visibleCards.includes(card.id)} 
+                        onChange={(checked) => {
+                          setVisibleCards(prev => {
+                            const next = checked ? [...prev, card.id] : prev.filter(id => id !== card.id)
+                            localStorage.setItem('right_visible_cards', JSON.stringify(next))
+                            return next
+                          })
+                        }} 
+                      />
+                    </div>
+                  )
+                }))
+              ]
+            }}
+          >
+            <Button size="small" type={sortMode ? 'primary' : 'text'} icon={<SettingOutlined />}>
+              {sortMode ? '完成排序' : '自定义'}
             </Button>
-          </div>
-        </Card>}
-        {/* 日历 - 可折叠 */}
-        {!focusMode && <Card
-          size="small"
-          title={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <CalendarOutlined style={{ color: 'var(--accent-600)' }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>日历</span>
-            </div>
-          }
-          extra={
-            <Button
-              type="text"
+          </Dropdown>
+        </div>
+        {/* 右侧卡片按 cardOrder 动态渲染 */}
+        {cardOrder.filter(id => visibleCards.includes(id)).map(cardId => {
+          const dragProps = sortMode ? {
+            draggable: true,
+            onDragStart: () => { dragCardRef.current = cardId },
+            onDragOver: (e: React.DragEvent) => e.preventDefault(),
+            onDrop: () => {
+              if (!dragCardRef.current || dragCardRef.current === cardId) return
+              const from = dragCardRef.current
+              setCardOrder(prev => {
+                const next = [...prev]
+                const fi = next.indexOf(from), ti = next.indexOf(cardId)
+                if (fi < 0 || ti < 0) return prev
+                next.splice(fi, 1)
+                next.splice(ti, 0, from)
+                localStorage.setItem('right_card_order', JSON.stringify(next))
+                return next
+              })
+              dragCardRef.current = null
+            },
+            style: { cursor: 'grab', opacity: 1, marginBottom: 0 } as React.CSSProperties,
+          } : {}
+
+          if (cardId === 'motivation') return (
+            <div key="motivation" {...dragProps}>
+            {!focusMode && <Card
               size="small"
-              icon={calendarExpanded ? <UpOutlined /> : <DownOutlined />}
-              onClick={() => setCalendarExpanded(!calendarExpanded)}
-            />
-          }
-          style={{ marginBottom: 12 }}
-        >
-          {calendarExpanded ? (
-            <Calendar
-              fullscreen={false}
-              onSelect={onDateSelect}
-              cellRender={dateCellRender}
-            />
-          ) : (
-            <div style={{ textAlign: 'center', padding: '4px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>
-              点击展开查看完整日历
-            </div>
-          )}
-        </Card>}
-
-        {/* 当前学习信息 */}
-        <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>当前学习</span>} style={{ marginBottom: 12 }}>
-          <p style={{ color: 'var(--text-tertiary)', fontSize: 13, margin: 0 }}>暂未选择章节</p>
-        </Card>
-
-        {/* 复习任务概览 */}
-        <Card
-          size="small"
-          title={<span style={{ fontSize: 13, fontWeight: 500 }}>复习任务</span>}
-          style={{ marginBottom: 12 }}
-          extra={
-            <Button type="link" size="small" onClick={() => navigate('/review')} style={{ fontSize: 12 }}>
-              去复习
-            </Button>
-          }
-        >
-          <div style={{ marginBottom: 10 }}>
-            <Tag color={reviewDueCount > 0 ? 'red' : 'green'}>
-              今日待复习 {reviewDueCount}
-            </Tag>
-          </div>
-          <List
-            size="small"
-            dataSource={reviewPreviewTasks}
-            locale={{ emptyText: '暂无到期任务' }}
-            renderItem={(task) => (
-              <List.Item
-                style={{ padding: '6px 0', cursor: 'pointer' }}
-                onClick={() => navigate('/review')}
-              >
-                <div style={{ width: '100%' }}>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--text-primary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {task.content || '复习任务'}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                    {task.item_type === 'chapter' ? '章节复习' : '错题复习'} · {task.chapter_title || '未分类'}
-                  </div>
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 14 }}>💪</span>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>今日激励</span>
                 </div>
-              </List.Item>
-            )}
-          />
-        </Card>
-
-        {/* 学习进度 */}
-        <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日进度</span>} style={{ marginBottom: 12 }}>
-          {(() => {
-            const totalTasks = dashboardData?.today_task_count || 0
-            const completedTasks = dashboardData?.today_completed_count || 0
-            const taskPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
-            return (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                  完成任务（{completedTasks}/{totalTasks}）
+              }
+              extra={
+                <div style={{ display: 'flex', gap: 2 }}>
+                  <Button type="text" size="small" onClick={handleRefreshQuote} title="换一句" style={{ fontSize: 13 }}>🔄</Button>
+                  <Button type="text" size="small" onClick={() => { setShowMotivationModal(true); void loadMotivationSettings(); void loadAllQuotes() }} title="管理" style={{ fontSize: 13 }}>⚙️</Button>
                 </div>
-                <Progress percent={taskPercent} size="small" status="active" strokeColor="var(--accent-500)" />
+              }
+              style={{ marginBottom: 12 }}
+            >
+              <div style={{ textAlign: 'center', padding: '12px 4px' }}>
+                <div style={{ fontSize: 14, fontStyle: 'italic', color: 'var(--text-secondary)', lineHeight: 1.7 }}>{motivationQuote?.content || '加载中...'}</div>
+                {motivationQuote?.author && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>—— {motivationQuote.author}</div>}
               </div>
-            )
-          })()}
-        </Card>
-
-        {/* 番茄钟 */}
-        <Card
-          size="small"
-          title={
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 14 }}>🍅</span>
-              <span style={{ fontSize: 13, fontWeight: 500 }}>番茄工作法</span>
-              <span
-                title={backendOnline ? '已连接后端' : '离线模式'}
-                style={{
-                  display: 'inline-block',
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  background: backendOnline ? 'var(--success)' : 'var(--gray-300)',
-                  marginLeft: 4,
-                }}
-              />
-            </span>
-          }
-          extra={
-            <div style={{ display: 'flex', gap: 4 }}>
-              <Button
-                type="text"
-                size="small"
-                icon={<BarChartOutlined />}
-                onClick={() => setShowStatsModal(true)}
-                title="查看统计"
-              />
-              <Button
-                type="link"
-                size="small"
-                onClick={() => setShowPomodoroModal(true)}
-              >
-                设置
-              </Button>
+            </Card>}
             </div>
-          }
-          style={{
-            marginBottom: 16,
-          }}
-        >
+          )
+
+          if (cardId === 'calendar') return (
+            <div key="calendar" {...dragProps}>
+            {!focusMode && <Card
+              size="small"
+              title={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><CalendarOutlined style={{ color: 'var(--accent-600)' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>日历</span></div>}
+              extra={<Button type="text" size="small" icon={calendarExpanded ? <UpOutlined /> : <DownOutlined />} onClick={() => setCalendarExpanded(!calendarExpanded)} />}
+              style={{ marginBottom: 12 }}
+            >
+              {calendarExpanded ? (
+                <div className="compact-calendar"><Calendar fullscreen={false} onSelect={onDateSelect} cellRender={dateCellRender} /></div>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '4px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>点击展开查看完整日历</div>
+              )}
+            </Card>}
+            </div>
+          )
+
+          if (cardId === 'current') return (
+            <div key="current" {...dragProps}>
+            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>当前学习</span>} style={{ marginBottom: 12 }}>
+              <p style={{ color: 'var(--text-tertiary)', fontSize: 13, margin: 0 }}>暂未选择章节</p>
+            </Card>
+            </div>
+          )
+
+          if (cardId === 'review') return (
+            <div key="review" {...dragProps}>
+            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>复习任务</span>} style={{ marginBottom: 12 }}
+              extra={<Button type="link" size="small" onClick={() => navigate('/review')} style={{ fontSize: 12 }}>去复习</Button>}
+            >
+              <div style={{ marginBottom: 10 }}>
+                <Tag color={reviewDueCount > 0 ? 'red' : 'green'}>今日待复习 {reviewDueCount}</Tag>
+              </div>
+              <List size="small" dataSource={reviewPreviewTasks} locale={{ emptyText: '暂无到期任务' }}
+                renderItem={(task) => (
+                  <List.Item style={{ padding: '6px 0', cursor: 'pointer' }} onClick={() => navigate('/review')}>
+                    <div style={{ width: '100%' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{task.content || '复习任务'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{task.item_type === 'chapter' ? '章节复习' : '错题复习'} · {task.chapter_title || '未分类'}</div>
+                    </div>
+                  </List.Item>
+                )}
+              />
+            </Card>
+            </div>
+          )
+
+          if (cardId === 'progress') return (
+            <div key="progress" {...dragProps}>
+            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日进度</span>} style={{ marginBottom: 12 }}>
+              {(() => {
+                const totalTasks = dashboardData?.today_task_count || 0
+                const completedTasks = dashboardData?.today_completed_count || 0
+                const taskPercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
+                return (
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>完成任务（{completedTasks}/{totalTasks}）</div>
+                    <Progress percent={taskPercent} size="small" status="active" strokeColor="var(--accent-500)" />
+                  </div>
+                )
+              })()}
+            </Card>
+            </div>
+          )
+
+          if (cardId === 'pomodoro') return (
+            <div key="pomodoro" {...dragProps}>
+            <Card
+              size="small"
+              title={
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 14 }}>🍅</span>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>番茄工作法</span>
+                  <span title={backendOnline ? '已连接后端' : '离线模式'} style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: backendOnline ? 'var(--success)' : 'var(--gray-300)', marginLeft: 4 }} />
+                </span>
+              }
+              extra={
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <Button type="text" size="small" icon={<BarChartOutlined />} onClick={() => setShowStatsModal(true)} title="查看统计" />
+                  <Button type="link" size="small" onClick={() => setShowPomodoroModal(true)}>设置</Button>
+                </div>
+              }
+              style={{ marginBottom: 16 }}
+            >
           <div style={{ textAlign: 'center' }}>
             {/* 今日统计 */}
             <Row gutter={8} style={{ marginBottom: 8 }}>
@@ -2633,6 +2738,11 @@ export function ObsidianLayout() {
             </div>
           </div>
         </Card>
+            </div>
+          )
+
+          return null
+        })}
         </div>
       </Sider>
 
@@ -2641,7 +2751,7 @@ export function ObsidianLayout() {
         title="番茄钟设置"
         open={showPomodoroModal}
         onOk={() => {
-          resetTimer()
+          resetTimer(pomodoroConfig.duration)
           setShowPomodoroModal(false)
           message.success('设置成功')
         }}
@@ -2653,7 +2763,7 @@ export function ObsidianLayout() {
             placeholder="例如：学习第一章"
             value={pomodoroConfig.taskName}
             onChange={(e) =>
-              setPomodoroConfig({ ...pomodoroConfig, taskName: e.target.value })
+              setPomodoroConfig({ ...pomodoroConfig, taskName: e.target.value, taskId: null })
             }
             style={{ marginTop: 8 }}
           />
@@ -2662,11 +2772,19 @@ export function ObsidianLayout() {
           <label>番茄时长（分钟）</label>
           <InputNumber
             min={1}
-            max={60}
+            max={120}
             value={pomodoroConfig.duration}
-            onChange={(value) =>
-              setPomodoroConfig({ ...pomodoroConfig, duration: value || 25 })
-            }
+            onChange={(value) => {
+              if (value !== null && value >= 1) {
+                setPomodoroConfig({ ...pomodoroConfig, duration: value })
+              }
+            }}
+            onBlur={(e) => {
+              const parsed = parseInt(e.target.value, 10)
+              const valid = !isNaN(parsed) && parsed >= 1 ? Math.min(parsed, 120) : pomodoroConfig.duration
+              setPomodoroConfig({ ...pomodoroConfig, duration: valid })
+            }}
+            keyboard
             style={{ marginTop: 8, width: '100%' }}
           />
         </div>
@@ -2723,443 +2841,52 @@ export function ObsidianLayout() {
         </div>
       </Modal>
 
-      {/* 日程计划弹窗 */}}
+      {/* 日程计划弹窗 */}
       <Modal
         title={`${selectedDate?.format('YYYY年MM月DD日')} 的计划`}
         open={showPlanModal}
         onOk={savePlan}
-        onCancel={() => { setShowPlanModal(false); setPlanViewMode('edit') }}
+        onCancel={() => { setShowPlanModal(false) }}
         width={600}
       >
-        <Segmented
-          value={planViewMode}
-          onChange={(v) => setPlanViewMode(v as 'edit' | 'checklist')}
-          options={[
-            { label: '编辑', value: 'edit' },
-            { label: '清单', value: 'checklist' },
-          ]}
-          style={{ marginBottom: 12 }}
+        <MarkdownLiveEditor
+          ref={planEditorRef}
+          value={currentPlan}
+          onChange={setCurrentPlan}
+          height="420px"
+          placeholder={`输入今日计划或学习记录...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题\n- [ ] 整理笔记`}
         />
-        {planViewMode === 'edit' ? (
-          <>
-            <TextArea
-              placeholder={`输入今日计划或学习记录...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题\n- [ ] 整理笔记`}
-              value={currentPlan}
-              onChange={(e) => setCurrentPlan(e.target.value)}
-              autoSize={{ minRows: 8, maxRows: 15 }}
-            />
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
-              使用 <code>- [ ]</code> 创建可勾选任务，切换到「清单」视图查看和勾选
-            </div>
-          </>
-        ) : (
-          <div style={{ minHeight: 160, padding: '8px 0' }}>
-            {parsePlanLines(currentPlan).map((line) => (
-              line.type === 'task' ? (
-                <div key={line.index} style={{ padding: '4px 0' }}>
-                  <Checkbox
-                    checked={line.checked}
-                    onChange={() => {
-                      const updated = toggleTaskLine(currentPlan, line.index)
-                      setCurrentPlan(updated)
-                      // Auto-save on toggle
-                      if (selectedDate) {
-                        const dateStr = selectedDate.format('YYYY-MM-DD')
-                        apiFetch(`/api/plans/${dateStr}`, {
-                          method: 'PUT',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ content: updated }),
-                        }).then(() => {
-                          setDailyPlans((prev) => ({ ...prev, [dateStr]: updated }))
-                          loadWeeklyPlans()
-                        }).catch(() => {})
-                      }
-                    }}
-                  >
-                    <span style={{
-                      textDecoration: line.checked ? 'line-through' : 'none',
-                      color: line.checked ? '#999' : '#1d1d1f',
-                    }}>
-                      {line.label}
-                    </span>
-                  </Checkbox>
-                </div>
-              ) : (
-                <div key={line.index} style={{ padding: '4px 0', color: 'var(--text-secondary)' }}>
-                  {line.label || '\u00A0'}
-                </div>
-              )
-            ))}
-            {parsePlanLines(currentPlan).every((l) => l.type === 'text' && !l.label.trim()) && (
-              <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: '40px 0' }}>
-                暂无任务。切换到「编辑」视图，使用 <code>- [ ]</code> 添加任务
-              </div>
-            )}
-          </div>
-        )}
       </Modal>
 
       {/* 今日激励管理弹窗 */}
-      <Modal
-        title="管理激励语录"
+      <MotivationModal
         open={showMotivationModal}
-        onCancel={() => setShowMotivationModal(false)}
-        footer={null}
-        width={520}
-      >
-        <Card size="small" style={{ marginBottom: 12, background: '#fffdf8' }}>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>展示模式</span>
-              <Segmented
-                size="small"
-                value={motivationSettings.display_mode}
-                options={[
-                  { label: '自动轮换', value: 'auto' },
-                  { label: '固定展示', value: 'manual' },
-                ]}
-                onChange={(v) => setMotivationSettings((prev) => ({ ...prev, display_mode: v as 'auto' | 'manual' }))}
-              />
-            </div>
-
-            {motivationSettings.display_mode === 'manual' && (
-              <div style={{ display: 'grid', gap: 4 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>固定语录</span>
-                <Select
-                  size="small"
-                  placeholder="选择一条语录作为固定展示"
-                  value={motivationSettings.selected_quote_id ?? undefined}
-                  onChange={(v) => setMotivationSettings((prev) => ({ ...prev, selected_quote_id: Number(v) }))}
-                  options={allQuotes.map((q) => ({
-                    value: q.id,
-                    label: `${q.content.slice(0, 36)}${q.content.length > 36 ? '…' : ''}`,
-                  }))}
-                />
-              </div>
-            )}
-
-            <div style={{ display: 'grid', gap: 4 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>轮换顺序</span>
-              <Select
-                size="small"
-                value={motivationSettings.sort_mode}
-                onChange={(v) => setMotivationSettings((prev) => ({ ...prev, sort_mode: String(v) }))}
-                options={QUOTE_SORT_OPTIONS}
-              />
-            </div>
-
-            <div style={{ display: 'grid', gap: 4 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>轮换周期</span>
-              <Select
-                size="small"
-                value={motivationSettings.rotation_seconds}
-                onChange={(v) => setMotivationSettings((prev) => ({ ...prev, rotation_seconds: Number(v) }))}
-                options={QUOTE_ROTATION_OPTIONS}
-              />
-            </div>
-
-            <Button
-              type="primary"
-              loading={savingMotivationSettings}
-              onClick={handleSaveMotivationSettings}
-            >
-              保存展示设置
-            </Button>
-          </div>
-        </Card>
-
-        <div style={{ marginBottom: 12 }}>
-          <TextArea
-            placeholder="写一句你喜欢的激励语录..."
-            value={newQuoteContent}
-            onChange={(e) => setNewQuoteContent(e.target.value)}
-            autoSize={{ minRows: 2, maxRows: 4 }}
-          />
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Input
-              placeholder="作者/来源（可选）"
-              value={newQuoteAuthor}
-              onChange={(e) => setNewQuoteAuthor(e.target.value)}
-            />
-            <Button type="primary" onClick={handleAddCustomQuote}>
-              添加
-            </Button>
-          </div>
-        </div>
-        <List
-          size="small"
-          dataSource={allQuotes}
-          locale={{ emptyText: '暂无语录' }}
-          renderItem={(item) => (
-            <List.Item
-              actions={[
-                <Button
-                  key="pin-current"
-                  type="text"
-                  size="small"
-                  disabled={savingMotivationSettings}
-                  onClick={() => handlePinCurrentQuote(item.id)}
-                >
-                  设为当前
-                </Button>,
-                <Button
-                  key="delete"
-                  type="text"
-                  danger
-                  size="small"
-                  onClick={() => handleDeleteQuote(item.id)}
-                >
-                  删除
-                </Button>,
-              ]}
-            >
-              <List.Item.Meta
-                title={
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>{item.content}</span>
-                    {motivationSettings.selected_quote_id === item.id && (
-                      <Tag color="gold" style={{ fontSize: 10, lineHeight: '16px' }}>当前固定</Tag>
-                    )}
-                    <Tag
-                      color={item.source_type === 'preset' ? 'default' : item.source_type === 'ai' ? 'purple' : 'blue'}
-                      style={{ fontSize: 10, lineHeight: '16px' }}
-                    >
-                      {item.source_type === 'preset' ? '预设' : item.source_type === 'ai' ? 'AI' : '自定义'}
-                    </Tag>
-                  </div>
-                }
-                description={item.author ? `—— ${item.author}` : undefined}
-              />
-            </List.Item>
-          )}
-        />
-      </Modal>
+        onClose={() => setShowMotivationModal(false)}
+        allQuotes={allQuotes}
+        motivationSettings={motivationSettings}
+        setMotivationSettings={setMotivationSettings}
+        savingMotivationSettings={savingMotivationSettings}
+        newQuoteContent={newQuoteContent}
+        setNewQuoteContent={setNewQuoteContent}
+        newQuoteAuthor={newQuoteAuthor}
+        setNewQuoteAuthor={setNewQuoteAuthor}
+        onSaveSettings={handleSaveMotivationSettings}
+        onAddQuote={handleAddCustomQuote}
+        onDeleteQuote={handleDeleteQuote}
+        onPinQuote={handlePinCurrentQuote}
+      />
 
       {/* 番茄钟统计弹窗 - 增强版 */}
-      <Modal
-        title={<span><BarChartOutlined /> 番茄钟统计</span>}
+      <StatsModal
         open={showStatsModal}
-        onCancel={() => setShowStatsModal(false)}
-        footer={null}
-        width={680}
-        styles={{ body: { padding: '16px 24px' } }}
-      >
-        {/* 累计统计面板 */}
-        {(() => {
-          const cumulativeStats = getCumulativeStats()
-          return (
-            <Card
-              size="small"
-              style={{
-                marginBottom: 16,
-                background: 'linear-gradient(135deg, rgba(255,77,79,0.08) 0%, rgba(255,149,0,0.08) 100%)',
-                border: '1px solid rgba(255,77,79,0.15)',
-              }}
-            >
-              <div style={{ textAlign: 'center', marginBottom: 8 }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>累计专注</span>
-              </div>
-              <Row gutter={16}>
-                <Col span={8} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 32, fontWeight: 'bold', color: '#ff4d4f' }}>
-                    {cumulativeStats.totalCount}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>次数</div>
-                </Col>
-                <Col span={8} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 32, fontWeight: 'bold', color: '#007AFF' }}>
-                    {cumulativeStats.totalHours}<span style={{ fontSize: 14, fontWeight: 'normal' }}>h</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>时长</div>
-                </Col>
-                <Col span={8} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 32, fontWeight: 'bold', color: '#34C759' }}>
-                    {cumulativeStats.dailyAverageMinutes}<span style={{ fontSize: 14, fontWeight: 'normal' }}>m</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>日均</div>
-                </Col>
-              </Row>
-            </Card>
-          )
-        })()}
-
-        {/* 时间范围选择器 */}
-        <div style={{ marginBottom: 16, textAlign: 'center' }}>
-          <Segmented
-            value={statsRange}
-            onChange={(value) => setStatsRange(value as DateRange)}
-            options={[
-              { label: '日', value: 'day' },
-              { label: '周', value: 'week' },
-              { label: '月', value: 'month' },
-              { label: '全部', value: 'all' },
-            ]}
-            style={{
-              background: 'rgba(0,0,0,0.04)',
-              padding: 2,
-            }}
-          />
-        </div>
-
-        {/* 当前范围统计 */}
-        <Row gutter={16} style={{ marginBottom: 16 }}>
-          <Col span={6}>
-            <Card size="small" style={{ textAlign: 'center', background: '#fff2e8' }}>
-              <div style={{ fontSize: 20, fontWeight: 'bold', color: '#ff4d4f' }}>{stats.todayCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>今日番茄</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card size="small" style={{ textAlign: 'center', background: '#fef9ef' }}>
-              <div style={{ fontSize: 20, fontWeight: 'bold', color: 'var(--primary-600)' }}>{stats.todayMinutes}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>今日分钟</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card size="small" style={{ textAlign: 'center', background: '#f6ffed' }}>
-              <div style={{ fontSize: 20, fontWeight: 'bold', color: '#52c41a' }}>{stats.weekCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>本周番茄</div>
-            </Card>
-          </Col>
-          <Col span={6}>
-            <Card size="small" style={{ textAlign: 'center', background: '#f9f0ff' }}>
-              <div style={{ fontSize: 20, fontWeight: 'bold', color: '#722ed1' }}>{Math.round(stats.weekMinutes / 60)}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>本周小时</div>
-            </Card>
-          </Col>
-        </Row>
-
-        {/* 饼状图 - 任务时长分布 */}
-        {(() => {
-          const distribution = getTaskDistribution(statsRange)
-          const totalMinutes = distribution.reduce((sum, t) => sum + t.minutes, 0)
-
-          if (distribution.length === 0) {
-            return (
-              <Card size="small" title="专注时长分布" style={{ marginBottom: 16 }}>
-                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)' }}>
-                  暂无数据，开始专注计时吧
-                </div>
-              </Card>
-            )
-          }
-
-          const pieOption = {
-            tooltip: {
-              trigger: 'item',
-              backgroundColor: 'rgba(255, 255, 255, 0.95)',
-              borderColor: 'rgba(0, 0, 0, 0.1)',
-              borderWidth: 1,
-              textStyle: { color: 'var(--text-primary)', fontSize: 12 },
-              formatter: (params: any) => {
-                const hours = Math.floor(params.data.minutes / 60)
-                const mins = params.data.minutes % 60
-                const timeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
-                return `<b>${params.name}</b><br/>⏱️ ${timeStr}<br/>🍅 ${params.data.count}个 (${params.percent}%)`
-              },
-            },
-            legend: {
-              orient: 'vertical',
-              right: 10,
-              top: 'center',
-              itemWidth: 10,
-              itemHeight: 10,
-              textStyle: { fontSize: 11, color: 'var(--text-secondary)' },
-            },
-            series: [{
-              type: 'pie',
-              radius: ['45%', '70%'],
-              center: ['35%', '50%'],
-              avoidLabelOverlap: true,
-              itemStyle: {
-                borderRadius: 4,
-                borderColor: '#fff',
-                borderWidth: 2,
-              },
-              label: { show: false },
-              emphasis: {
-                label: { show: true, fontSize: 12, fontWeight: 'bold' },
-                itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.2)' },
-              },
-              data: distribution.map((t) => ({
-                value: t.minutes,
-                name: t.taskName,
-                minutes: t.minutes,
-                count: t.count,
-                itemStyle: { color: t.color },
-              })),
-            }],
-          }
-
-          return (
-            <Card
-              size="small"
-              title={
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>专注时长分布</span>
-                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 'normal' }}>
-                    共 {Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m
-                  </span>
-                </div>
-              }
-              style={{ marginBottom: 16 }}
-            >
-              <ReactECharts option={pieOption} style={{ height: 200 }} />
-
-              {/* 任务列表 */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, 1fr)',
-                gap: 8,
-                marginTop: 12,
-                paddingTop: 12,
-                borderTop: '1px solid rgba(0,0,0,0.06)',
-              }}>
-                {distribution.slice(0, 6).map((task) => (
-                  <div
-                    key={task.taskName}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '6px 8px',
-                      background: 'rgba(0,0,0,0.02)',
-                      borderRadius: 6,
-                    }}
-                  >
-                    <div style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: 3,
-                      background: task.color,
-                      flexShrink: 0,
-                    }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 12,
-                        fontWeight: 500,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}>
-                        {task.taskName}
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        {Math.floor(task.minutes / 60)}h {task.minutes % 60}m · {task.percentage}%
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )
-        })()}
-
-        {/* 本周趋势 */}
-        <Card size="small" title="本周趋势">
-          <ReactECharts option={weekChartOption} style={{ height: 160 }} />
-        </Card>
-      </Modal>
+        onClose={() => setShowStatsModal(false)}
+        stats={stats}
+        statsRange={statsRange}
+        setStatsRange={setStatsRange}
+        getCumulativeStats={getCumulativeStats}
+        getTaskDistribution={getTaskDistribution}
+        weekChartOption={weekChartOption}
+      />
 
       {/* 资料预览抽屉 */}
       <Drawer
@@ -3186,7 +2913,7 @@ export function ObsidianLayout() {
         ) : (
           <div>
             {/* 文件信息卡片 */}
-            <Card size="small" style={{ marginBottom: 16, background: '#faf6f0' }}>
+            <Card size="small" style={{ marginBottom: 16, background: 'var(--bg-tertiary)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 500 }}>{currentMaterial?.name}</div>
@@ -3211,7 +2938,7 @@ export function ObsidianLayout() {
               bodyStyle={{
                 maxHeight: 'calc(100vh - 280px)',
                 overflow: 'auto',
-                background: '#faf6f0',
+                background: 'var(--bg-tertiary)',
                 padding: 16
               }}
             >
@@ -3220,8 +2947,8 @@ export function ObsidianLayout() {
                   <div style={{
                     padding: '40px',
                     textAlign: 'center',
-                    border: '2px dashed #ede4d9',
-                    borderRadius: 8,
+                    border: '2px dashed var(--border-color)',
+                    borderRadius: 'var(--radius-md)',
                     marginBottom: 16
                   }}>
                     <FileOutlined style={{ fontSize: 48, color: '#ff4d4f', marginBottom: 16 }} />
@@ -3231,9 +2958,9 @@ export function ObsidianLayout() {
                     </div>
                   </div>
                   <div style={{
-                    background: '#fffbf5',
+                    background: 'var(--bg-tertiary)',
                     padding: 16,
-                    borderRadius: 8,
+                    borderRadius: 'var(--radius-md)',
                     whiteSpace: 'pre-wrap',
                     lineHeight: 1.8,
                     fontSize: 14
@@ -3248,9 +2975,9 @@ export function ObsidianLayout() {
                     style={{
                       lineHeight: 1.8,
                       fontSize: 14,
-                      background: '#fffbf5',
+                      background: 'var(--bg-tertiary)',
                       padding: 16,
-                      borderRadius: 8,
+                      borderRadius: 'var(--radius-md)',
                     }}
                   >
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -3262,9 +2989,9 @@ export function ObsidianLayout() {
                     whiteSpace: 'pre-wrap',
                     lineHeight: 1.8,
                     fontSize: 14,
-                    background: '#fffbf5',
+                    background: 'var(--bg-tertiary)',
                     padding: 16,
-                    borderRadius: 8
+                    borderRadius: 'var(--radius-md)'
                   }}>
                     {previewContent || '暂无预览内容'}
                   </div>
@@ -3342,7 +3069,7 @@ export function ObsidianLayout() {
                 multiple
                 beforeUpload={handleUpload}
                 showUploadList={false}
-                accept=".pdf,.doc,.docx,.txt,.md,.epub"
+                accept=".pdf,.docx,.txt,.md"
               >
                 <p><UploadOutlined style={{ fontSize: 22, color: 'var(--text-secondary)' }} /></p>
                 <p style={{ fontSize: 13, color: 'var(--text-primary)', margin: '6px 0 2px' }}>上传到当前项目</p>
@@ -3416,7 +3143,7 @@ export function ObsidianLayout() {
         )}
       </Drawer>
 
-      <AISettingsDrawer open={showAISettings} onClose={() => setShowAISettings(false)} />
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
       <ProjectSettingsModal
         open={projectSettingsOpen}
         projectId={editingProjectId}

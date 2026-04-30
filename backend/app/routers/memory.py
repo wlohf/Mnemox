@@ -50,6 +50,48 @@ async def get_summaries(
     return await list_summaries(db, user_id=current_user.id)
 
 
+class MemoryCreateRequest(BaseModel):
+    memory_key: str
+    memory_value: str
+    category: str = "style"
+    confidence: float = 0.8
+
+
+@router.post("/memories")
+async def create_memory(
+    body: MemoryCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    now = datetime.now()
+    # Upsert by key
+    result = await db.execute(
+        select(UserMemory).where(UserMemory.memory_key == body.memory_key, UserMemory.user_id == current_user.id)
+    )
+    row = result.scalar_one_or_none()
+    if row:
+        row.memory_value = body.memory_value
+        row.confidence = max(0.0, min(1.0, body.confidence))
+        row.last_seen_at = now
+    else:
+        row = UserMemory(
+            user_id=current_user.id,
+            memory_key=body.memory_key,
+            memory_value=body.memory_value,
+            category=body.category,
+            confidence=body.confidence,
+            status="active",
+            created_at=now,
+            updated_at=now,
+            last_seen_at=now,
+        )
+        db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return {"id": row.id, "memory_key": row.memory_key, "memory_value": row.memory_value}
+
+
+
 @router.put("/memories/{memory_id}")
 async def update_memory(
     memory_id: int,

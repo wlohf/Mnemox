@@ -15,6 +15,7 @@ export interface GoalItem {
 export interface GoalTaskItem {
   id: number
   goal_id: number
+  parent_task_id?: number | null
   chapter_id?: number | null
   chapter_title?: string | null
   title: string
@@ -27,9 +28,11 @@ export interface GoalTaskItem {
 
 export async function listGoals(status?: string): Promise<GoalItem[]> {
   const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-  const res = await apiFetch(`/api/goals${qs}`)
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<GoalItem[]>(`/api/goals${qs}`)
+  } catch {
+    return []
+  }
 }
 
 export async function createGoal(data: {
@@ -39,29 +42,35 @@ export async function createGoal(data: {
   deadline?: string
   material_id?: number
 }): Promise<GoalItem | null> {
-  const res = await apiFetch('/api/goals', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<GoalItem>('/api/goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function updateGoal(id: number, data: Record<string, any>): Promise<GoalItem | null> {
-  const res = await apiFetch(`/api/goals/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<GoalItem>(`/api/goals/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function listGoalTasks(goalId: number): Promise<GoalTaskItem[]> {
-  const res = await apiFetch(`/api/goals/${goalId}/tasks`)
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<GoalTaskItem[]>(`/api/goals/${goalId}/tasks`)
+  } catch {
+    return []
+  }
 }
 
 export async function createGoalTask(goalId: number, data: {
@@ -69,28 +78,44 @@ export async function createGoalTask(goalId: number, data: {
   description?: string
   task_type?: string
   planned_date?: string
+  parent_task_id?: number | null
 }): Promise<GoalTaskItem | null> {
-  const res = await apiFetch(`/api/goals/${goalId}/tasks`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<GoalTaskItem>(`/api/goals/${goalId}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function updateGoalTask(taskId: number, data: Record<string, any>): Promise<GoalTaskItem | null> {
-  const res = await apiFetch(`/api/goals/tasks/${taskId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<GoalTaskItem>(`/api/goals/tasks/${taskId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function deleteGoalTask(taskId: number): Promise<boolean> {
+  try {
+    await apiFetch(`/api/goals/tasks/${taskId}`, { method: 'DELETE' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export async function listDailyTasks(day: string): Promise<GoalTaskItem[]> {
-  const res = await apiFetch(`/api/goals/tasks/daily?day=${encodeURIComponent(day)}`)
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<GoalTaskItem[]>(`/api/goals/tasks/daily?day=${encodeURIComponent(day)}`)
+  } catch {
+    return []
+  }
 }

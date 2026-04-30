@@ -17,9 +17,19 @@ export const useAuthStore = create<AuthState>((set) => ({
   isLoading: true,
 
   login: async (username: string, password: string) => {
-    await apiLogin(username, password)
-    const user = await getMe()
-    set({ user, isAuthenticated: !!user, isLoading: false })
+    set({ isLoading: true })
+    try {
+      await apiLogin(username, password)
+      const user = await getMe()
+      if (!user) {
+        set({ user: null, isAuthenticated: false, isLoading: false })
+        throw new Error('登录成功但获取用户信息失败，请重试')
+      }
+      set({ user, isAuthenticated: true, isLoading: false })
+    } catch (e) {
+      set({ user: null, isAuthenticated: false, isLoading: false })
+      throw e
+    }
   },
 
   logout: () => {

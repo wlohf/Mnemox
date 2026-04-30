@@ -12,26 +12,51 @@ export interface MemoryItem {
   last_seen_at?: string | null
 }
 
+export async function createMemory(data: {
+  memory_key: string
+  memory_value: string
+  category?: string
+  confidence?: number
+}): Promise<MemoryItem | null> {
+  try {
+    return await apiFetch<MemoryItem>('/api/memory/memories', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
+}
+
+
 export async function listMemories(): Promise<MemoryItem[]> {
-  const res = await apiFetch('/api/memory/memories')
-  if (!res.ok) return []
-  return res.json()
+  try {
+    return await apiFetch<MemoryItem[]>('/api/memory/memories')
+  } catch {
+    return []
+  }
 }
 
 export async function updateMemory(
   id: number,
   data: { memory_value: string; category?: string; confidence?: number; status?: string; is_locked?: number }
 ): Promise<MemoryItem | null> {
-  const res = await apiFetch(`/api/memory/memories/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<MemoryItem>(`/api/memory/memories/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
 }
 
 export async function deleteMemory(id: number): Promise<boolean> {
-  const res = await apiFetch(`/api/memory/memories/${id}`, { method: 'DELETE' })
-  return res.ok
+  try {
+    await apiFetch(`/api/memory/memories/${id}`, { method: 'DELETE' })
+    return true
+  } catch {
+    return false
+  }
 }

@@ -5,6 +5,7 @@ import * as pomodoroApi from '../services/pomodoroApi'
 export interface PomodoroRecord {
   id: string
   backendId?: number
+  taskId?: number | null
   taskName: string
   duration: number // in minutes
   completedAt: string // ISO date string
@@ -48,6 +49,7 @@ interface PomodoroState {
   isPaused: boolean
   remainingTime: number // in seconds
   currentTask: string
+  currentTaskId: number | null
   duration: number // in minutes
   currentBackendId: number | null
   startedAt: number | null
@@ -62,11 +64,11 @@ interface PomodoroState {
   migrated: boolean
 
   // Actions
-  startTimer: (taskName: string, duration: number) => void
+  startTimer: (taskName: string, duration: number, taskId?: number | null) => void
   pauseTimer: () => void
   resumeTimer: () => void
   completeTimer: (actualSeconds?: number) => void
-  resetTimer: () => void
+  resetTimer: (durationOverride?: number) => void
   tick: () => void
   addRecord: (taskName: string, duration: number) => void
 
@@ -103,6 +105,7 @@ export const usePomodoroStore = create<PomodoroState>()(
       isPaused: false,
       remainingTime: 25 * 60,
       currentTask: '',
+      currentTaskId: null,
       duration: 25,
       currentBackendId: null,
       startedAt: null,
@@ -112,13 +115,14 @@ export const usePomodoroStore = create<PomodoroState>()(
       backendOnline: false,
       migrated: false,
 
-      startTimer: (taskName: string, duration: number) => {
+      startTimer: (taskName: string, duration: number, taskId?: number | null) => {
         const now = Date.now()
         set({
           isRunning: true,
           isPaused: false,
           remainingTime: duration * 60,
           currentTask: taskName,
+          currentTaskId: taskId ?? null,
           duration,
           currentBackendId: null,
           startedAt: now,
@@ -127,7 +131,7 @@ export const usePomodoroStore = create<PomodoroState>()(
         })
 
         // Fire-and-forget API call
-        pomodoroApi.startPomodoro(taskName, duration).then((res) => {
+        pomodoroApi.startPomodoro(taskName, duration, taskId).then((res) => {
           if (res) {
             set({ currentBackendId: res.id, backendOnline: true })
           } else {
@@ -149,7 +153,7 @@ export const usePomodoroStore = create<PomodoroState>()(
       },
 
       completeTimer: (actualSecondsOverride?: number) => {
-        const { currentTask, duration, currentBackendId, startedAt, pausedTotalMs } = get()
+        const { currentTask, currentTaskId, duration, currentBackendId, startedAt, pausedTotalMs } = get()
         const totalSeconds = duration * 60
         const now = Date.now()
         const elapsedMs = startedAt ? Math.max(0, now - startedAt - pausedTotalMs) : totalSeconds * 1000
@@ -164,6 +168,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           const newRecord: PomodoroRecord = {
             id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             backendId: currentBackendId ?? undefined,
+            taskId: currentTaskId,
             taskName: currentTask,
             duration: actualMinutes,
             completedAt: now.toISOString(),
@@ -192,7 +197,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           } else {
             // No backendId — try to create a completed record directly via batch
             pomodoroApi.batchCreatePomodoros(
-              [{ task_name: currentTask, duration: actualMinutes }],
+              [{ task_name: currentTask, duration: actualMinutes, task_id: currentTaskId ?? null }],
               [now.toISOString()]
             ).then((res) => {
               if (res && res.ids.length > 0) {
@@ -213,6 +218,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           isRunning: false,
           isPaused: false,
           remainingTime: duration * 60,
+          currentTaskId: null,
           currentBackendId: null,
           startedAt: null,
           pausedAt: null,
@@ -220,12 +226,17 @@ export const usePomodoroStore = create<PomodoroState>()(
         })
       },
 
-      resetTimer: () => {
+      resetTimer: (durationOverride?: number) => {
         const { duration } = get()
+        const nextDuration = durationOverride !== undefined
+          ? Math.max(1, Math.min(120, Math.floor(durationOverride)))
+          : duration
         set({
           isRunning: false,
           isPaused: false,
-          remainingTime: duration * 60,
+          remainingTime: nextDuration * 60,
+          duration: nextDuration,
+          currentTaskId: null,
           currentBackendId: null,
           startedAt: null,
           pausedAt: null,
@@ -269,7 +280,7 @@ export const usePomodoroStore = create<PomodoroState>()(
         if (pending.length === 0) return
 
         const res = await pomodoroApi.batchCreatePomodoros(
-          pending.map((r) => ({ task_name: r.taskName, duration: r.duration })),
+          pending.map((r) => ({ task_name: r.taskName, duration: r.duration, task_id: r.taskId ?? null })),
           pending.map((r) => r.completedAt)
         )
 
@@ -302,7 +313,7 @@ export const usePomodoroStore = create<PomodoroState>()(
         }
 
         const res = await pomodoroApi.batchCreatePomodoros(
-          oldRecords.map((r) => ({ task_name: r.taskName, duration: r.duration })),
+          oldRecords.map((r) => ({ task_name: r.taskName, duration: r.duration, task_id: r.taskId ?? null })),
           oldRecords.map((r) => r.completedAt)
         )
 

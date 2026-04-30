@@ -1,0 +1,49 @@
+.markdown-live-editor {
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.markdown-live-editor .toastui-editor-defaultUI {
+  border: none;
+}
+
+.markdown-live-editor .toastui-editor-main {
+  background: var(--bg-elevated);
+}
+
+.markdown-live-editor .toastui-editor-main-container {
+  border-top: 1px solid var(--border-light);
+}
+
+.markdown-live-editor .toastui-editor-contents {
+  color: var(--text-primary);
+}
+
+.markdown-live-editor .toastui-editor-contents p,
+.markdown-live-editor .toastui-editor-contents li {
+  line-height: 1.75;
+}
+
+.markdown-live-editor .toastui-editor-toolbar {
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-surface);
+}
+
+.markdown-live-editor .toastui-editor-toolbar-icons {
+  border-color: transparent;
+}
+
+.markdown-live-editor .toastui-editor-contents .task-list-item {
+  position: relative;
+  padding-left: 20px;
+  margin-left: -20px;
+}
+
+.markdown-live-editor .toastui-editor-contents .task-list-item::before {
+  width: 14px;
+  height: 14px;
+  background-size: 14px 14px;
+  top: calc(0.9em - 7px);
+}

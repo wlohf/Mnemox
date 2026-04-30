@@ -87,6 +87,12 @@ async def _run_lightweight_migrations(conn):
         ("materials", "file_hash", "VARCHAR(64)"),
         ("materials", "content_hash", "VARCHAR(64)"),
         ("materials", "content_status", "VARCHAR(20) DEFAULT 'pending'"),
+        # P2: 错题三档标签 + 掌握度评分
+        ("wrong_questions", "knowledge_point", "VARCHAR(100)"),
+        ("wrong_questions", "recall_difficulty", "VARCHAR(20)"),
+        ("wrong_questions", "mastery_score", "REAL DEFAULT 0.0"),
+        ("tasks", "parent_task_id", "INTEGER"),
+        ("pomodoros", "task_id", "INTEGER"),
     ]
 
     for table, column, col_type in other_migrations:
@@ -113,6 +119,8 @@ async def _run_lightweight_migrations(conn):
 async def init_db():
     """初始化数据库（创建所有表）"""
     import logging
+    import app.models  # noqa: F401
+
     _logger = logging.getLogger(__name__)
 
     async with engine.begin() as conn:

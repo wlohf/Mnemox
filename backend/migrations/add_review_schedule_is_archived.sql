@@ -1,0 +1,1 @@
+ALTER TABLE review_schedule ADD COLUMN is_archived BOOLEAN NOT NULL DEFAULT FALSE;

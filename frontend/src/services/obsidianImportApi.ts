@@ -16,7 +16,9 @@ export async function importObsidianNote(
   form.append('md_file', mdFile)
   for (const a of attachments) form.append('attachments', a)
   if (title) form.append('title', title)
-  const res = await apiFetch('/api/obsidian/import', { method: 'POST', body: form })
-  if (!res.ok) return null
-  return res.json()
+  try {
+    return await apiFetch<ObsidianImportResult>('/api/obsidian/import', { method: 'POST', body: form })
+  } catch {
+    return null
+  }
 }

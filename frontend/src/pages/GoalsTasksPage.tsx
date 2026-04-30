@@ -1,32 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import dayjs from 'dayjs'
 import {
-  Layout,
-  Card,
-  Row,
-  Col,
-  Button,
-  List,
-  Tag,
-  Space,
-  Modal,
-  Input,
-  DatePicker,
-  Select,
-  message,
-  Segmented,
+  Layout, Card, Row, Col, Button, Tag, Space, Modal, Input,
+  DatePicker, Select, message, Segmented, Tree, Tooltip, Progress,
 } from 'antd'
-import { ArrowLeftOutlined, PlusOutlined, CalendarOutlined } from '@ant-design/icons'
+import type { DataNode } from 'antd/es/tree'
+import {
+  ArrowLeftOutlined, PlusOutlined, CalendarOutlined,
+  FlagOutlined, CheckSquareOutlined, ApartmentOutlined, DeleteOutlined,
+} from '@ant-design/icons'
 import { useOfflineGoals, type OfflineGoalItem } from '../hooks/useOfflineGoals'
 import { useOfflineGoalTasks, type OfflineGoalTaskItem } from '../hooks/useOfflineGoalTasks'
 import {
-  startStudySession,
-  completeStudySession,
-  listActiveStudySessions,
-  type StudySessionItem,
+  startStudySession, completeStudySession, listActiveStudySessions, type StudySessionItem,
 } from '../services/studySessionApi'
-import { createNote } from '../services/noteApi'
 import { evaluateTaskOutput, type OutputEvalResult } from '../services/learningApi'
 import { GoalPlanModal } from '../components/GoalPlanModal'
 import { apiFetch } from '../services/apiClient'
@@ -35,34 +22,66 @@ const { Header, Content } = Layout
 
 type GoalFilter = 'all' | 'active' | 'completed' | 'paused'
 
+const STATUS_COLOR: Record<string, string> = {
+  pending: 'default', in_progress: 'orange', completed: 'green',
+}
+const STATUS_LABEL: Record<string, string> = {
+  pending: '待办', in_progress: '进行中', completed: '已完成',
+}
+
+// Build tree nodes from flat task list
+function buildTree(tasks: OfflineGoalTaskItem[]): DataNode[] {
+  const byParent = new Map<number | null, OfflineGoalTaskItem[]>()
+  for (const t of tasks) {
+    const key = t.parent_task_id ?? null
+    if (!byParent.has(key)) byParent.set(key, [])
+    byParent.get(key)!.push(t)
+  }
+
+  const makeNodes = (parentId: number | null): DataNode[] => {
+    const children = byParent.get(parentId) || []
+    children.sort((a, b) => (a.updated_at > b.updated_at ? -1 : 1))
+    return children.map(t => {
+      const isMilestone = t.task_type === 'milestone'
+      const subs = makeNodes(t._serverId ?? null)
+      return {
+        key: t._localId,
+        title: t as unknown as DataNode['title'],
+        icon: isMilestone ? <FlagOutlined style={{ color: 'var(--accent-600)' }} /> : <CheckSquareOutlined style={{ color: 'var(--text-tertiary)' }} />,
+        children: subs.length > 0 ? subs : undefined,
+        isLeaf: subs.length === 0,
+      }
+    })
+  }
+  return makeNodes(null)
+}
+
 export function GoalsTasksPage() {
   const navigate = useNavigate()
   const [filter, setFilter] = useState<GoalFilter>('all')
   const [selectedGoal, setSelectedGoal] = useState<OfflineGoalItem | null>(null)
-  const [selectedDay, setSelectedDay] = useState(dayjs())
   const [activeSessions, setActiveSessions] = useState<Record<number, StudySessionItem>>({})
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
 
-  // Offline data hooks
-  const { goals, createGoal } = useOfflineGoals(filter === 'all' ? undefined : filter)
+  const { goals, createGoal, deleteGoal } = useOfflineGoals(filter === 'all' ? undefined : filter)
   const { goalTasks, createGoalTask, updateGoalTask, deleteGoalTask } = useOfflineGoalTasks(
     selectedGoal ? { goalLocalId: selectedGoal._localId } : undefined,
   )
-  const { goalTasks: dailyTasks } = useOfflineGoalTasks({
-    plannedDate: selectedDay.format('YYYY-MM-DD'),
-  })
 
-  // Modal state
+  // Modals
   const [goalModalOpen, setGoalModalOpen] = useState(false)
   const [goalTitle, setGoalTitle] = useState('')
   const [goalDesc, setGoalDesc] = useState('')
-  const [goalTargetLevel, setGoalTargetLevel] = useState('')
-  const [goalDeadline, setGoalDeadline] = useState<string | undefined>(undefined)
+  const [goalDeadline, setGoalDeadline] = useState<string | undefined>()
 
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskTitle, setTaskTitle] = useState('')
-  const [taskDesc, setTaskDesc] = useState('')
   const [taskType, setTaskType] = useState('learn')
-  const [taskPlannedDate, setTaskPlannedDate] = useState<string | undefined>(undefined)
+  const [taskPlannedDate, setTaskPlannedDate] = useState<string | undefined>()
+  const [taskParentId, setTaskParentId] = useState<number | null>(null)
+
+  const [planModalOpen, setPlanModalOpen] = useState(false)
+  const [generatingNextWeek, setGeneratingNextWeek] = useState(false)
 
   const [evalModalOpen, setEvalModalOpen] = useState(false)
   const [evalTask, setEvalTask] = useState<OfflineGoalTaskItem | null>(null)
@@ -71,456 +90,382 @@ export function GoalsTasksPage() {
   const [evalResult, setEvalResult] = useState<OutputEvalResult | null>(null)
   const [evalLoading, setEvalLoading] = useState(false)
 
-  const [planModalOpen, setPlanModalOpen] = useState(false)
-  const [generatingNextWeek, setGeneratingNextWeek] = useState(false)
-
   // Auto-select first goal
   useEffect(() => {
-    if (goals.length > 0 && !selectedGoal) {
-      setSelectedGoal(goals[0])
-    } else if (goals.length > 0 && selectedGoal) {
-      const stillExists = goals.find((g) => g._localId === selectedGoal._localId)
-      if (!stillExists) setSelectedGoal(goals[0])
-    } else if (goals.length === 0) {
-      setSelectedGoal(null)
-    }
+    if (goals.length > 0 && !selectedGoal) setSelectedGoal(goals[0])
+    else if (goals.length > 0 && selectedGoal) {
+      if (!goals.find(g => g._localId === selectedGoal._localId)) setSelectedGoal(goals[0])
+    } else if (goals.length === 0) setSelectedGoal(null)
   }, [goals.length, selectedGoal?._localId])
 
-  const loadActiveSessions = async () => {
-    const list = await listActiveStudySessions()
+  useEffect(() => { void listActiveStudySessions().then(list => {
     const map: Record<number, StudySessionItem> = {}
-    for (const s of list) {
-      if (s.task_id) map[s.task_id] = s
-    }
+    for (const s of list) { if (s.task_id) map[s.task_id] = s }
     setActiveSessions(map)
-  }
+  }) }, [])
 
+  // Expand milestone nodes by default
   useEffect(() => {
-    void loadActiveSessions()
-  }, [])
+    const milestoneKeys = goalTasks
+      .filter(t => t.task_type === 'milestone' && t._localId)
+      .map(t => t._localId)
+    setExpandedKeys(milestoneKeys)
+  }, [goalTasks.length])
+
+  const treeData = useMemo(() => buildTree(goalTasks), [goalTasks])
+
+  // Stats
+  const stats = useMemo(() => {
+    const total = goalTasks.length
+    const done = goalTasks.filter(t => t.status === 'completed').length
+    const milestones = goalTasks.filter(t => t.task_type === 'milestone').length
+    return { total, done, milestones }
+  }, [goalTasks])
 
   const handleCreateGoal = async () => {
-    if (!goalTitle.trim()) {
-      message.warning('请输入目标标题')
-      return
-    }
+    if (!goalTitle.trim()) { message.warning('请输入目标标题'); return }
     const created = await createGoal({
       title: goalTitle.trim(),
       description: goalDesc.trim() || undefined,
-      target_level: goalTargetLevel.trim() || undefined,
       deadline: goalDeadline,
     })
     message.success('目标已创建')
     setGoalModalOpen(false)
-    setGoalTitle('')
-    setGoalDesc('')
-    setGoalTargetLevel('')
-    setGoalDeadline(undefined)
+    setGoalTitle(''); setGoalDesc(''); setGoalDeadline(undefined)
     setSelectedGoal(created)
   }
 
   const handleCreateTask = async () => {
-    if (!selectedGoal) {
-      message.warning('请先选择目标')
-      return
-    }
-    if (!taskTitle.trim()) {
-      message.warning('请输入任务标题')
-      return
-    }
+    if (!selectedGoal) { message.warning('请先选择目标'); return }
+    if (!taskTitle.trim()) { message.warning('请输入任务标题'); return }
     await createGoalTask(selectedGoal._localId, selectedGoal._serverId, {
       title: taskTitle.trim(),
-      description: taskDesc.trim() || undefined,
       task_type: taskType,
       planned_date: taskPlannedDate,
+      parent_task_id: taskParentId,
     })
     message.success('任务已创建')
     setTaskModalOpen(false)
-    setTaskTitle('')
-    setTaskDesc('')
-    setTaskType('learn')
-    setTaskPlannedDate(undefined)
+    setTaskTitle(''); setTaskType('learn'); setTaskPlannedDate(undefined); setTaskParentId(null)
   }
 
-  const quickStatus = async (task: OfflineGoalTaskItem, status: 'pending' | 'in_progress' | 'completed') => {
-    if (status === 'completed') {
-      openEval(task)
-      message.info('完成任务前请先进行输出评估')
-      return
-    }
-    const ok = await updateGoalTask(task._localId, { status })
-    if (!ok) {
-      message.error('更新任务状态失败')
-    }
+  const quickStatus = async (t: OfflineGoalTaskItem, status: 'pending' | 'in_progress' | 'completed') => {
+    if (status === 'completed') { openEval(t); return }
+    await updateGoalTask(t._localId, { status })
   }
 
-  // Study session features still use online API (task._serverId required)
-  const startLearning = async (task: OfflineGoalTaskItem) => {
-    if (!task._serverId) {
-      message.warning('任务尚未同步到服务器，请等待同步后再开始学习')
-      return
-    }
-    const session = await startStudySession(task._serverId)
-    if (!session) {
-      message.error('启动学习会话失败')
-      return
-    }
-    try {
-      localStorage.setItem('study_active_session_id', String(session.id))
-      localStorage.setItem('study_active_task_id', String(task._serverId))
-    } catch {
-      // ignore
-    }
+  const startLearning = async (t: OfflineGoalTaskItem) => {
+    if (!t._serverId) { message.warning('任务尚未同步'); return }
+    const session = await startStudySession(t._serverId)
+    if (!session) { message.error('启动失败'); return }
+    setActiveSessions(prev => ({ ...prev, [t._serverId!]: session }))
     message.success('学习会话已开始')
-    await loadActiveSessions()
   }
 
-  const completeLearning = async (task: OfflineGoalTaskItem) => {
-    if (!task._serverId) return
-    const active = activeSessions[task._serverId]
-    if (!active) {
-      message.warning('该任务没有进行中的学习会话')
-      return
-    }
-    const done = await completeStudySession(active.id, { mark_task_completed: false })
-    if (!done) {
-      message.error('结束学习会话失败')
-      return
-    }
-    try {
-      const sid = localStorage.getItem('study_active_session_id')
-      const tid = localStorage.getItem('study_active_task_id')
-      if (sid && Number(sid) === active.id) localStorage.removeItem('study_active_session_id')
-      if (tid && Number(tid) === task._serverId) localStorage.removeItem('study_active_task_id')
-    } catch {
-      // ignore
-    }
-    message.success('学习会话已结束，请先完成输出评估')
-    await loadActiveSessions()
-    openEval(task)
+  const completeLearning = async (t: OfflineGoalTaskItem) => {
+    if (!t._serverId) return
+    const active = activeSessions[t._serverId]
+    if (!active) { message.warning('没有进行中的会话'); return }
+    await completeStudySession(active.id, { mark_task_completed: false })
+    setActiveSessions(prev => { const n = { ...prev }; delete n[t._serverId!]; return n })
+    message.success('会话已结束')
+    openEval(t)
   }
 
-  const createTaskNote = async (task: OfflineGoalTaskItem) => {
-    if (!task._serverId) {
-      message.warning('任务尚未同步，请等待同步后再创建笔记')
-      return
-    }
-    const created = await createNote({
-      title: `任务笔记：${task.title}`,
-      content: `# ${task.title}\n\n- 任务ID：${task._serverId}\n- 目标ID：${task.goal_id}\n\n`,
-      note_type: 'summary',
-      links: [{ link_type: 'task', link_id: task._serverId }],
-    })
-    if (!created) {
-      message.error('创建任务关联笔记失败')
-      return
-    }
-    message.success('已创建任务关联笔记')
-  }
-
-  const openEval = (task: OfflineGoalTaskItem) => {
-    setEvalTask(task)
-    setEvalOutput('')
-    setEvalResult(null)
-    setEvalModalOpen(true)
+  const openEval = (t: OfflineGoalTaskItem) => {
+    setEvalTask(t); setEvalOutput(''); setEvalResult(null); setEvalModalOpen(true)
   }
 
   const submitEval = async () => {
-    if (!evalTask || !evalTask._serverId) {
-      message.warning('任务尚未同步，无法评估')
-      return
-    }
-    if (!evalOutput.trim()) {
-      message.warning('请先输入你的产出内容')
-      return
-    }
+    if (!evalTask?._serverId) { message.warning('任务尚未同步'); return }
+    if (!evalOutput.trim()) { message.warning('请输入产出内容'); return }
     setEvalLoading(true)
     const res = await evaluateTaskOutput({
-      task_id: evalTask._serverId,
-      output_text: evalOutput,
-      rubric: evalRubric,
-      mark_task_completed: true,
+      task_id: evalTask._serverId, output_text: evalOutput,
+      rubric: evalRubric, mark_task_completed: true,
     })
     setEvalLoading(false)
-    if (!res) {
-      message.error('评估失败')
-      return
-    }
+    if (!res) { message.error('评估失败'); return }
     setEvalResult(res)
     message.success(`评估完成：${res.score} 分`)
-    if (res.score >= 80) {
-      await updateGoalTask(evalTask._localId, { status: 'completed' })
-      message.success('评分达标，任务已完成')
-    } else {
-      await updateGoalTask(evalTask._localId, { status: 'in_progress' })
-      message.warning('评分未达标，任务保持进行中')
-    }
+    await updateGoalTask(evalTask._localId, { status: res.score >= 80 ? 'completed' : 'in_progress' })
   }
 
   const handleGenerateNextWeek = async () => {
-    if (!selectedGoal?._serverId) {
-      message.warning('目标尚未同步，无法生成下周任务')
-      return
-    }
-    
+    if (!selectedGoal?._serverId) { message.warning('目标尚未同步'); return }
     setGeneratingNextWeek(true)
     try {
-      const response = await apiFetch<{ generated_tasks: number }>(`/api/goals/${selectedGoal._serverId}/plan/next-week`, {
-        method: 'POST',
-      })
-      message.success(`下周任务已生成，共 ${response.generated_tasks} 个任务`)
-      // Reload tasks
+      const r = await apiFetch<{ generated_tasks: number }>(`/api/goals/${selectedGoal._serverId}/plan/next-week`, { method: 'POST' })
+      message.success(`已生成 ${r.generated_tasks} 个下周任务`)
       window.location.reload()
-    } catch (error: any) {
-      message.error(error.message || '生成下周任务失败')
+    } catch (e: any) {
+      message.error(e.message || '生成失败')
     } finally {
       setGeneratingNextWeek(false)
     }
   }
 
-  // Helper: get server id for session lookup
-  const getSessionForTask = (task: OfflineGoalTaskItem) =>
-    task._serverId ? activeSessions[task._serverId] : undefined
+  // Milestone tasks (for parent selector)
+  const milestones = goalTasks.filter(t => t.task_type === 'milestone' && t._serverId)
+
+  const renderTaskNode = (t: OfflineGoalTaskItem) => {
+    const isMilestone = t.task_type === 'milestone'
+    const hasSession = t._serverId ? !!activeSessions[t._serverId] : false
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '2px 0' }}>
+        <span style={{ fontWeight: isMilestone ? 600 : 400, fontSize: isMilestone ? 13 : 12 }}>{t.title}</span>
+        {t._syncStatus !== 'synced' && <Tag color="orange" style={{ fontSize: 10 }}>未同步</Tag>}
+        <Tag color={STATUS_COLOR[t.status]} style={{ fontSize: 10 }}>{STATUS_LABEL[t.status]}</Tag>
+        {t.planned_date && <Tag style={{ fontSize: 10 }}>{t.planned_date}</Tag>}
+        {hasSession && <Tag color="cyan" style={{ fontSize: 10 }}>学习中</Tag>}
+        <Space size={2} style={{ marginLeft: 4 }}>
+          {t.status !== 'in_progress' && (
+            <Button size="small" style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => quickStatus(t, 'in_progress')}>开始</Button>
+          )}
+          <Button size="small" type="primary" ghost style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => quickStatus(t, 'completed')}>完成</Button>
+          {hasSession
+            ? <Button size="small" danger style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => completeLearning(t)}>结束会话</Button>
+            : <Button size="small" style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => startLearning(t)}>学习</Button>
+          }
+          <Button size="small" style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => {
+            setTaskParentId(t._serverId ?? null)
+            setTaskType('learn')
+            setTaskModalOpen(true)
+          }}>+子任务</Button>
+          <Button size="small" danger style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => {
+            Modal.confirm({
+              title: '删除任务', content: `确定删除"${t.title}"？`,
+              okText: '删除', okType: 'danger', cancelText: '取消',
+              onOk: async () => {
+                try {
+                  await deleteGoalTask(t._localId)
+                  message.success('已删除')
+                } catch (error: any) {
+                  message.error(error?.message || '删除失败')
+                }
+              },
+            })
+          }}>删除</Button>
+        </Space>
+      </div>
+    )
+  }
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Header style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', paddingInline: 16 }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', height: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回学习页</Button>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
+            <ApartmentOutlined style={{ fontSize: 16, color: 'var(--accent-600)' }} />
             <span style={{ fontSize: 16, fontWeight: 600 }}>目标与任务</span>
             <Segmented
               value={filter}
-              onChange={(v) => setFilter(v as GoalFilter)}
+              onChange={v => setFilter(v as GoalFilter)}
               options={[
                 { label: '全部', value: 'all' },
                 { label: '进行中', value: 'active' },
                 { label: '已完成', value: 'completed' },
                 { label: '暂停', value: 'paused' },
               ]}
+              size="small"
             />
           </Space>
-          <Space>
-            <Button icon={<PlusOutlined />} onClick={() => setGoalModalOpen(true)}>新建目标</Button>
-            <Button type="primary" icon={<PlusOutlined />} disabled={!selectedGoal} onClick={() => setTaskModalOpen(true)}>添加任务</Button>
-          </Space>
+          <Button icon={<PlusOutlined />} onClick={() => setGoalModalOpen(true)}>新建大目标</Button>
         </div>
       </Header>
 
       <Content style={{ padding: 16 }}>
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
           <Row gutter={[16, 16]}>
-            <Col xs={24} lg={8}>
-              <Card size="small" title="学习目标">
-                <List
-                  dataSource={goals}
-                  locale={{ emptyText: '暂无目标，先创建一个' }}
-                  renderItem={(g) => (
-                    <List.Item
-                      style={{ cursor: 'pointer', background: selectedGoal?._localId === g._localId ? '#e6f7ff' : 'transparent', borderRadius: 6, paddingInline: 8 }}
-                      onClick={() => setSelectedGoal(g)}
-                    >
-                      <List.Item.Meta
-                        title={
-                          <Space size={4}>
-                            <span style={{ fontSize: 13 }}>{g.title}</span>
-                            {g._syncStatus !== 'synced' && (
-                              <Tag color="orange" style={{ fontSize: 10 }}>未同步</Tag>
-                            )}
-                          </Space>
-                        }
-                        description={
-                          <Space wrap size={4}>
-                            <Tag color={g.status === 'active' ? 'blue' : g.status === 'completed' ? 'green' : 'default'}>
-                              {g.status === 'active' ? '进行中' : g.status === 'completed' ? '已完成' : '暂停'}
-                            </Tag>
-                            {g.deadline && <Tag>{g.deadline}</Tag>}
-                          </Space>
-                        }
+            {/* Goals list */}
+            <Col xs={24} lg={7}>
+              <Card size="small" title={<span><FlagOutlined style={{ marginRight: 6 }} />大目标</span>}>
+                {goals.length === 0 && (
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: 13, padding: '8px 0' }}>
+                    暂无目标，点击右上角新建
+                  </div>
+                )}
+                {goals.map(g => (
+                  <div
+                    key={g._localId}
+                    onClick={() => setSelectedGoal(g)}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      marginBottom: 6,
+                      border: `1px solid ${selectedGoal?._localId === g._localId ? 'var(--accent-600)' : 'var(--border-color)'}`,
+                      background: selectedGoal?._localId === g._localId ? 'var(--accent-50)' : 'var(--bg-tertiary)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{g.title}</div>
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        style={{ flexShrink: 0, marginLeft: 4 }}
+                        onClick={e => {
+                          e.stopPropagation()
+                          Modal.confirm({
+                            title: '删除大目标',
+                            content: `确定删除"${g.title}"？相关任务也将被删除。`,
+                            okText: '删除', okType: 'danger', cancelText: '取消',
+                            onOk: async () => {
+                              try {
+                                await deleteGoal(g._localId)
+                                message.success('已删除')
+                              } catch (error: any) {
+                                message.error(error?.message || '删除失败')
+                              }
+                            },
+                          })
+                        }}
                       />
-                    </List.Item>
-                  )}
-                />
+                    </div>
+                    <Space size={4} wrap>
+                      <Tag color={g.status === 'active' ? 'blue' : g.status === 'completed' ? 'green' : 'default'} style={{ fontSize: 11 }}>
+                        {g.status === 'active' ? '进行中' : g.status === 'completed' ? '已完成' : '暂停'}
+                      </Tag>
+                      {g.deadline && <Tag style={{ fontSize: 11 }}>{g.deadline}</Tag>}
+                      {g._syncStatus !== 'synced' && <Tag color="orange" style={{ fontSize: 10 }}>未同步</Tag>}
+                    </Space>
+                  </div>
+                ))}
               </Card>
             </Col>
 
-            <Col xs={24} lg={16}>
-              <Card
-                size="small"
-                title={selectedGoal ? `目标任务：${selectedGoal.title}` : '目标任务'}
-                extra={
-                  selectedGoal ? (
+            {/* Task tree */}
+            <Col xs={24} lg={17}>
+              {!selectedGoal ? (
+                <Card size="small">
+                  <div style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: 32 }}>请先选择一个大目标</div>
+                </Card>
+              ) : (
+                <Card
+                  size="small"
+                  title={
                     <Space>
-                      <Button
-                        size="small"
-                        icon={<CalendarOutlined />}
-                        onClick={() => setPlanModalOpen(true)}
-                      >
-                        制定学习计划
-                      </Button>
-                      <Button
-                        size="small"
-                        type="primary"
-                        loading={generatingNextWeek}
-                        onClick={handleGenerateNextWeek}
-                      >
-                        生成下周任务
-                      </Button>
-                      <Tag>{goalTasks.length} 项</Tag>
+                      <span style={{ fontWeight: 600 }}>{selectedGoal.title}</span>
+                      {stats.total > 0 && (
+                        <Tag color="blue">{stats.done}/{stats.total} 完成</Tag>
+                      )}
                     </Space>
-                  ) : undefined
-                }
-              >
-                <List
-                  dataSource={goalTasks}
-                  locale={{ emptyText: selectedGoal ? '该目标暂无任务' : '先选择一个目标' }}
-                  renderItem={(t) => (
-                    <List.Item
-                      actions={[
-                        <Button size="small" onClick={() => quickStatus(t, 'pending')}>待办</Button>,
-                        <Button size="small" onClick={() => quickStatus(t, 'in_progress')}>进行中</Button>,
-                        <Button size="small" type="primary" ghost onClick={() => quickStatus(t, 'completed')}>完成(先评估)</Button>,
-                        getSessionForTask(t) ? (
-                          <Button size="small" danger onClick={() => completeLearning(t)}>结束会话</Button>
-                        ) : (
-                          <Button size="small" onClick={() => startLearning(t)}>开始学习</Button>
-                        ),
-                        <Button size="small" onClick={() => navigate('/')}>去对话</Button>,
-                        <Button size="small" onClick={() => createTaskNote(t)}>写笔记</Button>,
-                        <Button size="small" onClick={() => openEval(t)}>评估输出</Button>,
-                        <Button
-                          size="small"
-                          danger
-                          onClick={async () => {
-                            Modal.confirm({
-                              title: '删除任务',
-                              content: `确定要删除任务"${t.title}"吗？`,
-                              okText: '删除',
-                              okType: 'danger',
-                              cancelText: '取消',
-                              onOk: async () => {
-                                const success = await deleteGoalTask(t._localId)
-                                if (success) {
-                                  message.success('任务已删除')
-                                } else {
-                                  message.error('删除失败')
-                                }
-                              },
-                            })
-                          }}
-                        >
-                          删除
-                        </Button>,
-                      ]}
-                    >
-                      <List.Item.Meta
-                        title={
-                          <Space size={4}>
-                            <span style={{ fontSize: 13 }}>{t.title}</span>
-                            {t._syncStatus !== 'synced' && (
-                              <Tag color="orange" style={{ fontSize: 10 }}>未同步</Tag>
-                            )}
-                          </Space>
-                        }
-                        description={
-                          <Space wrap size={6}>
-                            <Tag>{t.task_type || 'learn'}</Tag>
-                            <Tag color={t.status === 'completed' ? 'green' : t.status === 'in_progress' ? 'orange' : 'default'}>{t.status}</Tag>
-                            {t._serverId && activeSessions[t._serverId] && <Tag color="cyan">学习中</Tag>}
-                            {t.planned_date && <Tag>{t.planned_date}</Tag>}
-                            {t.chapter_title && <Tag>{t.chapter_title}</Tag>}
-                          </Space>
-                        }
-                      />
-                    </List.Item>
+                  }
+                  extra={
+                    <Space size={4}>
+                      <Tooltip title="添加里程碑（子目标）">
+                        <Button size="small" icon={<FlagOutlined />} onClick={() => { setTaskType('milestone'); setTaskParentId(null); setTaskModalOpen(true) }}>
+                          里程碑
+                        </Button>
+                      </Tooltip>
+                      <Tooltip title="添加每日任务">
+                        <Button size="small" icon={<PlusOutlined />} type="primary" onClick={() => { setTaskType('learn'); setTaskModalOpen(true) }}>
+                          添加任务
+                        </Button>
+                      </Tooltip>
+                      <Button size="small" icon={<CalendarOutlined />} onClick={() => setPlanModalOpen(true)}>制定计划</Button>
+                      <Button size="small" loading={generatingNextWeek} onClick={handleGenerateNextWeek}>生成下周</Button>
+                    </Space>
+                  }
+                >
+                  {stats.total > 0 && (
+                    <Progress
+                      percent={Math.round((stats.done / stats.total) * 100)}
+                      size="small"
+                      style={{ marginBottom: 12 }}
+                      strokeColor="var(--accent-600)"
+                    />
                   )}
-                />
-              </Card>
+
+                  {treeData.length === 0 ? (
+                    <div style={{ color: 'var(--text-tertiary)', textAlign: 'center', padding: 24 }}>
+                      暂无任务。先添加里程碑（子目标），再在里程碑下添加每日任务。
+                    </div>
+                  ) : (
+                    <Tree
+                      showIcon
+                      blockNode
+                      expandedKeys={expandedKeys}
+                      onExpand={keys => setExpandedKeys(keys)}
+                      treeData={treeData}
+                      titleRender={node => renderTaskNode(node.title as unknown as OfflineGoalTaskItem)}
+                      style={{ background: 'transparent' }}
+                    />
+                  )}
+                </Card>
+              )}
             </Col>
           </Row>
-
-          <Card size="small" title="每日任务视图" style={{ marginTop: 16 }}>
-            <Space style={{ marginBottom: 12 }}>
-              <span>日期：</span>
-              <DatePicker value={selectedDay} onChange={(v) => setSelectedDay(v || dayjs())} />
-              <Tag color="blue">{dailyTasks.length} 项</Tag>
-            </Space>
-            <List
-              dataSource={dailyTasks}
-              locale={{ emptyText: '当天暂无任务' }}
-              renderItem={(t) => (
-                <List.Item>
-                  <List.Item.Meta
-                    title={t.title}
-                    description={`${t.status} · ${t.task_type || 'learn'} · 目标ID ${t.goal_id ?? '(未同步)'}`}
-                  />
-                </List.Item>
-              )}
-            />
-          </Card>
         </div>
       </Content>
 
-      <Modal
-        title="新建目标"
-        open={goalModalOpen}
-        onOk={handleCreateGoal}
-        onCancel={() => setGoalModalOpen(false)}
-        okText="创建"
-      >
+      {/* New Goal Modal */}
+      <Modal title="新建大目标" open={goalModalOpen} onOk={handleCreateGoal} onCancel={() => setGoalModalOpen(false)} okText="创建">
         <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>目标标题</div>
-          <Input value={goalTitle} onChange={(e) => setGoalTitle(e.target.value)} />
+          <div style={{ marginBottom: 4 }}>目标标题 <span style={{ color: 'red' }}>*</span></div>
+          <Input placeholder="例如：英语六级考试过线" value={goalTitle} onChange={e => setGoalTitle(e.target.value)} />
         </div>
         <div style={{ marginBottom: 10 }}>
           <div style={{ marginBottom: 4 }}>描述</div>
-          <Input value={goalDesc} onChange={(e) => setGoalDesc(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>目标等级</div>
-          <Input value={goalTargetLevel} onChange={(e) => setGoalTargetLevel(e.target.value)} placeholder="例如：掌握到 80%" />
+          <Input value={goalDesc} onChange={e => setGoalDesc(e.target.value)} />
         </div>
         <div>
           <div style={{ marginBottom: 4 }}>截止日期</div>
-          <DatePicker style={{ width: '100%' }} onChange={(v) => setGoalDeadline(v ? v.format('YYYY-MM-DD') : undefined)} />
+          <DatePicker style={{ width: '100%' }} onChange={v => setGoalDeadline(v ? v.format('YYYY-MM-DD') : undefined)} />
         </div>
       </Modal>
 
+      {/* New Task Modal */}
       <Modal
-        title="添加任务"
+        title={taskType === 'milestone' ? '添加里程碑（子目标）' : '添加任务'}
         open={taskModalOpen}
         onOk={handleCreateTask}
         onCancel={() => setTaskModalOpen(false)}
         okText="创建"
       >
         <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>任务标题</div>
-          <Input value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>描述</div>
-          <Input value={taskDesc} onChange={(e) => setTaskDesc(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>任务类型</div>
+          <div style={{ marginBottom: 4 }}>类型</div>
           <Select
-            value={taskType}
-            onChange={setTaskType}
-            style={{ width: '100%' }}
+            value={taskType} onChange={setTaskType} style={{ width: '100%' }}
             options={[
-              { label: '学习', value: 'learn' },
-              { label: '复习', value: 'review' },
-              { label: '练习', value: 'practice' },
-              { label: '总结', value: 'summarize' },
+              { label: '🚩 里程碑（子目标）', value: 'milestone' },
+              { label: '📚 学习', value: 'learn' },
+              { label: '🔄 复习', value: 'review' },
+              { label: '✏️ 练习', value: 'practice' },
+              { label: '📝 总结', value: 'summarize' },
             ]}
           />
         </div>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ marginBottom: 4 }}>标题 <span style={{ color: 'red' }}>*</span></div>
+          <Input
+            placeholder={taskType === 'milestone' ? '例如：词汇量提升到 5000' : '例如：背诵 Unit 3 单词'}
+            value={taskTitle}
+            onChange={e => setTaskTitle(e.target.value)}
+          />
+        </div>
+        {taskType !== 'milestone' && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ marginBottom: 4 }}>所属里程碑（可选）</div>
+            <Select
+              allowClear placeholder="不选则直接挂在目标下"
+              value={taskParentId ?? undefined}
+              onChange={v => setTaskParentId(v ? Number(v) : null)}
+              style={{ width: '100%' }}
+              options={milestones.map(t => ({ label: t.title, value: t._serverId! }))}
+            />
+          </div>
+        )}
         <div>
           <div style={{ marginBottom: 4 }}>计划日期</div>
-          <DatePicker style={{ width: '100%' }} onChange={(v) => setTaskPlannedDate(v ? v.format('YYYY-MM-DD') : undefined)} />
+          <DatePicker style={{ width: '100%' }} onChange={v => setTaskPlannedDate(v ? v.format('YYYY-MM-DD') : undefined)} />
         </div>
       </Modal>
 
+      {/* Eval Modal */}
       <Modal
         title={`输出评估${evalTask ? `：${evalTask.title}` : ''}`}
         open={evalModalOpen}
@@ -528,30 +473,21 @@ export function GoalsTasksPage() {
         confirmLoading={evalLoading}
         onCancel={() => setEvalModalOpen(false)}
         okText="开始评估"
-        width={760}
+        width={680}
       >
         <div style={{ marginBottom: 10 }}>
           <div style={{ marginBottom: 4 }}>评估标准</div>
-          <Input value={evalRubric} onChange={(e) => setEvalRubric(e.target.value)} />
+          <Input value={evalRubric} onChange={e => setEvalRubric(e.target.value)} />
         </div>
         <div style={{ marginBottom: 10 }}>
-          <div style={{ marginBottom: 4 }}>你的学习产出（摘要/答案/讲解）</div>
-          <Input.TextArea value={evalOutput} onChange={(e) => setEvalOutput(e.target.value)} autoSize={{ minRows: 6, maxRows: 12 }} />
+          <div style={{ marginBottom: 4 }}>你的学习产出</div>
+          <Input.TextArea value={evalOutput} onChange={e => setEvalOutput(e.target.value)} autoSize={{ minRows: 5, maxRows: 12 }} />
         </div>
         {evalResult && (
-          <Card size="small" title={`评分结果：${evalResult.score} 分（${evalResult.verdict}）`}>
-            <div style={{ marginBottom: 8 }}>
-              <b>优点：</b>
-              <ul>{evalResult.strengths.map((s, i) => <li key={`s-${i}`}>{s}</li>)}</ul>
-            </div>
-            <div style={{ marginBottom: 8 }}>
-              <b>不足：</b>
-              <ul>{evalResult.gaps.map((s, i) => <li key={`g-${i}`}>{s}</li>)}</ul>
-            </div>
-            <div>
-              <b>下一步：</b>
-              <ul>{evalResult.next_actions.map((s, i) => <li key={`n-${i}`}>{s}</li>)}</ul>
-            </div>
+          <Card size="small" title={`评分：${evalResult.score} 分（${evalResult.verdict}）`}>
+            <b>优点：</b><ul>{evalResult.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            <b>不足：</b><ul>{evalResult.gaps.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            <b>下一步：</b><ul>{evalResult.next_actions.map((s, i) => <li key={i}>{s}</li>)}</ul>
           </Card>
         )}
       </Modal>
@@ -561,10 +497,7 @@ export function GoalsTasksPage() {
         goalId={selectedGoal?._serverId || null}
         materialId={selectedGoal?.material_id || null}
         onClose={() => setPlanModalOpen(false)}
-        onSuccess={() => {
-          // Reload tasks after plan is set
-          window.location.reload()
-        }}
+        onSuccess={() => window.location.reload()}
       />
     </Layout>
   )

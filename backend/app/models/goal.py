@@ -39,6 +39,7 @@ class Task(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     goal_id = Column(Integer, ForeignKey("goals.id"), nullable=False, index=True, comment="所属目标")
+    parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True, comment="父任务（用于子任务）")
     chapter_id = Column(Integer, ForeignKey("chapters.id"), comment="关联章节")
     title = Column(String(200), nullable=False, comment="任务标题")
     description = Column(Text, comment="任务描述")
@@ -51,5 +52,7 @@ class Task(Base):
 
     # 关联关系
     goal = relationship("Goal", back_populates="tasks")
+    parent_task = relationship("Task", remote_side=[id], back_populates="subtasks")
+    subtasks = relationship("Task", back_populates="parent_task", cascade="all")
     study_sessions = relationship("StudySession", back_populates="task")
     pomodoros = relationship("Pomodoro", back_populates="task")
