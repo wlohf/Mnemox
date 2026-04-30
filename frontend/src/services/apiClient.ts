@@ -14,6 +14,13 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+export function withAuthQuery(url: string): string {
+  const token = getToken()
+  if (!token || !url.startsWith('/api/')) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
+}
+
 // ── Network status tracking ──
 
 let _networkOnline = navigator.onLine

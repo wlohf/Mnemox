@@ -638,7 +638,7 @@ async def chat_send(
         provider = await AIProviderFactory.create_provider(db=db, scenario="chat_main", user_id=current_user.id)
     except Exception as e:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
         )
 
@@ -869,7 +869,7 @@ async def chat_send_sync(
         )
     except Exception as e:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
         )
 

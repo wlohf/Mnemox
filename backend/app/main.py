@@ -3,8 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
@@ -147,7 +146,7 @@ async def health():
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -175,9 +174,53 @@ app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
+app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
 
-# Mount static files for uploaded images (must be after all include_router calls)
-app.mount("/api/uploads", StaticFiles(directory=str(get_uploads_dir())), name="uploads")
+
+@app.get("/api/uploads/{file_path:path}")
+async def get_uploaded_file(file_path: str, request: Request):
+    """Serve uploaded files only to authenticated users.
+
+    The old StaticFiles mount exposed every file under data/uploads publicly.
+    This route keeps existing /api/uploads/... URLs but requires a bearer token
+    from the Authorization header or a ?token=... query parameter for contexts
+    such as markdown image rendering.
+    """
+    from urllib.parse import unquote
+
+    from fastapi import HTTPException, status
+
+    from app.auth import get_user_from_token
+    from app.database import async_session_maker
+
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    else:
+        token = (request.query_params.get("token") or "").strip()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未提供访问令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    async with async_session_maker() as session:
+        await get_user_from_token(token, session)
+
+    uploads_root = get_uploads_dir().resolve()
+    target = (uploads_root / unquote(file_path)).resolve()
+    try:
+        target.relative_to(uploads_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    return FileResponse(target)
 
 
 if __name__ == "__main__":

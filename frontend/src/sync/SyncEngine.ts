@@ -1,5 +1,5 @@
 import { db, type ModuleName, type QueuedOperation } from '../db/studyDb'
-import { isNetworkOnline } from '../services/apiClient'
+import { getToken, isNetworkOnline } from '../services/apiClient'
 
 // ── Adapter interface ──
 
@@ -50,6 +50,10 @@ class SyncEngine {
     this.state.online = navigator.onLine
     if (!navigator.onLine) this.setState({ status: 'offline', online: false })
 
+    if (this.intervalId) {
+      return
+    }
+
     // Periodic sync every 30 seconds
     this.intervalId = setInterval(() => {
       void this.syncAll()
@@ -72,6 +76,10 @@ class SyncEngine {
 
   async syncAll() {
     if (this.processing) return
+    if (!getToken()) {
+      this.setState({ status: 'idle', online: isNetworkOnline() })
+      return
+    }
     if (!isNetworkOnline()) {
       this.setState({ status: 'offline', online: false })
       return
@@ -183,7 +191,9 @@ class SyncEngine {
 
   private handleOnline = () => {
     this.setState({ status: 'idle', online: true })
-    void this.syncAll()
+    if (getToken()) {
+      void this.syncAll()
+    }
   }
 
   private handleOffline = () => {

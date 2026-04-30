@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -133,7 +134,13 @@ async def list_wrong_questions(
     current_user: User = Depends(get_current_user),
 ):
     # 在 SQL 层直接过滤，避免加载全部数据到内存
-    query = select(WrongQuestion).where(WrongQuestion.user_id == current_user.id)
+    query = (
+        select(WrongQuestion)
+        .options(
+            selectinload(WrongQuestion.question).selectinload(Question.chapter)
+        )
+        .where(WrongQuestion.user_id == current_user.id)
+    )
     if mastery_status:
         query = query.where(WrongQuestion.mastery_status == mastery_status)
     if due_only:
@@ -204,6 +211,12 @@ async def create_wrong_question(
         pass  # Non-blocking
 
     await db.refresh(wrong)
+    created_result = await db.execute(
+        select(WrongQuestion)
+        .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+        .where(WrongQuestion.id == wrong.id, WrongQuestion.user_id == current_user.id)
+    )
+    wrong_item = created_result.scalar_one_or_none() or wrong
 
     # 记录学习事件：新增错题
     try:
@@ -220,7 +233,7 @@ async def create_wrong_question(
     except Exception:
         pass  # 事件追踪不影响主流程
 
-    return _to_item(wrong)
+    return _to_item(wrong_item)
 
 
 @router.put("/{wrong_question_id}")
@@ -231,7 +244,9 @@ async def update_wrong_question(
     current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(WrongQuestion).where(
+        select(WrongQuestion)
+        .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+        .where(
             WrongQuestion.id == wrong_question_id,
             WrongQuestion.user_id == current_user.id,
         )
@@ -265,7 +280,9 @@ async def review_wrong_question(
         raise HTTPException(status_code=400, detail="quality 必须在 0-5")
 
     result = await db.execute(
-        select(WrongQuestion).where(
+        select(WrongQuestion)
+        .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+        .where(
             WrongQuestion.id == wrong_question_id,
             WrongQuestion.user_id == current_user.id,
         )
@@ -366,7 +383,9 @@ async def delete_wrong_question(
     current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(WrongQuestion).where(
+        select(WrongQuestion)
+        .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+        .where(
             WrongQuestion.id == wrong_question_id,
             WrongQuestion.user_id == current_user.id,
         )

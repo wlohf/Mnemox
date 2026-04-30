@@ -353,3 +353,13 @@ StudyAssistant/
 ## License
 
 MIT © 2025
+
+## Agent 工作台
+
+本项目已内置轻量级 Agent 架构：
+
+- `chat`：学习问答与苏格拉底式追问，复用用户 AI 设置，未配置 AI 时返回友好提示。
+- `review`：读取当前用户到期错题，生成复习摘要与下一步行动。
+- `study_plan`：汇总待办任务和到期复习，生成今日学习安排。
+
+登录后可在侧边栏进入 **Agent** 页面，也可以通过 `/api/agent` 与 `/api/agent/{name}/run` 调用。详细架构见 `docs/AGENT_ARCHITECTURE.md`。

@@ -176,7 +176,10 @@ async def create_note(
         db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
-    await db.refresh(note)
+    result = await db.execute(
+        select(Note).options(selectinload(Note.links)).where(Note.id == note.id, Note.user_id == current_user.id)
+    )
+    note = result.scalar_one()
     return _to_item(note)
 
 
@@ -216,7 +219,10 @@ async def update_note(
             db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
-    await db.refresh(note)
+    result = await db.execute(
+        select(Note).options(selectinload(Note.links)).where(Note.id == note.id, Note.user_id == current_user.id)
+    )
+    note = result.scalar_one()
     return _to_item(note)
 
 

@@ -55,6 +55,7 @@ import {
   CreditCardOutlined,
   DashboardOutlined,
   MenuOutlined,
+  RobotOutlined,
 } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1344,6 +1345,7 @@ export function ObsidianLayout() {
     { key: '/notes', icon: <FileTextOutlined />, label: '笔记' },
     { key: '/anki', icon: <CreditCardOutlined />, label: 'Anki卡片' },
     { key: '/plans', icon: <CalendarOutlined />, label: '学习计划' },
+    { key: '/agent', icon: <RobotOutlined />, label: 'Agent' },
   ]
 
   return (

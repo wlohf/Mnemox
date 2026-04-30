@@ -33,10 +33,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
 
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
+async def get_user_from_token(token: str, db: AsyncSession) -> User:
+    """Decode a JWT token and return the active user it represents."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无法验证凭据",
@@ -47,7 +45,7 @@ async def get_current_user(
         user_id: Optional[int] = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError:
+    except (JWTError, ValueError):
         raise credentials_exception
 
     result = await db.execute(select(User).where(User.id == int(user_id)))
@@ -55,3 +53,10 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    return await get_user_from_token(token, db)

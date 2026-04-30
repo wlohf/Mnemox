@@ -30,6 +30,7 @@ const EDAReportPage = lazy(() => import('./pages/EDAReportPage').then(m => ({ de
 const InterventionPage = lazy(() => import('./pages/InterventionPage').then(m => ({ default: m.InterventionPage })))
 const AnkiPage = lazy(() => import('./pages/AnkiPage').then(m => ({ default: m.AnkiPage })))
 const PlansPage = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })))
+const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
 
 const PageSpinner = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -73,15 +74,24 @@ function App() {
   const autoCheckTimer = useRef<number | null>(null)
 
   useEffect(() => {
-    // Register all sync adapters and start the engine
+    // Register all sync adapters once. Start sync only after login to avoid
+    // unauthenticated requests racing against auth bootstrap.
     syncEngine.registerAdapter(notesSyncAdapter)
     syncEngine.registerAdapter(goalsSyncAdapter)
     syncEngine.registerAdapter(goalTasksSyncAdapter)
     syncEngine.registerAdapter(ankiCardsSyncAdapter)
     syncEngine.registerAdapter(wrongQuestionsSyncAdapter)
-    syncEngine.start()
     return () => syncEngine.stop()
   }, [])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      syncEngine.stop()
+      return
+    }
+    syncEngine.start()
+    return () => syncEngine.stop()
+  }, [isAuthenticated])
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -233,6 +243,7 @@ function App() {
             <Route path="/intervention" element={<ProtectedRoute><InterventionPage /></ProtectedRoute>} />
             <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
             <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
+            <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

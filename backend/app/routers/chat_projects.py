@@ -92,7 +92,11 @@ async def list_projects(
             ChatProject,
             func.count(ChatConversation.id).label("conv_count"),
         )
-        .outerjoin(ChatConversation, ChatConversation.project_id == ChatProject.id)
+        .outerjoin(
+            ChatConversation,
+            (ChatConversation.project_id == ChatProject.id)
+            & (ChatConversation.user_id == current_user.id),
+        )
         .where(
             ChatProject.is_archived == False,
             ChatProject.user_id == current_user.id,
@@ -235,13 +239,21 @@ async def get_project(
         raise HTTPException(status_code=404, detail="项目不存在")
 
     count_result = await db.execute(
-        select(func.count(ChatConversation.id)).where(ChatConversation.project_id == project.id)
+        select(func.count(ChatConversation.id)).where(
+            ChatConversation.project_id == project.id,
+            ChatConversation.user_id == current_user.id,
+        )
     )
     conv_count = count_result.scalar() or 0
 
     # 获取关联的资料 ID
     mat_result = await db.execute(
-        select(ChatProjectMaterial.material_id).where(ChatProjectMaterial.project_id == project.id)
+        select(ChatProjectMaterial.material_id)
+        .join(Material, ChatProjectMaterial.material_id == Material.id)
+        .where(
+            ChatProjectMaterial.project_id == project.id,
+            Material.user_id == current_user.id,
+        )
     )
     material_ids = [row[0] for row in mat_result.all()]
 
@@ -315,7 +327,10 @@ async def delete_project(
 
     # 将该项目下的对话设为无项目
     conv_result = await db.execute(
-        select(ChatConversation).where(ChatConversation.project_id == project_id)
+        select(ChatConversation).where(
+            ChatConversation.project_id == project_id,
+            ChatConversation.user_id == current_user.id,
+        )
     )
     for conv in conv_result.scalars().all():
         conv.project_id = None
@@ -338,6 +353,12 @@ async def add_material(
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    material_result = await db.execute(
+        select(Material).where(Material.id == body.material_id, Material.user_id == current_user.id)
+    )
+    if not material_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="资料不存在")
 
     # 检查是否已关联
     existing = await db.execute(
@@ -370,6 +391,12 @@ async def remove_material(
     )
     if not proj_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
+
+    material_result = await db.execute(
+        select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
+    )
+    if not material_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="资料不存在")
 
     result = await db.execute(
         select(ChatProjectMaterial).where(
@@ -405,6 +432,22 @@ async def batch_update_materials(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
 
+    requested_ids = set(body.remove_material_ids + body.add_material_ids)
+    valid_ids: set[int] = set()
+    if requested_ids:
+        valid_result = await db.execute(
+            select(Material.id).where(
+                Material.user_id == current_user.id,
+                Material.id.in_(requested_ids),
+            )
+        )
+        valid_ids = {row[0] for row in valid_result.all()}
+        if valid_ids != requested_ids:
+            raise HTTPException(status_code=404, detail="部分资料不存在")
+
+    removed = 0
+    added = 0
+
     # 移除关联
     if body.remove_material_ids:
         for mid in body.remove_material_ids:
@@ -417,6 +460,7 @@ async def batch_update_materials(
             assoc = result.scalar_one_or_none()
             if assoc:
                 await db.delete(assoc)
+                removed += 1
 
     # 添加关联（跳过已存在）
     if body.add_material_ids:
@@ -429,13 +473,14 @@ async def batch_update_materials(
             )
             if not existing.scalar_one_or_none():
                 db.add(ChatProjectMaterial(project_id=project_id, material_id=mid))
+                added += 1
 
     await db.flush()
-    impacted_ids = set(body.remove_material_ids + body.add_material_ids)
+    impacted_ids = valid_ids
     for mid in impacted_ids:
         await _reindex_material_for_projects(db, mid, current_user.id)
     return {
         "ok": True,
-        "added": len(body.add_material_ids),
-        "removed": len(body.remove_material_ids)
+        "added": added,
+        "removed": removed,
     }
