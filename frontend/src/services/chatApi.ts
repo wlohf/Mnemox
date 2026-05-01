@@ -76,7 +76,8 @@ export async function sendMessageStream(
 
     if (!res.ok) {
       const err = await res.json().catch(() => null)
-      onError(err?.detail || `请求失败 (${res.status})`)
+      const detail = err?.detail
+      onError(typeof detail === 'string' ? detail : detail?.message || `请求失败 (${res.status})`)
       return
     }
 

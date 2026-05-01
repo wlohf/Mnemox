@@ -12,6 +12,7 @@ import { wrongQuestionsSyncAdapter } from './sync/adapters/wrongQuestionsSyncAda
 import { useThemeStore } from './stores/themeStore'
 import { useAuthStore } from './stores/authStore'
 import { checkSystemUpdate } from './services/systemApi'
+import { getToken } from './services/apiClient'
 
 const ObsidianLayout = lazy(() => import('./components/Layout/ObsidianLayout').then(m => ({ default: m.ObsidianLayout })))
 const PomodoroPage = lazy(() => import('./pages/PomodoroPage').then(m => ({ default: m.PomodoroPage })))
@@ -28,6 +29,7 @@ const PromptsPage = lazy(() => import('./pages/PromptsPage').then(m => ({ defaul
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
 const EDAReportPage = lazy(() => import('./pages/EDAReportPage').then(m => ({ default: m.EDAReportPage })))
 const InterventionPage = lazy(() => import('./pages/InterventionPage').then(m => ({ default: m.InterventionPage })))
+const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
 const AnkiPage = lazy(() => import('./pages/AnkiPage').then(m => ({ default: m.AnkiPage })))
 const PlansPage = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })))
 
@@ -73,15 +75,21 @@ function App() {
   const autoCheckTimer = useRef<number | null>(null)
 
   useEffect(() => {
-    // Register all sync adapters and start the engine
     syncEngine.registerAdapter(notesSyncAdapter)
     syncEngine.registerAdapter(goalsSyncAdapter)
     syncEngine.registerAdapter(goalTasksSyncAdapter)
     syncEngine.registerAdapter(ankiCardsSyncAdapter)
     syncEngine.registerAdapter(wrongQuestionsSyncAdapter)
-    syncEngine.start()
-    return () => syncEngine.stop()
   }, [])
+
+  useEffect(() => {
+    if (isAuthenticated && getToken()) {
+      syncEngine.start(true)
+    } else {
+      syncEngine.stop()
+    }
+    return () => syncEngine.stop()
+  }, [isAuthenticated])
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -231,6 +239,7 @@ function App() {
             <Route path="/prompts" element={<ProtectedRoute><PromptsPage /></ProtectedRoute>} />
             <Route path="/eda" element={<ProtectedRoute><EDAReportPage /></ProtectedRoute>} />
             <Route path="/intervention" element={<ProtectedRoute><InterventionPage /></ProtectedRoute>} />
+            <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
             <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
             <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />

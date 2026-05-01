@@ -70,6 +70,7 @@ class MaterialService:
                     title=title,
                     content=content,
                     file_type=file_type,
+                    user_id=user_id,
                 )
             except Exception as e:
                 logger.warning("同步到 RAG 知识库失败: %s", e)
@@ -96,10 +97,13 @@ class MaterialService:
         result = await self.db.execute(query.offset(skip).limit(limit))
         return list(result.scalars().all())
 
-    async def delete_material(self, material_id: int) -> bool:
+    async def delete_material(self, material_id: int, user_id: Optional[int] = None) -> bool:
         """删除资料记录及其本地文件。"""
         material = await self.get_material(material_id)
         if not material:
+            return False
+        material_user_id = int(getattr(material, "user_id", 0) or 0)
+        if user_id is not None and material_user_id != int(user_id):
             return False
 
         abs_file_path = None
@@ -112,7 +116,7 @@ class MaterialService:
 
         if settings.RAG_ENABLED:
             try:
-                await self.rag.remove_material(material_id)
+                await self.rag.remove_material(material_id, user_id=material_user_id)
             except Exception as e:
                 logger.warning("从 RAG 删除资料失败: %s", e)
 
@@ -130,9 +134,6 @@ class MaterialService:
         user_id: int,
     ) -> Dict[str, Any]:
         """使用 RAG 检索 + AI 分析资料"""
-        if not settings.RAG_ENABLED:
-            raise RuntimeError("RAG 知识库未启用")
-
         material = await self.get_material(material_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
@@ -153,7 +154,7 @@ class MaterialService:
         results = []
 
         for question in questions:
-            chunks = await self.rag.retrieve_for_material(question, material_id)
+            chunks = await self.rag.retrieve_for_material(question, material_id, user_id=user_id) if settings.RAG_ENABLED else []
             context = "\n\n".join(c["text"] for c in chunks) if chunks else (material.content or "")[:4000]
 
             prompt = f"关于《{material.title}》的以下内容：\n\n{context}\n\n问题：{question}"
@@ -172,14 +173,11 @@ class MaterialService:
         user_id: int,
     ) -> str:
         """向 AI 提问关于某份资料的问题"""
-        if not settings.RAG_ENABLED:
-            raise RuntimeError("RAG 知识库未启用")
-
         material = await self.get_material(material_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
 
-        chunks = await self.rag.retrieve_for_material(question, material_id)
+        chunks = await self.rag.retrieve_for_material(question, material_id, user_id=user_id) if settings.RAG_ENABLED else []
         context = "\n\n".join(c["text"] for c in chunks) if chunks else (material.content or "")[:4000]
 
         from app.ai.factory import AIProviderFactory
@@ -202,15 +200,12 @@ class MaterialService:
         user_id: int,
     ) -> Dict[str, Any]:
         """为资料生成章节大纲"""
-        if not settings.RAG_ENABLED:
-            raise RuntimeError("RAG 知识库未启用")
-
         material = await self.get_material(material_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
 
         question = "请为这份资料生成详细的章节学习大纲"
-        chunks = await self.rag.retrieve_for_material(question, material_id, top_k=12)
+        chunks = await self.rag.retrieve_for_material(question, material_id, top_k=12, user_id=user_id) if settings.RAG_ENABLED else []
         context = "\n\n".join(c["text"] for c in chunks) if chunks else (material.content or "")[:4000]
 
         from app.ai.factory import AIProviderFactory

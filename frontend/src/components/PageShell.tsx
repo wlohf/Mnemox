@@ -11,7 +11,8 @@ import {
   CalendarOutlined,
   SettingOutlined,
   ArrowLeftOutlined,
-  MessageOutlined
+  MessageOutlined,
+  ExperimentOutlined
 } from '@ant-design/icons'
 
 const { Sider, Content } = Layout
@@ -31,6 +32,7 @@ export function PageShell({ title, onBack, rightExtra, maxWidth = 1200, children
   const navItems = [
     { key: '/', icon: <MessageOutlined />, label: '学习助手' },
     { key: '/dashboard', icon: <DashboardOutlined />, label: '今日概览' },
+    { key: '/agent', icon: <ExperimentOutlined />, label: '自主 Agent' },
     { key: '/review', icon: <BookOutlined />, label: '复习' },
     { key: '/goals', icon: <CheckSquareOutlined />, label: '任务目标' },
     { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本' },

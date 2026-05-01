@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -75,8 +76,9 @@ async def _ensure_default_chapter(db: AsyncSession, user_id: int) -> int:
 
 
 def _to_item(wq: WrongQuestion) -> dict:
-    q = wq.question
-    chapter_title = q.chapter.title if q and q.chapter else "未分类"
+    q = wq.__dict__.get("question")
+    chapter = q.__dict__.get("chapter") if q else None
+    chapter_title = chapter.title if chapter else "未分类"
     return {
         "id": wq.id,
         "question_id": wq.question_id,
@@ -97,6 +99,36 @@ def _to_item(wq: WrongQuestion) -> dict:
         "last_wrong_at": wq.last_wrong_at.isoformat() if wq.last_wrong_at else None,
         "created_at": wq.created_at.isoformat() if wq.created_at else None,
     }
+
+
+def _with_question_and_chapter(query):
+    return query.options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+
+
+async def _get_wrong_question_for_response(
+    db: AsyncSession,
+    wrong_question_id: int,
+    user_id: int,
+) -> WrongQuestion | None:
+    result = await db.execute(
+        _with_question_and_chapter(
+            select(WrongQuestion).where(
+                WrongQuestion.id == wrong_question_id,
+                WrongQuestion.user_id == user_id,
+            )
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _ensure_user_chapter(db: AsyncSession, chapter_id: int, user_id: int) -> None:
+    result = await db.execute(
+        select(Chapter)
+        .join(Material, Chapter.material_id == Material.id)
+        .where(Chapter.id == chapter_id, Material.user_id == user_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="章节不存在")
 
 
 def _calc_mastery_score(
@@ -133,7 +165,7 @@ async def list_wrong_questions(
     current_user: User = Depends(get_current_user),
 ):
     # 在 SQL 层直接过滤，避免加载全部数据到内存
-    query = select(WrongQuestion).where(WrongQuestion.user_id == current_user.id)
+    query = _with_question_and_chapter(select(WrongQuestion)).where(WrongQuestion.user_id == current_user.id)
     if mastery_status:
         query = query.where(WrongQuestion.mastery_status == mastery_status)
     if due_only:
@@ -156,6 +188,7 @@ async def create_wrong_question(
     current_user: User = Depends(get_current_user),
 ):
     chapter_id = body.chapter_id or await _ensure_default_chapter(db, user_id=current_user.id)
+    await _ensure_user_chapter(db, chapter_id, current_user.id)
 
     question = Question(
         user_id=current_user.id,
@@ -220,7 +253,10 @@ async def create_wrong_question(
     except Exception:
         pass  # 事件追踪不影响主流程
 
-    return _to_item(wrong)
+    saved = await _get_wrong_question_for_response(db, wrong.id, current_user.id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="错题保存失败")
+    return _to_item(saved)
 
 
 @router.put("/{wrong_question_id}")
@@ -231,9 +267,11 @@ async def update_wrong_question(
     current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(WrongQuestion).where(
-            WrongQuestion.id == wrong_question_id,
-            WrongQuestion.user_id == current_user.id,
+        _with_question_and_chapter(
+            select(WrongQuestion).where(
+                WrongQuestion.id == wrong_question_id,
+                WrongQuestion.user_id == current_user.id,
+            )
         )
     )
     item = result.scalar_one_or_none()
@@ -250,8 +288,10 @@ async def update_wrong_question(
         item.recall_difficulty = body.recall_difficulty
 
     await db.flush()
-    await db.refresh(item)
-    return _to_item(item)
+    saved = await _get_wrong_question_for_response(db, item.id, current_user.id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="错题保存失败")
+    return _to_item(saved)
 
 
 @router.post("/{wrong_question_id}/review")
@@ -335,7 +375,6 @@ async def review_wrong_question(
         db.add(new_review)
 
     await db.flush()
-    await db.refresh(item)
 
     # 记录学习事件：复习答题
     try:
@@ -356,7 +395,10 @@ async def review_wrong_question(
     except Exception:
         pass  # 事件追踪不影响主流程
 
-    return _to_item(item)
+    saved = await _get_wrong_question_for_response(db, item.id, current_user.id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="错题保存失败")
+    return _to_item(saved)
 
 
 @router.delete("/{wrong_question_id}")

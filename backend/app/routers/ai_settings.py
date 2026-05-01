@@ -148,7 +148,7 @@ DEFAULT_PROVIDERS = [
         "provider_name": "gemini",
         "display_name": "Gemini",
         "base_url": "",
-        "model": "gemini-pro",
+        "model": "gemini-1.5-flash",
     },
     {
         "provider_name": "qwen",

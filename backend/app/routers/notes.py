@@ -5,12 +5,14 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, delete
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.note import Note, NoteLink
+from app.models.material import Chapter, Material
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
 from app.models.user import User
@@ -77,6 +79,7 @@ def _heuristic_suggest(content: str) -> dict:
 def _to_item(note: Note) -> dict:
     created_at = getattr(note, "created_at", None)
     updated_at = getattr(note, "updated_at", None)
+    links = note.__dict__.get("links") or []
     return {
         "id": note.id,
         "title": note.title,
@@ -87,11 +90,52 @@ def _to_item(note: Note) -> dict:
         "tags": _safe_tags(note.tags),
         "links": [
             {"id": l.id, "link_type": l.link_type, "link_id": l.link_id}
-            for l in (note.links or [])
+            for l in links
         ],
         "created_at": created_at.isoformat() if created_at else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
+
+
+def _scope_notes_to_owned_relations(query: Select, user_id: int) -> Select:
+    """Require note-owned material/chapter references to belong to the same user."""
+    owned_material_ids = select(Material.id).where(Material.user_id == user_id)
+    owned_chapter_ids = (
+        select(Chapter.id)
+        .join(Material, Chapter.material_id == Material.id)
+        .where(Material.user_id == user_id)
+    )
+    return query.where(
+        or_(Note.material_id.is_(None), Note.material_id.in_(owned_material_ids)),
+        or_(Note.chapter_id.is_(None), Note.chapter_id.in_(owned_chapter_ids)),
+    )
+
+
+async def _ensure_owned_note_relations(
+    db: AsyncSession,
+    user_id: int,
+    material_id: Optional[int] = None,
+    chapter_id: Optional[int] = None,
+) -> None:
+    if material_id is not None:
+        result = await db.execute(select(Material.id).where(Material.id == material_id, Material.user_id == user_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="关联资料不存在")
+    if chapter_id is not None:
+        result = await db.execute(
+            select(Chapter.id)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(Chapter.id == chapter_id, Material.user_id == user_id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="关联章节不存在")
+
+
+async def _get_note_for_response(db: AsyncSession, note_id: int, user_id: int) -> Note | None:
+    query = select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == user_id)
+    query = _scope_notes_to_owned_relations(query, user_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
 
 
 def _safe_tags(raw: Optional[str]) -> List[str]:
@@ -123,6 +167,7 @@ async def list_notes(
     if note_type:
         query = query.where(Note.note_type == note_type)
 
+    query = _scope_notes_to_owned_relations(query, int(current_user.id))
     result = await db.execute(query.order_by(Note.updated_at.desc(), Note.id.desc()))
     notes = result.scalars().all()
 
@@ -145,10 +190,7 @@ async def get_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == current_user.id)
-    )
-    note = result.scalar_one_or_none()
+    note = await _get_note_for_response(db, note_id, int(current_user.id))
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
     return _to_item(note)
@@ -160,6 +202,7 @@ async def create_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    await _ensure_owned_note_relations(db, int(current_user.id), body.material_id, body.chapter_id)
     note = Note(
         user_id=current_user.id,
         title=body.title,
@@ -171,13 +214,16 @@ async def create_note(
     )
     db.add(note)
     await db.flush()
+    await db.execute(delete(NoteLink).where(NoteLink.note_id == note.id))
 
     for link in body.links or []:
         db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
-    await db.refresh(note)
-    return _to_item(note)
+    saved = await _get_note_for_response(db, note.id, current_user.id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="笔记保存失败")
+    return _to_item(saved)
 
 
 @router.put("/{note_id}")
@@ -187,12 +233,11 @@ async def update_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == current_user.id)
-    )
-    note = result.scalar_one_or_none()
+    user_id = int(current_user.id)
+    note = await _get_note_for_response(db, note_id, user_id)
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
+    await _ensure_owned_note_relations(db, user_id, body.material_id, body.chapter_id)
 
     if body.title is not None:
         setattr(note, "title", body.title)
@@ -216,8 +261,10 @@ async def update_note(
             db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
-    await db.refresh(note)
-    return _to_item(note)
+    saved = await _get_note_for_response(db, note.id, current_user.id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="笔记保存失败")
+    return _to_item(saved)
 
 
 @router.delete("/{note_id}")
@@ -226,10 +273,7 @@ async def delete_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == current_user.id)
-    )
-    note = result.scalar_one_or_none()
+    note = await _get_note_for_response(db, note_id, int(current_user.id))
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
     await db.delete(note)

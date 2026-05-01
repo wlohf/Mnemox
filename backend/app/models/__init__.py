@@ -16,3 +16,4 @@ from app.models.motivation import MotivationQuote, MotivationSettings  # noqa: F
 from app.models.user_profile import UserProfile  # noqa: F401
 from app.models.learning_event import LearningEvent  # noqa: F401
 from app.models.anki import AnkiCard  # noqa: F401
+from app.models.agent import AgentJob, AgentExecutionLog  # noqa: F401

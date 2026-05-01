@@ -1,5 +1,5 @@
 import { db, type ModuleName, type QueuedOperation } from '../db/studyDb'
-import { isNetworkOnline } from '../services/apiClient'
+import { getToken, isNetworkOnline } from '../services/apiClient'
 
 // ── Adapter interface ──
 
@@ -35,6 +35,7 @@ class SyncEngine {
   private state: SyncState = { status: 'idle', online: navigator.onLine }
   private intervalId: ReturnType<typeof setInterval> | null = null
   private processing = false
+  private authenticated = false
 
   // ── Registration ──
 
@@ -44,7 +45,13 @@ class SyncEngine {
 
   // ── Lifecycle ──
 
-  start() {
+  start(isAuthenticated = true) {
+    this.authenticated = isAuthenticated && !!getToken()
+    if (!this.authenticated) {
+      this.stop()
+      return
+    }
+    if (this.intervalId) return
     window.addEventListener('online', this.handleOnline)
     window.addEventListener('offline', this.handleOffline)
     this.state.online = navigator.onLine
@@ -60,18 +67,24 @@ class SyncEngine {
   }
 
   stop() {
+    this.authenticated = false
     window.removeEventListener('online', this.handleOnline)
     window.removeEventListener('offline', this.handleOffline)
     if (this.intervalId) {
       clearInterval(this.intervalId)
       this.intervalId = null
     }
+    this.setState({ status: 'idle', online: navigator.onLine })
   }
 
   // ── Public API ──
 
   async syncAll() {
     if (this.processing) return
+    if (!this.authenticated || !getToken()) {
+      this.setState({ status: 'idle', online: navigator.onLine })
+      return
+    }
     if (!isNetworkOnline()) {
       this.setState({ status: 'offline', online: false })
       return
@@ -183,7 +196,9 @@ class SyncEngine {
 
   private handleOnline = () => {
     this.setState({ status: 'idle', online: true })
-    void this.syncAll()
+    if (this.authenticated && getToken()) {
+      void this.syncAll()
+    }
   }
 
   private handleOffline = () => {

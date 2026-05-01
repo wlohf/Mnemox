@@ -55,6 +55,7 @@ import {
   CreditCardOutlined,
   DashboardOutlined,
   MenuOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1338,6 +1339,7 @@ export function ObsidianLayout() {
   const navItems = [
     { key: '/', icon: <MessageOutlined />, label: '学习助手' },
     { key: '/dashboard', icon: <DashboardOutlined />, label: '今日概览' },
+    { key: '/agent', icon: <ExperimentOutlined />, label: '自主 Agent' },
     { key: '/review', icon: <BookOutlined />, label: '复习' },
     { key: '/goals', icon: <CheckSquareOutlined />, label: '任务目标' },
     { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本' },
@@ -2980,7 +2982,15 @@ export function ObsidianLayout() {
                       borderRadius: 'var(--radius-md)',
                     }}
                   >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      skipHtml
+                      components={{
+                        a(props) {
+                          return <a {...props} target="_blank" rel="noreferrer noopener" />
+                        },
+                      }}
+                    >
                       {previewContent || '暂无预览内容'}
                     </ReactMarkdown>
                   </div>

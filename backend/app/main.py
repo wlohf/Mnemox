@@ -59,20 +59,37 @@ async def lifespan(app: FastAPI):
                             total = count_result.scalar() or 0
                             if total == 0:
                                 return
-                            logger.info("后台索引：正在索引 %d 份已有资料...", total)
+                            logger.info("RAG 后台索引开始：发现 %d 份已有资料需要索引", total)
                             result = await session.execute(
                                 select(Material).where(Material.content.is_not(None))
                             )
+                            indexed = 0
+                            failed = 0
                             for mat in result.scalars().all():
-                                await rag.index_material(
-                                    material_id=mat.id,
-                                    title=mat.title,
-                                    content=mat.content,
-                                    file_type=mat.file_type,
-                                )
-                            logger.info("后台索引完成，共索引 %d 份资料", total)
+                                try:
+                                    await rag.index_material(
+                                        material_id=mat.id,
+                                        title=mat.title,
+                                        content=mat.content,
+                                        file_type=mat.file_type,
+                                        user_id=getattr(mat, "user_id", None),
+                                    )
+                                    indexed += 1
+                                except Exception as item_error:
+                                    failed += 1
+                                    logger.warning(
+                                        "RAG 后台索引跳过资料 id=%s title=%r：%s",
+                                        mat.id,
+                                        mat.title,
+                                        item_error,
+                                        exc_info=settings.DEBUG,
+                                    )
+                            if failed:
+                                logger.warning("RAG 后台索引完成：成功 %d 份，失败 %d 份", indexed, failed)
+                            else:
+                                logger.info("RAG 后台索引完成：成功索引 %d 份资料", indexed)
                     except Exception as e:
-                        logger.warning("后台索引失败: %s", e)
+                        logger.warning("RAG 后台索引任务异常（不影响主流程）: %s", e, exc_info=settings.DEBUG)
 
                 asyncio.create_task(_bg_index())
         except Exception as e:
@@ -147,7 +164,7 @@ async def health():
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -170,13 +187,16 @@ app.include_router(images.router, prefix="/api/images", tags=["图片上传"])
 app.include_router(obsidian_import.router, prefix="/api/obsidian", tags=["Obsidian 导入"])
 app.include_router(motivation.router, prefix="/api/motivation", tags=["今日激励"])
 app.include_router(interventions.router, prefix="/api/interventions", tags=["主动干预"])
+app.include_router(agent.router, prefix="/api/agent", tags=["自主学习 Agent"])
 app.include_router(profile.router, prefix="/api/profile", tags=["用户画像"])
 app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt 模板"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
 
-# Mount static files for uploaded images (must be after all include_router calls)
+# Mount static files for uploaded images (must be after all include_router calls).
+# StaticFiles checks the directory at import time, so create it for fresh clones too.
+ensure_data_dirs()
 app.mount("/api/uploads", StaticFiles(directory=str(get_uploads_dir())), name="uploads")
 
 

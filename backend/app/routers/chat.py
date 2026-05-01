@@ -271,11 +271,13 @@ async def _detect_materials_from_message(message: str, db: AsyncSession, user_id
     return matched
 
 
-async def _load_materials(ids: List[int], db: AsyncSession) -> List[dict]:
-    """根据 ID 列表加载资料内容，返回 [{"title": str, "content": str}, ...]"""
+async def _load_materials(ids: List[int], db: AsyncSession, user_id: int) -> List[dict]:
+    """根据 ID 列表加载当前用户的资料内容，返回 [{"title": str, "content": str}, ...]"""
     if not ids:
         return []
-    result = await db.execute(select(Material).where(Material.id.in_(ids)))
+    result = await db.execute(
+        select(Material).where(Material.id.in_(ids), Material.user_id == user_id)
+    )
     materials = result.scalars().all()
     # 保持传入 ids 的顺序
     mat_map = {m.id: m for m in materials}
@@ -291,6 +293,7 @@ async def _build_system_prompt_with_rag(
     message: str,
     material_ids: List[int],
     db: AsyncSession,
+    user_id: int,
 ) -> str:
     """构建 RAG 感知的系统提示词。
 
@@ -301,7 +304,7 @@ async def _build_system_prompt_with_rag(
     if not material_ids:
         return BASE_SYSTEM_PROMPT
 
-    materials_data = await _load_materials(material_ids, db)
+    materials_data = await _load_materials(material_ids, db, user_id=user_id)
     if not materials_data:
         return BASE_SYSTEM_PROMPT
 
@@ -325,7 +328,7 @@ async def _build_system_prompt_with_rag(
         try:
             rag = get_rag_service()
             large_ids = [m["id"] for m in large_materials]
-            chunks = await rag.retrieve(query=message, material_ids=large_ids)
+            chunks = await rag.retrieve(query=message, material_ids=large_ids, user_id=user_id)
             if chunks:
                 prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段 ---\n"
                 for chunk in chunks:
@@ -370,13 +373,13 @@ def _fallback_large_materials(materials: List[dict]) -> str:
     return text
 
 
-async def _get_material_briefs(ids: List[int], db: AsyncSession) -> List[dict]:
-    """返回资料简要信息，供前端展示自动命中的资料标签。"""
+async def _get_material_briefs(ids: List[int], db: AsyncSession, user_id: int) -> List[dict]:
+    """返回当前用户资料简要信息，供前端展示自动命中的资料标签。"""
     if not ids:
         return []
 
     result = await db.execute(
-        select(Material.id, Material.title).where(Material.id.in_(ids))
+        select(Material.id, Material.title).where(Material.id.in_(ids), Material.user_id == user_id)
     )
     rows = result.all()
     title_map = {r.id: r.title for r in rows}
@@ -406,14 +409,20 @@ async def _resolve_materials_and_build_prompt(
     project_material_ids: List[int] = []
     if conversation_id:
         conv_result = await db.execute(
-            select(ChatConversation).where(ChatConversation.id == conversation_id)
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id,
+                ChatConversation.user_id == user_id,
+            )
         )
         conv = conv_result.scalar_one_or_none()
         if conv and conv.project_id:
             project_id = conv.project_id
             assoc_result = await db.execute(
-                select(ChatProjectMaterial.material_id).where(
-                    ChatProjectMaterial.project_id == conv.project_id
+                select(ChatProjectMaterial.material_id)
+                .join(Material, ChatProjectMaterial.material_id == Material.id)
+                .where(
+                    ChatProjectMaterial.project_id == conv.project_id,
+                    Material.user_id == user_id,
                 )
             )
             project_material_ids = [row[0] for row in assoc_result.all()]
@@ -440,7 +449,7 @@ async def _resolve_materials_and_build_prompt(
             if pid not in all_ids:
                 all_ids.append(pid)
         if project_material_ids:
-            auto_selected.extend(await _get_material_briefs(project_material_ids, db))
+            auto_selected.extend(await _get_material_briefs(project_material_ids, db, user_id=user_id))
 
     # 自动注入：读取资料库意图
     if not all_ids and _looks_like_read_materials_intent(message):
@@ -449,10 +458,10 @@ async def _resolve_materials_and_build_prompt(
             if rid not in all_ids:
                 all_ids.append(rid)
         if recent_ids:
-            auto_selected.extend(await _get_material_briefs(recent_ids, db))
+            auto_selected.extend(await _get_material_briefs(recent_ids, db, user_id=user_id))
 
     # 构建 RAG 感知的系统提示
-    system_prompt = await _build_system_prompt_with_rag(message, all_ids, db)
+    system_prompt = await _build_system_prompt_with_rag(message, all_ids, db, user_id=user_id)
 
     # 根据 chat_mode 注入对应的用户自定义或默认 prompt
     try:
@@ -491,12 +500,18 @@ async def _resolve_materials_and_build_prompt(
     # 项目默认指令
     if conversation_id:
         conv_result = await db.execute(
-            select(ChatConversation).where(ChatConversation.id == conversation_id)
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id,
+                ChatConversation.user_id == user_id,
+            )
         )
         conv = conv_result.scalar_one_or_none()
         if conv and conv.project_id:
             proj_result = await db.execute(
-                select(ChatProject).where(ChatProject.id == conv.project_id)
+                select(ChatProject).where(
+                    ChatProject.id == conv.project_id,
+                    ChatProject.user_id == user_id,
+                )
             )
             proj = proj_result.scalar_one_or_none()
             if proj and proj.default_instructions:
@@ -512,21 +527,37 @@ async def _resolve_materials_and_build_prompt(
     except Exception as _pe:
         logger.warning("用户画像注入失败: %s", _pe)
 
+    # 注入自主 Agent 简报：让对话具备主动规划、风险提醒和下一步建议意识
+    try:
+        from app.services.agent_service import build_agent_brief, build_agent_prompt_snippet
+        _agent_brief = await build_agent_brief(db, user_id)
+        _agent_snippet = build_agent_prompt_snippet(_agent_brief)
+        if _agent_snippet:
+            system_prompt += "\n\n" + _agent_snippet
+    except Exception as _ae:
+        logger.warning("自主 Agent 简报注入失败: %s", _ae)
+
     return system_prompt, detected, auto_selected
 
 
-async def _get_project_material_ids(conversation_id: int, db: AsyncSession) -> List[int]:
+async def _get_project_material_ids(conversation_id: int, db: AsyncSession, user_id: int) -> List[int]:
     """获取对话所属项目绑定的资料 ID 列表。"""
     conv_result = await db.execute(
-        select(ChatConversation).where(ChatConversation.id == conversation_id)
+        select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.user_id == user_id,
+        )
     )
     conv = conv_result.scalar_one_or_none()
     if not conv or not conv.project_id:
         return []
 
     assoc_result = await db.execute(
-        select(ChatProjectMaterial.material_id).where(
-            ChatProjectMaterial.project_id == conv.project_id
+        select(ChatProjectMaterial.material_id)
+        .join(Material, ChatProjectMaterial.material_id == Material.id)
+        .where(
+            ChatProjectMaterial.project_id == conv.project_id,
+            Material.user_id == user_id,
         )
     )
     return [row[0] for row in assoc_result.all()]
@@ -572,6 +603,22 @@ class ChatRequest(BaseModel):
     image_data: Optional[List[str]] = None
     chat_mode: Optional[str] = "normal"  # "normal" | "coach"
 
+
+
+
+def _is_ai_configuration_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "API Key 未配置" in text or "不支持的 AI 提供商" in text
+
+
+def _ai_configuration_error(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "AI_PROVIDER_NOT_CONFIGURED",
+            "message": f"AI 提供商未配置或不可用：{str(exc)}。请先在设置中配置并启用 API Key。",
+        },
+    )
 
 # ---- SSE streaming endpoint ----
 
@@ -637,9 +684,11 @@ async def chat_send(
     try:
         provider = await AIProviderFactory.create_provider(db=db, scenario="chat_main", user_id=current_user.id)
     except Exception as e:
+        if _is_ai_configuration_error(e):
+            raise _ai_configuration_error(e)
         raise HTTPException(
             status_code=500,
-            detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
+            detail=f"无法创建 AI 提供商：{str(e)}",
         )
 
     # 用于收集完整回复以便保存
@@ -868,9 +917,11 @@ async def chat_send_sync(
             user_id=current_user.id,
         )
     except Exception as e:
+        if _is_ai_configuration_error(e):
+            raise _ai_configuration_error(e)
         raise HTTPException(
             status_code=500,
-            detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
+            detail=f"无法创建 AI 提供商：{str(e)}",
         )
 
     try:

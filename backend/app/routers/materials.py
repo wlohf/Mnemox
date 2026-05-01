@@ -1,6 +1,7 @@
 """资料管理路由"""
 from pathlib import Path
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, List, Optional
 from pydantic import BaseModel
@@ -21,7 +22,13 @@ from ..models.user import User
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md'}
-MAX_FILE_SIZE = 150 * 1024 * 1024  # 150MB
+ALLOWED_CONTENT_TYPES = {
+    ".pdf": {"application/pdf"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    ".txt": {"text/plain", "application/octet-stream"},
+    ".md": {"text/markdown", "text/plain", "application/octet-stream"},
+}
+MAX_FILE_SIZE = max(1, int(settings.MATERIAL_UPLOAD_MAX_MB)) * 1024 * 1024
 
 
 class MaterialResponse(BaseModel):
@@ -97,17 +104,101 @@ class QuestionRequest(BaseModel):
     question: str
 
 
-def _save_upload_with_hash(upload_file: UploadFile, abs_file_path: Path) -> str:
-    """保存上传文件并返回 sha256。"""
+def _format_size_limit(max_size: int) -> str:
+    if max_size >= 1024 * 1024:
+        return f"{max_size // 1024 // 1024}MB"
+    if max_size >= 1024:
+        return f"{max_size // 1024}KB"
+    return f"{max_size}B"
+
+
+def _save_upload_with_hash(upload_file: UploadFile, abs_file_path: Path, max_size: int) -> tuple[str, int]:
+    """保存上传文件并返回 (sha256, bytes_written)，边写入边限制大小。"""
     hasher = hashlib.sha256()
-    with abs_file_path.open("wb") as buffer:
-        while True:
-            chunk = upload_file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            buffer.write(chunk)
-            hasher.update(chunk)
-    return hasher.hexdigest()
+    total = 0
+    try:
+        with abs_file_path.open("wb") as buffer:
+            while True:
+                chunk = upload_file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件大小超过限制 ({_format_size_limit(max_size)})",
+                    )
+                buffer.write(chunk)
+                hasher.update(chunk)
+    except Exception:
+        abs_file_path.unlink(missing_ok=True)
+        raise
+    return hasher.hexdigest(), total
+
+
+def _keyword_score(material: Material, query: str) -> float:
+    q = query.lower()
+    title = str(getattr(material, "title", "") or "")
+    content = str(getattr(material, "content", "") or "")
+    score = 0.0
+    if q and q in title.lower():
+        score += 0.35
+    if q and q in content.lower():
+        score += 0.55
+    if q:
+        tokens = [t for t in q.split() if t]
+        if tokens:
+            haystack = f"{title}\n{content}".lower()
+            score += min(0.1, 0.02 * sum(1 for t in tokens if t in haystack))
+    return round(min(score or 0.35, 0.99), 4)
+
+
+def _keyword_snippet(material: Material, query: str, length: int = 360) -> str:
+    content = str(getattr(material, "content", "") or "")
+    if not content:
+        return ""
+    lower = content.lower()
+    q = query.lower()
+    idx = lower.find(q) if q else -1
+    if idx < 0:
+        idx = 0
+    start = max(0, idx - length // 3)
+    end = min(len(content), start + length)
+    snippet = content[start:end].strip()
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(content):
+        snippet += "..."
+    return snippet
+
+
+async def _keyword_search_materials(
+    db: AsyncSession,
+    user_id: int,
+    material_ids: List[int],
+    query: str,
+    limit: int,
+) -> List[MaterialSearchResponse]:
+    if not material_ids:
+        return []
+    like = f"%{query}%"
+    from sqlalchemy import select as sa_select
+    result = await db.execute(
+        sa_select(Material)
+        .where(Material.user_id == user_id, Material.id.in_(material_ids))
+        .where(or_(Material.title.ilike(like), Material.content.ilike(like)))
+        .order_by(Material.updated_at.desc(), Material.id.desc())
+        .limit(limit)
+    )
+    return [
+        MaterialSearchResponse(
+            material_id=int(material.id),
+            title=str(material.title or ""),
+            score=_keyword_score(material, query),
+            text=_keyword_snippet(material, query),
+        )
+        for material in result.scalars().all()
+    ]
 
 
 @router.post("/upload", response_model=MaterialUploadResponse)
@@ -129,33 +220,30 @@ async def upload_material(
     ensure_data_dirs()
     upload_dir = get_uploads_dir()
 
-    # 校验扩展名白名单
-    filename = file.filename or ""
-    file_extension = Path(filename).suffix.lower()
-    if file_extension not in ALLOWED_EXTENSIONS:
+    # 校验扩展名白名单；只使用后端生成文件名，不信任用户原始文件名。
+    original_name = Path(file.filename or "").name
+    file_extension = Path(original_name).suffix.lower()
+    if not file_extension or file_extension not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件类型: {file_extension}，允许: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            detail=f"不支持的文件类型: {file_extension or 'unknown'}，允许: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    allowed_types = ALLOWED_CONTENT_TYPES.get(file_extension, set())
+    if content_type and content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="上传内容类型与文件扩展名不匹配")
 
     # 生成唯一文件名
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    unique_filename = f"{uuid.uuid4().hex}{file_extension}"
     abs_file_path = upload_dir / unique_filename
 
-    # 保存文件并计算 hash
+    # 保存文件并计算 hash（边写入边限制大小，避免超大文件先完整落盘）
     try:
-        file_hash = _save_upload_with_hash(file, abs_file_path)
+        file_hash, _actual_size = _save_upload_with_hash(file, abs_file_path, MAX_FILE_SIZE)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
-
-    # 校验文件大小
-    actual_size = abs_file_path.stat().st_size
-    if actual_size > MAX_FILE_SIZE:
-        abs_file_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件大小 ({actual_size // 1024 // 1024}MB) 超过限制 ({MAX_FILE_SIZE // 1024 // 1024}MB)",
-        )
 
     # 在数据库里保存相对路径，便于迁移/部署
     repo_rel_path = to_repo_relative(abs_file_path)
@@ -292,9 +380,6 @@ async def search_materials(
     q = (query or "").strip()
     if not q:
         raise HTTPException(status_code=400, detail="检索内容不能为空")
-    if not settings.RAG_ENABLED:
-        return []
-
     material_ids: List[int] = []
     from sqlalchemy import select as sa_select
 
@@ -322,16 +407,20 @@ async def search_materials(
 
     rag = get_rag_service()
     top_k_value = max(1, min(top_k, 20))
-    chunks = await rag.retrieve(query=q, material_ids=material_ids, top_k=top_k_value)
-    return [
-        MaterialSearchResponse(
-            material_id=chunk.get("material_id", 0),
-            title=chunk.get("material_title", ""),
-            score=chunk.get("score", 0),
-            text=chunk.get("text", ""),
-        )
-        for chunk in chunks
-    ]
+    chunks = []
+    if settings.RAG_ENABLED:
+        chunks = await rag.retrieve(query=q, material_ids=material_ids, top_k=top_k_value, user_id=current_user.id)
+    if chunks:
+        return [
+            MaterialSearchResponse(
+                material_id=chunk.get("material_id", 0),
+                title=chunk.get("material_title", ""),
+                score=chunk.get("score", 0),
+                text=chunk.get("text", ""),
+            )
+            for chunk in chunks
+        ]
+    return await _keyword_search_materials(db, int(current_user.id), material_ids, q, top_k_value)
 
 
 @router.get("/{material_id}", response_model=MaterialResponse)
@@ -384,7 +473,7 @@ async def delete_material(
         raise HTTPException(status_code=404, detail="资料不存在")
 
     material_service = get_material_service(db)
-    deleted = await material_service.delete_material(material_id)
+    deleted = await material_service.delete_material(material_id, user_id=current_user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="资料不存在")
     return {"ok": True}

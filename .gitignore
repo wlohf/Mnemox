@@ -69,3 +69,8 @@ nul
 *.db-journal
 backend/venv/
 backend/.venv/
+# Secrets and runtime data
+*.db-shm
+*.db-wal
+chromadb/
+rag_settings.json

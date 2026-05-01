@@ -129,7 +129,11 @@ class AIProviderFactory:
                 result = await db.execute(active_query)
                 row = result.scalar_one_or_none()
 
-            if row and row.api_key and row.enabled:
+            if row:
+                if not row.enabled:
+                    raise ValueError(f"{row.display_name or row.provider_name} 已禁用")
+                if not row.api_key:
+                    raise ValueError(f"{row.display_name or row.provider_name} API Key 未配置")
                 return AIProviderFactory.create_provider_from_settings(
                     provider_name=row.provider_name,
                     api_key=row.api_key,

@@ -201,6 +201,7 @@ async def reindex_material(
         content=material.content,
         file_type=material.file_type,
         project_ids=project_ids,
+        user_id=current_user.id,
     )
     return {"ok": True, "chunk_count": count}
 
@@ -232,6 +233,7 @@ async def reindex_all(
             content=mat.content,
             file_type=mat.file_type,
             project_ids=project_ids,
+            user_id=current_user.id,
         )
         total_chunks += count
 

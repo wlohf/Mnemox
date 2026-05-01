@@ -12,13 +12,16 @@ from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.utils.paths import get_images_dir
+from app.utils.paths import ensure_data_dirs, get_images_dir
+from app.routers.images import _detect_image_extension, _read_limited
 from app.database import get_db
 from app.auth import get_current_user
 from app.models.user import User
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+MAX_MARKDOWN_SIZE = 5 * 1024 * 1024
+MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
 
 
 def _ext_ok(name: str) -> bool:
@@ -26,12 +29,25 @@ def _ext_ok(name: str) -> bool:
 
 
 async def _save_attachment(file: UploadFile) -> tuple[str, str]:
-    """Save an attachment image and return (original_name, url)."""
+    """Save a validated attachment image and return (original_name, url)."""
     original = file.filename or "unknown.png"
-    ext = original.rsplit(".", 1)[-1].lower() if "." in original else "png"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的附件格式: .{ext}")
+
+    data = await _read_limited(file, MAX_ATTACHMENT_SIZE)
+    detected_ext = _detect_image_extension(data)
+    if detected_ext is None:
+        raise HTTPException(status_code=400, detail=f"附件 {original} 不是有效图片")
+    if ext in {"jpg", "jpeg"}:
+        ext = "jpg"
+    if detected_ext != ext:
+        raise HTTPException(status_code=400, detail=f"附件 {original} 扩展名与实际内容不一致")
+
+    ensure_data_dirs()
     filename = f"{uuid.uuid4().hex}.{ext}"
     dest = get_images_dir() / filename
-    dest.write_bytes(await file.read())
+    dest.write_bytes(data)
     return original, f"/api/uploads/images/{filename}"
 
 
@@ -96,8 +112,16 @@ async def import_obsidian_note(
     current_user: User = Depends(get_current_user),
 ):
     """导入 Obsidian 笔记（.md 文件 + 附件图片）。"""
+    md_name = md_file.filename or ""
+    if not md_name.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="只支持导入 .md Markdown 文件")
+
     # Read markdown content
-    raw = await md_file.read()
+    raw = await _read_limited(
+        md_file,
+        MAX_MARKDOWN_SIZE,
+        "Markdown 文件大小不能超过 5 MB",
+    )
     try:
         md_content = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -118,7 +142,7 @@ async def import_obsidian_note(
     for att in attachments:
         att_name = att.filename or ""
         if not _ext_ok(att_name):
-            continue
+            raise HTTPException(status_code=400, detail=f"不支持的附件格式: {att_name}")
         original, url = await _save_attachment(att)
         name_to_url[original] = url
         # also map basename in case of path prefix

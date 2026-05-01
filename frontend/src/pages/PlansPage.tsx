@@ -68,12 +68,20 @@ export function PlansPage() {
     if (!editingPlan) return
     setSaving(true)
     try {
-      await apiFetch(`/api/plans/${editingPlan.date}`, {
+      const saved = await apiFetch<Plan>(`/api/plans/${editingPlan.date}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent }),
       })
-      setPlans(prev => prev.map(p => p.date === editingPlan.date ? { ...p, content: editContent } : p))
+      const nextPlan = saved || { ...editingPlan, content: editContent }
+      setPlans(prev => {
+        const exists = prev.some(p => p.date === nextPlan.date)
+        const next = exists
+          ? prev.map(p => p.date === nextPlan.date ? nextPlan : p)
+          : [nextPlan, ...prev]
+        return next.sort((a, b) => b.date.localeCompare(a.date))
+      })
+      await loadPlans()
       setEditingPlan(null)
       message.success('已保存')
     } finally {

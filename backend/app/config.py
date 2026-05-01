@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     
     # Gemini
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-pro"
+    GEMINI_MODEL: str = "gemini-1.5-flash"
     
     # DeepSeek
     DEEPSEEK_API_KEY: str = ""
@@ -63,11 +63,14 @@ class Settings(BaseSettings):
     RAG_SIMILARITY_THRESHOLD: float = 0.3
     RAG_COLLECTION_NAME: str = "study_materials"
     SMALL_MATERIAL_THRESHOLD: int = 4000
+    MATERIAL_UPLOAD_MAX_MB: int = 50
+    AGENT_LLM_PLANNER_TIMEOUT_SECONDS: float = 12.0
     
     # 服务器配置
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"
     
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
@@ -83,6 +86,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
     @model_validator(mode="after")
     def apply_opencode_defaults(self):
@@ -107,16 +111,16 @@ class Settings(BaseSettings):
 # 全局配置实例
 settings = Settings()
 
-# 启动时校验 SECRET_KEY：开发环境警告，非调试环境拒绝启动。
+# 启动时校验 SECRET_KEY：开发环境警告，生产环境拒绝启动。
 _INSECURE_SECRET_KEY = "change-me-in-production"
 _secret_key = settings.SECRET_KEY.strip()
+_is_production = settings.ENVIRONMENT.lower() in {"prod", "production"} or bool(os.environ.get("DB_PASSWORD"))
 if settings.SECRET_KEY == _INSECURE_SECRET_KEY or len(_secret_key) < 32:
     _secret_message = (
         "\n⚠️  CRITICAL: SECRET_KEY 未安全配置！"
         "\n   请在 .env 文件中设置一个至少 32 字符的随机密钥。"
         "\n   例如: SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')\n"
     )
-    if settings.DEBUG:
-        warnings.warn(_secret_message, stacklevel=1)
-    else:
+    if _is_production:
         raise RuntimeError(_secret_message)
+    warnings.warn(_secret_message, stacklevel=1)

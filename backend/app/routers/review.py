@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models.question import ReviewSchedule, WrongQuestion
+from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.models.material import Chapter, Material
 from app.auth import get_current_user
 from app.models.user import User
@@ -152,9 +153,12 @@ def _to_task_item(
     wrong_count = 0
     review_count = 0
 
-    if wrong and wrong.question:
-        content = wrong.question.content or ""
-        chapter_title = wrong.question.chapter.title if wrong.question.chapter else "未分类"
+    if wrong:
+        question = wrong.__dict__.get("question")
+        if question:
+            content = question.content or ""
+            chapter = question.__dict__.get("chapter")
+            chapter_title = chapter.title if chapter else "未分类"
         mastery_status = wrong.mastery_status or "not_mastered"
         wrong_count = wrong.wrong_count or 0
         review_count = wrong.review_count or 0
@@ -237,12 +241,26 @@ async def list_review_tasks(
 
     wq_map = {}
     if question_item_ids:
-        wq_result = await db.execute(select(WrongQuestion).where(WrongQuestion.id.in_(question_item_ids)))
+        wq_result = await db.execute(
+            select(WrongQuestion)
+            .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+            .where(
+                WrongQuestion.id.in_(question_item_ids),
+                WrongQuestion.user_id == current_user.id,
+            )
+        )
         wq_map = {wq.id: wq for wq in wq_result.scalars().all()}
 
     ch_map = {}
     if chapter_item_ids:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_item_ids)))
+        ch_result = await db.execute(
+            select(Chapter)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(
+                Chapter.id.in_(chapter_item_ids),
+                Material.user_id == current_user.id,
+            )
+        )
         ch_map = {c.id: c for c in ch_result.scalars().all()}
 
     out = []
@@ -322,7 +340,12 @@ async def complete_review_task(
         return _to_task_item(task, chapter=chapter)
 
     wrong_result = await db.execute(
-        select(WrongQuestion).where(WrongQuestion.id == task.item_id)
+        select(WrongQuestion)
+        .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
+        .where(
+            WrongQuestion.id == task.item_id,
+            WrongQuestion.user_id == current_user.id,
+        )
     )
     wrong = wrong_result.scalar_one_or_none()
     if not wrong:

@@ -35,6 +35,10 @@ def get_images_dir() -> Path:
     return get_uploads_dir() / "images"
 
 
+def get_user_images_dir(user_id: int) -> Path:
+    return get_images_dir() / str(user_id)
+
+
 def get_chromadb_dir() -> Path:
     return get_data_dir() / "chromadb"
 

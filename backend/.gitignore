@@ -1,1 +1,24 @@
+# Local tool/session state
 .ace-tool/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local runtime artifacts
+*.log
+*.db
+*.sqlite
+*.sqlite3
+data/
+uploads/
+# Secrets and runtime data
+.env
+.env.local
+.env.*.local
+*.db-journal
+*.db-shm
+*.db-wal
+chromadb/
+rag_settings.json

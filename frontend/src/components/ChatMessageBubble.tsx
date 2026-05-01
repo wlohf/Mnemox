@@ -74,7 +74,11 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeHighlight, rehypeKatex]}
+                skipHtml
                 components={{
+                  a(props) {
+                    return <a {...props} target="_blank" rel="noreferrer noopener" />
+                  },
                   code(props) {
                     const { children, className } = props
                     const text = String(children || '')
