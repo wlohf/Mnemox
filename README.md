@@ -274,31 +274,65 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 > 项目当前处于 beta / active development 阶段，适合本地学习、二次开发和开源试用。欢迎通过 Issue 反馈真实使用中的 bug 和体验问题。
 
-### 你需要准备什么
+### 方式一：Windows 双击体验（最简单）
 
-- Docker Desktop / Docker Engine（推荐给第一次试用的用户）
-- 或者：Python 3.10+、Node.js 18+、npm
-- 至少一个 AI 提供商的 API Key：DeepSeek / OpenAI / Claude / Gemini / Qwen 均可
-- 一个不少于 32 字符的 `SECRET_KEY`
-- 如需上传资料，可按机器资源调整 `MATERIAL_UPLOAD_MAX_MB`，默认 50MB
+适合只想本地跑起来看看 UI、交互和基础功能的用户。
 
-生成 `SECRET_KEY`：
+**你只需要提前安装：**
+
+- Python 3.10+：https://www.python.org/downloads/
+- Node.js 18+ LTS：https://nodejs.org/
+
+然后：
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
+git clone https://github.com/wlohf/Mnemox.git
+cd Mnemox
 ```
 
-> 不要把自己的 `.env`、数据库文件、上传目录或真实 API Key 提交到 GitHub。
+在 Windows 文件管理器里双击：
 
-### 方式一：Docker Compose 一键体验（推荐）
+```text
+start.bat
+```
 
-适合只想快速跑起来体验完整前后端的用户。
+或者双击中文入口：
+
+```text
+一键启动.bat
+```
+
+脚本会自动完成：
+
+- 检查 Python / Node / npm
+- 创建 `backend\venv`
+- 自动生成本地开发用 `backend\.env` 和安全随机 `SECRET_KEY`
+- 默认使用 SQLite 本地数据库
+- 默认关闭 RAG 向量索引，方便先体验 UI 和基础功能
+- 首次安装后端和前端依赖，后续启动会自动跳过已安装依赖
+- 启动后端 `http://localhost:8000`
+- 启动前端 `http://localhost:5173`
+- 自动打开浏览器
+
+停止服务：
+
+```text
+stop.bat
+```
+
+> 第一次运行需要下载 Python / npm 依赖，可能比较慢。以后再次双击会复用已安装依赖。
+
+> 如果你只想先看页面和交互，可以暂时不填 AI Key；需要 AI 聊天、AI 生成、RAG 语义检索时，再到设置页或 `backend\.env` 里配置 DeepSeek / OpenAI 等 Key。
+
+### 方式二：Docker Compose 一键体验
+
+适合想用容器隔离完整前后端环境的用户。
 
 **1. 克隆项目**
 
 ```bash
-git clone https://github.com/wlohf/RagStudyAssistant.git
-cd RagStudyAssistant
+git clone https://github.com/wlohf/Mnemox.git
+cd Mnemox
 ```
 
 **2. 创建根目录 `.env`**
@@ -313,20 +347,17 @@ cp .env.example .env
 DB_PASSWORD=replace_with_strong_database_password
 SECRET_KEY=replace_with_random_secret_at_least_32_chars
 
-# 推荐先用 DeepSeek，成本较低
+# 可选：需要 AI 功能时再配置
 DEFAULT_AI_PROVIDER=deepseek
 DEEPSEEK_API_KEY=your_deepseek_api_key_here
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 ```
 
-如果你使用 OpenAI 兼容网关，也可以配置：
+生成 `SECRET_KEY`：
 
-```env
-DEFAULT_AI_PROVIDER=openai
-OPENAI_API_KEY=your_openai_or_gateway_key_here
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_BASE_URL=https://api.openai.com/v1
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 **3. 启动**
@@ -335,35 +366,27 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 docker compose up -d --build
 ```
 
-**4. 访问**
+访问：
 
 ```text
 http://localhost
 ```
 
-**5. 查看日志 / 停止服务**
+停止：
 
 ```bash
-docker compose logs -f backend
 docker compose down
 ```
 
-Docker Compose 默认包含：
-
-- PostgreSQL 数据库
-- FastAPI 后端
-- Nginx + React 前端
-- 上传目录和 ChromaDB 持久化 volume
-
-### 方式二：本地开发启动
+### 方式三：手动本地开发启动
 
 适合想改代码、调试、提交 PR 的开发者。本地开发默认使用 SQLite。
 
 **1. 克隆项目**
 
 ```bash
-git clone https://github.com/wlohf/RagStudyAssistant.git
-cd RagStudyAssistant
+git clone https://github.com/wlohf/Mnemox.git
+cd Mnemox
 ```
 
 **2. 配置后端环境变量**
@@ -384,6 +407,7 @@ DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 
 DEBUG=True
+ENVIRONMENT=development
 CORS_ORIGINS=["http://localhost:5173", "http://localhost:3000"]
 MATERIAL_UPLOAD_MAX_MB=50
 ```
@@ -396,7 +420,7 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-后端会在启动时自动创建必要的数据表和上传目录。API 文档地址：
+API 文档地址：
 
 ```text
 http://localhost:8000/docs
@@ -407,7 +431,7 @@ http://localhost:8000/docs
 ```bash
 cd frontend
 npm install
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 访问：
@@ -416,10 +440,12 @@ npm run dev -- --host 0.0.0.0
 http://localhost:5173
 ```
 
+> 不要把自己的 `.env`、数据库文件、上传目录或真实 API Key 提交到 GitHub。
+
 ### 首次使用建议流程
 
 1. 注册一个本地账号并登录。
-2. 打开设置里的 AI Provider，确认 DeepSeek 或其他模型显示为已配置，并点击“测试连接”。
+2. 如果要体验 AI 功能，打开设置里的 AI Provider，填写 DeepSeek 或其他模型 Key，并点击“测试连接”。
 3. 上传一份小型 Markdown / TXT / PDF 学习资料。
 4. 创建一个项目，把资料关联进去。
 5. 在 AI 对话中询问资料内容，确认资料引用和回答正常。
