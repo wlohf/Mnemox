@@ -530,6 +530,7 @@ StudyAssistant/
 - [ ] AI Provider 连接测试增强：区分 chat、embedding、streaming 能力是否可用
 - [ ] pytest 自动化测试：覆盖 auth、多用户隔离、RAG fallback、上传限制、Agent feedback、Planner timeout
 - [ ] 聊天框场景模式选择器（费曼 / 苏格拉底 / 教练 快速切换）
+- [ ] 多人共同学习 / 好友监督：支持学习伙伴、学习房间、共同番茄钟、好友提醒和轻量打卡监督；默认以用户授权、低打扰和隐私可控为前提
 - [ ] Demo 数据 / 一键体验模式，方便论坛用户无需大量配置即可看到完整效果
 - [ ] 自动更新包分发与发布清单维护
 
