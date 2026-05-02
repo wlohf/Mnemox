@@ -28,6 +28,7 @@ import {
   Collapse,
   Spin,
   Tooltip,
+  Space,
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -70,13 +71,14 @@ import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
 import { ProjectSettingsModal } from '../ProjectSettingsModal'
 import { useChatStore } from '../../stores/chatStore'
-import { getProject, archiveUnassignedMaterials, addProjectMaterial, removeProjectMaterial } from '../../services/conversationApi'
+import { getProject, archiveUnassignedMaterials, addProjectMaterial, removeProjectMaterial, forkConversation, appendConversationMessages } from '../../services/conversationApi'
 import { listWrongQuestions } from '../../services/wrongQuestionApi'
 import { useAuthStore } from '../../stores/authStore'
 import { listReviewTasks, getDueReviewCount, type ReviewTaskItem } from '../../services/reviewApi'
 import { createNote, suggestNoteMetadata } from '../../services/noteApi'
 import { getDashboard, startLearningPipeline, startBatchLearningPipeline, generateDailyPlan, type DashboardData } from '../../services/learningApi'
 import { getDailyIntervention, type DailyInterventionReport } from '../../services/interventionApi'
+import { draftAgentWrite, executeAgentWrite, type AgentWriteDraftResponse } from '../../services/agentApi'
 import { createMemory } from '../../services/memoryApi'
 import {
   getCurrentQuote,
@@ -89,6 +91,7 @@ import {
   type MotivationSettings,
 } from '../../services/motivationApi'
 import { apiFetch } from '../../services/apiClient'
+import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { TodayFocusActions } from './TodayFocusActions'
 import { MarkdownLiveEditor, type MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
@@ -271,9 +274,9 @@ export function ObsidianLayout() {
     activeConversationId,
     activeProjectId,
     addMessage,
+    setMessages,
     setStreamingContent,
     setIsStreaming: setChatLoading,
-    clearMessages,
     loadProjects,
     loadConversations,
     createNewConversation,
@@ -284,6 +287,10 @@ export function ObsidianLayout() {
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<Set<number>>(new Set())
   const [detectedMaterials, setDetectedMaterials] = useState<DetectedMaterial[]>([])
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
+  const [agentWriteDraft, setAgentWriteDraft] = useState<AgentWriteDraftResponse | null>(null)
+  const [agentWriteSourceText, setAgentWriteSourceText] = useState('')
+  const [agentWriteLoading, setAgentWriteLoading] = useState(false)
+  const [agentWriteExecuting, setAgentWriteExecuting] = useState(false)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -330,7 +337,7 @@ export function ObsidianLayout() {
   const [chatMode, setChatMode] = useState<'normal' | 'coach'>('normal')
 
   // Memory indicators (Feature 2)
-  const [memoryIndicators, setMemoryIndicators] = useState<MemoryIndicator[]>([])
+  const [, setMemoryIndicators] = useState<MemoryIndicator[]>([])
 
   // Progress feedback (achievement card)
   const [progressFeedback, setProgressFeedback] = useState<ProgressFeedback | null>(null)
@@ -593,11 +600,13 @@ export function ObsidianLayout() {
         setActiveConversation(activeConversationId)
       }
       try {
-        const ragRes = await fetch('/api/rag/health')
-        if (ragRes.ok) {
-          const j = await ragRes.json()
-          setRagStatus(j)
-        }
+        const j = await apiFetch<{
+          enabled: boolean
+          rag_online: boolean
+          total_chunks: number
+          message: string
+        }>('/api/rag/health')
+        setRagStatus(j)
       } catch {
         // ignore
       }
@@ -674,12 +683,76 @@ export function ObsidianLayout() {
     return ''
   }
 
-  const handleSendMessage = async (forcedText?: string) => {
+  const shouldCheckAgentWrite = (text: string) => {
+    const triggers = [
+      '记个笔记', '记一条笔记', '记一个笔记', '记个灵感', '记一个灵感', '记录一下', '写入笔记', '存到笔记', '保存到笔记', '记到笔记', '记进笔记',
+      '创建任务', '添加任务', '加入任务', '安排任务', '制定任务', '拆成任务', '拆成子任务', '拆解任务', '生成任务', '做成任务', '目标是', '我的目标', '接下来我要', '接下来我的目标',
+    ]
+    return triggers.some(trigger => text.includes(trigger))
+  }
+
+  const confirmAgentWrite = async () => {
+    if (!agentWriteDraft || agentWriteDraft.intent === 'none') return
+    if (agentWriteDraft.intent !== 'create_note' && agentWriteDraft.intent !== 'create_goal_tasks') return
+    setAgentWriteExecuting(true)
+    const result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft)
+    setAgentWriteExecuting(false)
+    if (!result) {
+      message.error('Agent 写入失败，请稍后重试')
+      return
+    }
+    message.success(result.message || 'Agent 已写入系统')
+    const userEntry: ChatMessage = { role: 'user', content: agentWriteSourceText }
+    const assistantEntry: ChatMessage = {
+      role: 'assistant',
+      content: result.message || (agentWriteDraft.intent === 'create_note' ? '已创建笔记。' : '已创建任务。'),
+    }
+    let conversationId = activeConversationId
+    if (!conversationId) {
+      const conv = await createNewConversation(activeProjectId)
+      conversationId = conv?.id ?? null
+    }
+    addMessage(userEntry)
+    addMessage(assistantEntry)
+
+    if (conversationId) {
+      const saved = await appendConversationMessages(conversationId, [userEntry, assistantEntry])
+      if (saved) {
+        await setActiveConversation(conversationId)
+        await loadConversations(activeProjectId ?? undefined)
+      }
+    }
+    setAgentWriteDraft(null)
+    setAgentWriteSourceText('')
+    await syncEngine.syncAll()
+    void loadDashboardOverview()
+  }
+
+  const handleSendMessage = async (
+    forcedText?: string,
+    options?: {
+      conversationId?: number
+      history?: ChatMessage[]
+      replaceMessages?: ChatMessage[]
+    },
+  ) => {
     const text = (forcedText ?? chatInput).trim()
-    if (!text || chatLoading) return
+    if (!text || chatLoading || agentWriteLoading) return
+
+    if (!forcedText && !options && pendingImages.length === 0 && shouldCheckAgentWrite(text)) {
+      setAgentWriteLoading(true)
+      const draft = await draftAgentWrite(text)
+      setAgentWriteLoading(false)
+      if (draft?.requires_confirmation && draft.intent !== 'none') {
+        setAgentWriteDraft(draft)
+        setAgentWriteSourceText(text)
+        setChatInput('')
+        return
+      }
+    }
 
     // Auto-create conversation if none active
-    let convId = activeConversationId
+    let convId = options?.conversationId ?? activeConversationId
     if (!convId) {
       const conv = await createNewConversation(activeProjectId)
       if (!conv) {
@@ -690,7 +763,12 @@ export function ObsidianLayout() {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: text }
-    addMessage(userMsg)
+    const historyForRequest = options?.history ?? chatMessages
+    if (options?.replaceMessages) {
+      setMessages([...options.replaceMessages, userMsg])
+    } else {
+      addMessage(userMsg)
+    }
     if (!forcedText) setChatInput('')
     setPendingImages([])
     setAutoScrollEnabled(true)
@@ -704,7 +782,7 @@ export function ObsidianLayout() {
 
     await sendMessageStream(
       text,
-      chatMessages,
+      historyForRequest,
       (chunk) => {
         accumulated += chunk
         setStreamingContent(accumulated)
@@ -736,7 +814,7 @@ export function ObsidianLayout() {
       },
       controller.signal,
       convId,
-      pendingImages.length > 0 ? pendingImages : undefined,
+      !forcedText && pendingImages.length > 0 ? pendingImages : undefined,
       (() => {
         try {
           const raw = localStorage.getItem('study_active_session_id')
@@ -762,6 +840,67 @@ export function ObsidianLayout() {
       abortControllerRef.current.abort()
     }
   }, [])
+
+  const forkAtMessage = async (messageIndex: number, title?: string) => {
+    if (!activeConversationId) {
+      message.warning('当前对话尚未保存，先发送一轮消息后再创建分支')
+      return null
+    }
+    const fork = await forkConversation(activeConversationId, {
+      title,
+      up_to_index: messageIndex,
+    })
+    if (!fork) {
+      message.error('创建对话分支失败')
+      return null
+    }
+    await setActiveConversation(fork.id)
+    await loadConversations()
+    return fork
+  }
+
+  const handleBranchFromAssistant = async (messageIndex: number) => {
+    const prefix = chatMessages.slice(0, messageIndex + 1)
+    const fork = await forkAtMessage(messageIndex, '对话分支')
+    if (!fork) return
+    setMessages(prefix)
+    message.success('已创建对话分支')
+  }
+
+  const handleRegenerateAssistant = async (assistantIndex: number) => {
+    if (chatLoading) return
+    let userIndex = -1
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+      if (chatMessages[i].role === 'user') {
+        userIndex = i
+        break
+      }
+    }
+    if (userIndex < 0) {
+      message.warning('未找到对应的用户消息')
+      return
+    }
+    const prefix = chatMessages.slice(0, userIndex)
+    const fork = await forkAtMessage(userIndex - 1, '重新生成分支')
+    if (!fork) return
+    await handleSendMessage(chatMessages[userIndex].content, {
+      conversationId: fork.id,
+      history: prefix,
+      replaceMessages: prefix,
+    })
+  }
+
+  const handleEditUserMessage = async (messageIndex: number, nextContent: string) => {
+    if (chatLoading) return
+    const prefix = chatMessages.slice(0, messageIndex)
+    const fork = await forkAtMessage(messageIndex - 1, '编辑消息分支')
+    if (!fork) return
+    await handleSendMessage(nextContent, {
+      conversationId: fork.id,
+      history: prefix,
+      replaceMessages: prefix,
+    })
+  }
 
   const handleImageSelect = (file: File) => {
     if (!file.type.startsWith('image/')) return
@@ -2008,7 +2147,7 @@ export function ObsidianLayout() {
                 onStartFocus={handleStartFocusFromToday}
                 onOpenFeynman={() => {
                   navigate('/goals')
-                  message.info('请在任务中点击“评估输出”，完成今日费曼复盘')
+                  message.info('请在任务中点击“完成”，填写学习产出后完成费曼复盘')
                 }}
                 onOpenEDA={() => navigate('/eda')}
                 onOpenIntervention={() => navigate('/intervention')}
@@ -2208,7 +2347,10 @@ export function ObsidianLayout() {
                       role={msg.role}
                       content={msg.content}
                       imageData={msg.image_data}
-                      onQuoteToNote={quoteAssistantToNote}
+                      onQuoteToNote={msg.role === 'assistant' ? quoteAssistantToNote : undefined}
+                      onRegenerate={msg.role === 'assistant' ? () => void handleRegenerateAssistant(idx) : undefined}
+                      onBranch={msg.role === 'assistant' ? () => void handleBranchFromAssistant(idx) : undefined}
+                      onEdit={msg.role === 'user' ? (next) => void handleEditUserMessage(idx, next) : undefined}
                     />
                   ))}
                   {streamingContent && (
@@ -2225,35 +2367,6 @@ export function ObsidianLayout() {
 
             {/* 输入区域 */}
             <div style={{ marginTop: 12, position: 'sticky', bottom: 12, paddingBottom: 8 }}>
-              {/* Memory indicators banner */}
-              {!focusMode && memoryIndicators.length > 0 && (
-                <div style={{
-                  padding: '6px 12px',
-                  marginBottom: 6,
-                  background: 'var(--accent-50)',
-                  borderRadius: 'var(--radius-md)',
-                  fontSize: 12,
-                  color: 'var(--accent-700)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  flexWrap: 'wrap',
-                }}>
-                  <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>AI 记忆：</span>
-                  {memoryIndicators.slice(0, 4).map((m) => (
-                    <Tag key={m.id} color={
-                      m.category === 'weakness' ? 'orange'
-                        : m.category === 'goal' ? 'gold'
-                        : m.category === 'confusion' ? 'volcano'
-                        : m.category === 'misconception' ? 'red'
-                        : m.memory_type === 'episodic' ? 'cyan'
-                        : 'default'
-                    } style={{ fontSize: 11 }}>
-                      {m.value.length > 20 ? m.value.slice(0, 20) + '...' : m.value}
-                    </Tag>
-                  ))}
-                </div>
-              )}
               {/* Progress feedback achievement card */}
               {!focusMode && progressFeedback && (
                 <div style={{
@@ -2395,37 +2508,10 @@ export function ObsidianLayout() {
                     type="primary"
                     size="middle"
                     block
+                    loading={agentWriteLoading}
                     onClick={() => void handleSendMessage()}
                   >
                     发送
-                  </Button>
-                )}
-                {chatMessages.length > 0 && (
-                  <Button
-                    size="middle"
-                    onClick={() => clearMessages()}
-                    disabled={chatLoading}
-                  >
-                    清空
-                  </Button>
-                )}
-                {!chatLoading && chatMessages.length > 1 && (
-                  <Button
-                    size="middle"
-                    onClick={() => {
-                      const last = getLastUserMessage()
-                      if (last) void handleSendMessage(last)
-                    }}
-                  >
-                    重新生成
-                  </Button>
-                )}
-                {!chatLoading && chatMessages.length > 0 && (
-                  <Button
-                    size="middle"
-                    onClick={() => void handleSendMessage('请继续上一个回答，衔接上文继续输出。')}
-                  >
-                    继续生成
                   </Button>
                 )}
                 {!autoScrollEnabled && (
@@ -3152,6 +3238,88 @@ export function ObsidianLayout() {
           </div>
         )}
       </Drawer>
+
+      <Modal
+        title={agentWriteDraft?.intent === 'create_note' ? '确认创建笔记' : '确认创建目标与任务'}
+        open={!!agentWriteDraft}
+        onCancel={() => {
+          setAgentWriteDraft(null)
+          setAgentWriteSourceText('')
+        }}
+        onOk={() => void confirmAgentWrite()}
+        confirmLoading={agentWriteExecuting}
+        okText="确认写入"
+        cancelText="取消"
+        width={680}
+      >
+        {agentWriteDraft && (
+          <div>
+            <div style={{ marginBottom: 12, color: 'var(--text-secondary)' }}>
+              {agentWriteDraft.summary || 'Agent 已生成写入草案，请确认。'}
+            </div>
+            {(agentWriteDraft.duplicate_warnings || []).length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <Space wrap>
+                  {agentWriteDraft.duplicate_warnings?.map((item) => (
+                    <Tag key={item} color={item.includes('跳过') ? 'orange' : 'blue'}>{item}</Tag>
+                  ))}
+                </Space>
+              </div>
+            )}
+            {agentWriteDraft.intent === 'create_note' ? (
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <div>
+                  <strong>标题：</strong>{agentWriteDraft.draft.title || '对话笔记'}
+                </div>
+                <div>
+                  <strong>标签：</strong>
+                  {(agentWriteDraft.draft.tags || []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                </div>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-light)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: 12,
+                    lineHeight: 1.7,
+                  }}
+                >
+                  {agentWriteDraft.draft.content}
+                </div>
+              </Space>
+            ) : (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <div>
+                  <strong>目标：</strong>{agentWriteDraft.draft.goal_title || '学习目标'}
+                  {agentWriteDraft.draft.existing_goal_id && <Tag color="blue" style={{ marginLeft: 8 }}>复用已有目标</Tag>}
+                </div>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={agentWriteDraft.draft.tasks || []}
+                  locale={{ emptyText: '暂无任务' }}
+                  renderItem={(item) => (
+                    <List.Item>
+                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                        <Space wrap>
+                          <span>{item.title}</span>
+                          <Tag>{item.planned_date || '今天'}</Tag>
+                          <Tag>{item.task_type || 'learn'}</Tag>
+                          {item.duplicate && <Tag color="orange">将跳过重复</Tag>}
+                        </Space>
+                        {item.description && <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{item.description}</span>}
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </Space>
+            )}
+          </div>
+        )}
+      </Modal>
 
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
       <ProjectSettingsModal

@@ -19,6 +19,7 @@ from app.models.agent import AgentExecutionLog
 from app.models.goal import Goal, Task
 from app.models.material import Material
 from app.models.memory import UserMemory
+from app.models.note import Note
 from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.services.memory_service import get_relevant_memories
@@ -85,6 +86,31 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
     return None
+
+
+def _compact_text(value: Any, limit: int = 200) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _normalize_match_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _parse_agent_date(value: Any, default: date) -> date:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    if text in {"今天", "今日"}:
+        return default
+    if text in {"明天", "明日"}:
+        return default + timedelta(days=1)
+    if text in {"后天"}:
+        return default + timedelta(days=2)
+    try:
+        return date.fromisoformat(text[:10])
+    except Exception:
+        return default
 
 
 def _normalize_priority(value: Any) -> str:
@@ -1393,6 +1419,383 @@ async def execute_agent_action(
     }
     await remember_agent_feedback(db, user_id, action_id, "accepted", f"已创建任务：{task.title}", 0.8, action)
     return {"status": "created", "action": action, "draft": draft, "created_task": created, "route": "/goals"}
+
+
+def _heuristic_write_intent(message: str, today: date) -> dict[str, Any]:
+    text = (message or "").strip()
+    lowered = text.lower()
+    note_triggers = [
+        "记个笔记",
+        "记一条笔记",
+        "记一个笔记",
+        "记个灵感",
+        "记一个灵感",
+        "记录一下",
+        "写入笔记",
+        "存到笔记",
+        "保存到笔记",
+        "记到笔记",
+        "记进笔记",
+    ]
+    task_triggers = [
+        "创建任务",
+        "添加任务",
+        "加入任务",
+        "安排任务",
+        "制定任务",
+        "拆成任务",
+        "拆成子任务",
+        "拆解任务",
+        "生成任务",
+        "做成任务",
+        "目标是",
+        "我的目标",
+        "接下来我要",
+        "接下来我的目标",
+    ]
+
+    if any(trigger in text for trigger in note_triggers):
+        content = text
+        for sep in ["：", ":", "\n"]:
+            if sep in content:
+                content = content.split(sep, 1)[1].strip()
+                break
+        content = content or text
+        title = _compact_text(content.splitlines()[0], 48) or "对话灵感"
+        tags = ["对话记录"]
+        if "灵感" in text or "想法" in text:
+            tags.insert(0, "灵感")
+        return {
+            "intent": "create_note",
+            "confidence": 0.78,
+            "summary": f"创建笔记「{title}」",
+            "draft": {
+                "title": title,
+                "content": content,
+                "note_type": "general",
+                "tags": tags[:5],
+            },
+        }
+
+    if any(trigger in text for trigger in task_triggers):
+        goal_title = "学习目标"
+        goal_match = re.search(r"(?:目标是|我的目标是|接下来我的目标是|接下来我要|我要)([^，。；;\n]+)", text)
+        if goal_match:
+            goal_title = _compact_text(goal_match.group(1), 60)
+        elif "英语" in text:
+            goal_title = "英语学习计划"
+
+        def clean_task_phrase(value: str) -> str:
+            cleaned = re.sub(r"^(把|将|请把|请将|帮我把|帮我将)", "", value).strip()
+            cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务$", "", cleaned).strip()
+            cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务", "", cleaned).strip()
+            return _compact_text(cleaned or value, 80)
+
+        task_phrases: list[str] = []
+        for part in re.split(r"[，,。；;、\n]+", text):
+            clean = clean_task_phrase(part)
+            if not clean:
+                continue
+            if any(keyword in clean for keyword in ["精读", "精听", "阅读", "听力", "复习", "练习", "背诵", "总结"]):
+                task_phrases.append(clean)
+
+        tasks = []
+        for phrase in task_phrases[:8]:
+            task_type = "practice" if any(k in phrase for k in ["练习", "刷题"]) else "review" if "复习" in phrase else "summarize" if "总结" in phrase else "learn"
+            tasks.append({
+                "title": phrase,
+                "description": "由对话 Agent 根据你的自然语言计划生成。",
+                "task_type": task_type,
+                "planned_date": today.isoformat(),
+            })
+        if not tasks:
+            tasks.append({
+                "title": goal_title,
+                "description": "由对话 Agent 根据你的自然语言计划生成。",
+                "task_type": "learn",
+                "planned_date": today.isoformat(),
+            })
+
+        return {
+            "intent": "create_goal_tasks",
+            "confidence": 0.7,
+            "summary": f"创建/复用目标「{goal_title}」，并安排 {len(tasks)} 个任务",
+            "draft": {
+                "goal_title": goal_title,
+                "goal_description": text[:500],
+                "tasks": tasks,
+            },
+        }
+
+    return {"intent": "none", "confidence": 0.0, "summary": "", "draft": {}}
+
+
+def _sanitize_write_intent(raw: dict[str, Any] | None, message: str, today: date) -> dict[str, Any]:
+    fallback = _heuristic_write_intent(message, today)
+    if not raw:
+        return fallback
+    intent = str(raw.get("intent") or "none").strip()
+    if intent not in {"none", "create_note", "create_goal_tasks"}:
+        return fallback
+    try:
+        confidence = float(raw.get("confidence") or 0)
+    except Exception:
+        confidence = 0
+    confidence = max(0.0, min(1.0, confidence))
+    if intent == "none":
+        if fallback.get("intent") != "none" and float(fallback.get("confidence") or 0) >= 0.65:
+            return fallback
+        return {"intent": "none", "confidence": confidence, "summary": "", "draft": {}}
+    if confidence < 0.55:
+        if fallback.get("intent") != "none" and float(fallback.get("confidence") or 0) >= 0.65:
+            return fallback
+        return {"intent": "none", "confidence": confidence, "summary": "", "draft": {}}
+
+    if intent == "create_note":
+        note = raw.get("note") if isinstance(raw.get("note"), dict) else raw.get("draft")
+        if not isinstance(note, dict):
+            return fallback
+        content = str(note.get("content") or message).strip()
+        title = _compact_text(note.get("title") or content.splitlines()[0] or "对话笔记", 80)
+        tags_raw = note.get("tags") if isinstance(note.get("tags"), list) else []
+        tags = [_compact_text(t, 20) for t in tags_raw if _compact_text(t, 20)][:6] or ["对话记录"]
+        return {
+            "intent": "create_note",
+            "confidence": confidence,
+            "summary": _compact_text(raw.get("summary") or f"创建笔记「{title}」", 120),
+            "draft": {
+                "title": title,
+                "content": content[:8000],
+                "note_type": str(note.get("note_type") or "general")[:20],
+                "tags": tags,
+            },
+        }
+
+    goal = raw.get("goal") if isinstance(raw.get("goal"), dict) else raw.get("draft")
+    if not isinstance(goal, dict):
+        return fallback
+    goal_title = _compact_text(goal.get("title") or goal.get("goal_title") or fallback.get("draft", {}).get("goal_title") or "学习目标", 80)
+    goal_description = _compact_text(goal.get("description") or goal.get("goal_description") or message, 800)
+    tasks_raw = goal.get("tasks") if isinstance(goal.get("tasks"), list) else []
+    tasks = []
+    for item in tasks_raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        title = _compact_text(item.get("title"), 120)
+        if not title:
+            continue
+        task_type = str(item.get("task_type") or "learn").strip()
+        if task_type not in {"learn", "review", "practice", "summarize"}:
+            task_type = "learn"
+        planned = _parse_agent_date(item.get("planned_date"), today)
+        tasks.append({
+            "title": title,
+            "description": _compact_text(item.get("description") or "由对话 Agent 根据你的自然语言计划生成。", 800),
+            "task_type": task_type,
+            "planned_date": planned.isoformat(),
+        })
+    if not tasks:
+        tasks = fallback.get("draft", {}).get("tasks") or []
+    return {
+        "intent": "create_goal_tasks",
+        "confidence": confidence,
+        "summary": _compact_text(raw.get("summary") or f"创建/复用目标「{goal_title}」，并安排 {len(tasks)} 个任务", 120),
+        "draft": {
+            "goal_title": goal_title,
+            "goal_description": goal_description,
+            "tasks": tasks[:12],
+        },
+    }
+
+
+async def _detect_agent_write_intent(db: AsyncSession, user_id: int, message: str, today: date) -> dict[str, Any]:
+    prompt = (
+        "判断用户是否在请求你写入学习系统数据。只在用户明确要求记录、保存、创建、添加、安排时返回写入意图；"
+        "普通提问、讨论、解释、聊天必须返回 none。\n"
+        "支持两类写入：create_note（笔记/灵感/想法）和 create_goal_tasks（目标/任务/每日计划）。\n"
+        "输出严格 JSON，不要 Markdown：\n"
+        "{"
+        "\"intent\":\"none|create_note|create_goal_tasks\","
+        "\"confidence\":0.0,"
+        "\"summary\":\"简短中文摘要\","
+        "\"note\":{\"title\":\"\",\"content\":\"\",\"note_type\":\"general\",\"tags\":[\"\"]},"
+        "\"goal\":{\"title\":\"\",\"description\":\"\",\"tasks\":[{\"title\":\"\",\"description\":\"\",\"task_type\":\"learn|review|practice|summarize\",\"planned_date\":\"YYYY-MM-DD|今天|明天\"}]}"
+        "}\n"
+        f"今天日期：{today.isoformat()}\n"
+        f"用户消息：{message[:3000]}"
+    )
+    try:
+        from app.ai.factory import AIProviderFactory
+
+        provider = await AIProviderFactory.create_provider(db=db, scenario="agent_planner", user_id=user_id)
+        raw = await asyncio.wait_for(
+            provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt="你是学习系统的安全工具路由器，只输出 JSON。",
+                temperature=0.1,
+            ),
+            timeout=max(1.0, float(getattr(settings, "AGENT_LLM_PLANNER_TIMEOUT_SECONDS", 12.0) or 12.0)),
+        )
+        return _sanitize_write_intent(_extract_json_object(raw or ""), message, today)
+    except Exception as exc:
+        logger.info("Agent write intent detection fell back to heuristics: %s", exc)
+        return _heuristic_write_intent(message, today)
+
+
+async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, intent: dict[str, Any]) -> dict[str, Any]:
+    intent = json.loads(json.dumps(intent, ensure_ascii=False))
+    draft = intent.get("draft") or {}
+    duplicates: list[str] = []
+    if intent.get("intent") == "create_note":
+        title_key = _normalize_match_text(draft.get("title"))
+        content_key = _normalize_match_text(draft.get("content"))
+        result = await db.execute(select(Note).where(Note.user_id == user_id).order_by(Note.updated_at.desc()).limit(50))
+        for note in result.scalars().all():
+            if _normalize_match_text(note.title) == title_key or (content_key and _normalize_match_text(note.content) == content_key):
+                duplicates.append(f"可能已存在同名/同内容笔记：{note.title}")
+                draft["duplicate_note_id"] = note.id
+                break
+    elif intent.get("intent") == "create_goal_tasks":
+        goal_title = str(draft.get("goal_title") or "")
+        goal_key = _normalize_match_text(goal_title)
+        result = await db.execute(select(Goal).where(Goal.user_id == user_id, Goal.status == "active"))
+        goals = list(result.scalars().all())
+        matched_goal = next((g for g in goals if _normalize_match_text(g.title) == goal_key), None)
+        if matched_goal:
+            draft["existing_goal_id"] = matched_goal.id
+            duplicates.append(f"将复用已有目标：{matched_goal.title}")
+            task_result = await db.execute(select(Task).where(Task.goal_id == matched_goal.id))
+            existing_tasks = list(task_result.scalars().all())
+            existing_keys = {
+                (_normalize_match_text(t.title), t.planned_date.isoformat() if t.planned_date else "")
+                for t in existing_tasks
+            }
+            for task in draft.get("tasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                key = (_normalize_match_text(task.get("title")), str(task.get("planned_date") or ""))
+                task["duplicate"] = key in existing_keys
+                if task["duplicate"]:
+                    duplicates.append(f"跳过重复任务：{task.get('title')}")
+        else:
+            draft["existing_goal_id"] = None
+            for task in draft.get("tasks") or []:
+                if isinstance(task, dict):
+                    task["duplicate"] = False
+    intent["draft"] = draft
+    intent["duplicate_warnings"] = duplicates
+    intent["requires_confirmation"] = intent.get("intent") in {"create_note", "create_goal_tasks"}
+    return intent
+
+
+async def build_agent_write_draft(db: AsyncSession, user_id: int, message: str) -> dict[str, Any]:
+    today = date.today()
+    heuristic = _heuristic_write_intent(message, today)
+    if heuristic.get("intent") != "none" and float(heuristic.get("confidence") or 0) >= 0.65:
+        return await _annotate_write_draft_duplicates(db, user_id, heuristic)
+    detected = await _detect_agent_write_intent(db, user_id, message, today)
+    return await _annotate_write_draft_duplicates(db, user_id, detected)
+
+
+async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str, draft: dict[str, Any]) -> dict[str, Any]:
+    if intent == "create_note":
+        duplicate_note_id = draft.get("duplicate_note_id")
+        if duplicate_note_id:
+            result = await db.execute(select(Note).where(Note.id == int(duplicate_note_id), Note.user_id == user_id))
+            note = result.scalar_one_or_none()
+            if note:
+                return {"status": "skipped_duplicate", "intent": intent, "created": None, "route": "/notes", "message": f"已存在笔记：{note.title}"}
+        tags = draft.get("tags") if isinstance(draft.get("tags"), list) else []
+        note = Note(
+            user_id=user_id,
+            title=_compact_text(draft.get("title") or "对话笔记", 120),
+            content=str(draft.get("content") or "").strip()[:8000],
+            note_type=str(draft.get("note_type") or "general")[:20],
+            tags=json.dumps([_compact_text(t, 20) for t in tags if _compact_text(t, 20)][:6], ensure_ascii=False),
+        )
+        db.add(note)
+        await db.flush()
+        await db.refresh(note)
+        return {
+            "status": "created",
+            "intent": intent,
+            "created": {"note": {"id": note.id, "title": note.title, "route": "/notes"}},
+            "route": "/notes",
+            "message": f"已创建笔记：{note.title}",
+        }
+
+    if intent != "create_goal_tasks":
+        raise ValueError("不支持的 Agent 写入类型")
+
+    goal_id = draft.get("existing_goal_id")
+    goal: Goal | None = None
+    if goal_id:
+        result = await db.execute(select(Goal).where(Goal.id == int(goal_id), Goal.user_id == user_id, Goal.status == "active"))
+        goal = result.scalar_one_or_none()
+    if goal is None:
+        goal = Goal(
+            user_id=user_id,
+            title=_compact_text(draft.get("goal_title") or "学习目标", 120),
+            description=str(draft.get("goal_description") or "")[:1000],
+            status="active",
+        )
+        db.add(goal)
+        await db.flush()
+        await db.refresh(goal)
+
+    task_result = await db.execute(select(Task).where(Task.goal_id == goal.id))
+    existing_keys = {
+        (_normalize_match_text(t.title), t.planned_date.isoformat() if t.planned_date else "")
+        for t in task_result.scalars().all()
+    }
+    created_tasks: list[dict[str, Any]] = []
+    skipped_tasks: list[dict[str, Any]] = []
+    today = date.today()
+    for item in (draft.get("tasks") if isinstance(draft.get("tasks"), list) else [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        title = _compact_text(item.get("title"), 120)
+        if not title:
+            continue
+        planned = _parse_agent_date(item.get("planned_date"), today)
+        key = (_normalize_match_text(title), planned.isoformat())
+        if key in existing_keys or bool(item.get("duplicate")):
+            skipped_tasks.append({"title": title, "planned_date": planned.isoformat(), "reason": "duplicate"})
+            continue
+        task_type = str(item.get("task_type") or "learn")
+        if task_type not in {"learn", "review", "practice", "summarize"}:
+            task_type = "learn"
+        task = Task(
+            goal_id=goal.id,
+            title=title,
+            description=str(item.get("description") or "由对话 Agent 根据你的自然语言计划生成。")[:1000],
+            task_type=task_type,
+            planned_date=planned,
+            status="pending",
+        )
+        db.add(task)
+        await db.flush()
+        await db.refresh(task)
+        existing_keys.add(key)
+        created_tasks.append({
+            "id": task.id,
+            "title": task.title,
+            "task_type": task.task_type,
+            "planned_date": planned.isoformat(),
+            "goal_id": goal.id,
+        })
+
+    return {
+        "status": "created" if created_tasks else "skipped_duplicate",
+        "intent": intent,
+        "created": {
+            "goal": {"id": goal.id, "title": goal.title, "route": "/goals"},
+            "tasks": created_tasks,
+            "skipped_tasks": skipped_tasks,
+        },
+        "route": "/goals",
+        "message": f"已创建 {len(created_tasks)} 个任务，跳过 {len(skipped_tasks)} 个重复任务。",
+    }
 
 
 async def remember_agent_feedback(

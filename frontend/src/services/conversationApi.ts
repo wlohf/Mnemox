@@ -28,6 +28,12 @@ export interface ConversationDetail extends Conversation {
   messages: ConversationMessage[]
 }
 
+export interface ConversationMessageCreate {
+  role: 'user' | 'assistant'
+  content: string
+  image_data?: string[] | null
+}
+
 // ---- Project types ----
 
 export interface ChatProject {
@@ -83,6 +89,22 @@ export async function getConversation(id: number): Promise<ConversationDetail | 
   }
 }
 
+export async function appendConversationMessages(
+  id: number,
+  messages: ConversationMessageCreate[],
+): Promise<ConversationMessage[] | null> {
+  try {
+    const res = await apiFetch<{ messages: ConversationMessage[] }>(`${CONV_BASE}/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(messages),
+    })
+    return res.messages
+  } catch {
+    return null
+  }
+}
+
 export async function updateConversation(
   id: number,
   data: { title?: string; is_pinned?: boolean; project_id?: number | null }
@@ -90,6 +112,21 @@ export async function updateConversation(
   try {
     return await apiFetch<Conversation>(`${CONV_BASE}/${id}`, {
       method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function forkConversation(
+  id: number,
+  data: { title?: string; up_to_index?: number | null }
+): Promise<Conversation | null> {
+  try {
+    return await apiFetch<Conversation>(`${CONV_BASE}/${id}/fork`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
