@@ -50,6 +50,8 @@ class RAGService:
         self._current_base_url: str = ""
         self._current_model: str = ""
         self._last_error: str = ""
+        self._last_retrieval_status: Dict[str, Any] = {"ok": True, "mode": "not_run", "message": "尚未检索"}
+        self._last_retrieval_status_by_user: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # 解析配置（JSON 文件 > config.py 默认值）
@@ -76,6 +78,17 @@ class RAGService:
             "similarity_threshold": float(similarity_threshold),
             "embedding_enabled": embedding_enabled,
         }
+
+    def _set_retrieval_status(self, status: Dict[str, Any], user_id: Optional[int] = None) -> None:
+        safe_status = dict(status)
+        self._last_retrieval_status = safe_status
+        if user_id is not None:
+            self._last_retrieval_status_by_user[str(user_id)] = safe_status
+
+    def _get_retrieval_status(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        if user_id is not None:
+            return self._last_retrieval_status_by_user.get(str(user_id), {"ok": True, "mode": "not_run", "message": "尚未检索"})
+        return self._last_retrieval_status
 
     # ------------------------------------------------------------------
     # 初始化
@@ -162,14 +175,16 @@ class RAGService:
         )
 
         def _reinit():
-            from llama_index.embeddings.openai import OpenAIEmbedding
+            self._embed_model = None
+            if api_key:
+                from llama_index.embeddings.openai import OpenAIEmbedding
 
-            api_base = base_url if base_url != "https://api.openai.com/v1" else None
-            self._embed_model = OpenAIEmbedding(
-                model_name=model,
-                api_key=api_key,
-                api_base=api_base,
-            )
+                api_base = base_url if base_url != "https://api.openai.com/v1" else None
+                self._embed_model = OpenAIEmbedding(
+                    model_name=model,
+                    api_key=api_key,
+                    api_base=api_base,
+                )
 
             # 确保 ChromaDB client 和 collection 存在
             if self._chroma_client is None:
@@ -199,8 +214,12 @@ class RAGService:
             similarity_threshold if similarity_threshold is not None
             else getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD)
         )
+        self._embedding_enabled = bool(api_key)
         self._initialized = True
-        logger.info("RAG 服务重新初始化完成 (model=%s)", model)
+        self._set_retrieval_status(
+            {"ok": bool(api_key), "mode": "not_run", "message": "RAG 配置已更新，尚未检索" if api_key else "未配置 embedding API Key，将使用普通资料上下文 fallback"}
+        )
+        logger.info("RAG 服务重新初始化完成 (model=%s, embedding_enabled=%s)", model, bool(api_key))
 
     # ------------------------------------------------------------------
     # 索引
@@ -304,6 +323,7 @@ class RAGService:
     ) -> List[Dict[str, Any]]:
         """语义检索，返回 [{text, score, material_id, material_title}]。"""
         if not self._initialized:
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 服务未初始化，已回退到普通资料上下文"}, user_id)
             return []
 
         k = top_k or getattr(self, '_top_k', settings.RAG_TOP_K)
@@ -311,6 +331,7 @@ class RAGService:
 
         if self._embed_model is None:
             logger.info("RAG 检索跳过：未配置 embedding API Key")
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "未配置 embedding API Key，已回退到普通资料上下文"}, user_id)
             return []
 
         def _retrieve():
@@ -364,9 +385,14 @@ class RAGService:
         try:
             items = await asyncio.to_thread(_retrieve)
             self._last_error = ""
+            if items:
+                self._set_retrieval_status({"ok": True, "mode": "rag", "message": f"RAG 检索命中 {len(items)} 个片段"}, user_id)
+            else:
+                self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 未命中相关片段，已回退到普通资料上下文"}, user_id)
             return items
         except Exception as exc:
             self._last_error = str(exc)[:500]
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": f"RAG 检索失败，已回退到普通资料上下文: {self._last_error}"}, user_id)
             logger.warning("RAG 检索失败，已返回空结果: %s", exc)
             return []
 
@@ -384,14 +410,22 @@ class RAGService:
     # 状态 / 统计
     # ------------------------------------------------------------------
 
-    async def get_status(self) -> Dict[str, Any]:
-        """返回 RAG 服务健康信息。"""
+    async def get_status(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """返回 RAG 服务健康信息。
+
+        user_id 仅用于读取该用户最近一次检索状态，避免多用户页面互相显示状态。
+        """
+        retrieval_status = self._get_retrieval_status(user_id)
         if not self._initialized:
             return {
                 "enabled": settings.RAG_ENABLED,
                 "initialized": False,
                 "total_chunks": 0,
-                "message": "RAG 服务未初始化",
+                "embedding_enabled": False,
+                "last_error": self._last_error,
+                "last_retrieval_status": retrieval_status,
+                "fallback_active": retrieval_status.get("mode") == "fallback",
+                "message": "RAG 服务未初始化，将使用普通资料上下文 fallback",
             }
 
         def _status():
@@ -399,6 +433,7 @@ class RAGService:
             return count
 
         total = await asyncio.to_thread(_status)
+        retrieval_status = self._get_retrieval_status(user_id)
         return {
             "enabled": settings.RAG_ENABLED,
             "initialized": True,
@@ -410,7 +445,14 @@ class RAGService:
             "similarity_threshold": getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD),
             "embedding_enabled": self._embed_model is not None,
             "last_error": self._last_error,
-            "message": "RAG 服务运行正常" if not self._last_error else f"RAG embedding 最近一次调用失败: {self._last_error}",
+            "last_retrieval_status": retrieval_status,
+            "fallback_active": retrieval_status.get("mode") == "fallback" or self._embed_model is None,
+            "message": (
+                "未配置 embedding API Key，将使用普通资料上下文 fallback"
+                if self._embed_model is None
+                else "RAG 服务运行正常" if not self._last_error
+                else f"RAG embedding 最近一次调用失败: {self._last_error}"
+            ),
         }
 
     async def get_material_chunk_count(self, material_id: int) -> int:

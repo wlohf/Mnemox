@@ -52,7 +52,7 @@ async def get_rag_settings_endpoint(
     model = file_cfg.get("model") or settings.RAG_EMBEDDING_MODEL
 
     rag = get_rag_service()
-    status = await rag.get_status()
+    status = await rag.get_status(int(current_user.id))
 
     return {
         "api_key_masked": _mask_key(api_key),
@@ -64,6 +64,10 @@ async def get_rag_settings_endpoint(
         "chunk_overlap": status.get("chunk_overlap", settings.RAG_CHUNK_OVERLAP),
         "top_k": status.get("top_k", settings.RAG_TOP_K),
         "similarity_threshold": status.get("similarity_threshold", settings.RAG_SIMILARITY_THRESHOLD),
+        "embedding_enabled": status.get("embedding_enabled", False),
+        "last_error": status.get("last_error", ""),
+        "last_retrieval_status": status.get("last_retrieval_status", {}),
+        "fallback_active": status.get("fallback_active", False),
     }
 
 
@@ -127,7 +131,7 @@ async def test_rag_embedding(
     model = file_cfg.get("model") or settings.RAG_EMBEDDING_MODEL
 
     if not api_key:
-        return {"success": False, "message": "未配置 API Key"}
+        return {"success": False, "message": "未配置 API Key", "capability": "embedding", "model": model}
 
     import asyncio
 
@@ -145,9 +149,9 @@ async def test_rag_embedding(
 
     try:
         dim = await asyncio.to_thread(_test)
-        return {"success": True, "message": f"连接成功！Embedding 维度: {dim}"}
+        return {"success": True, "message": f"Embedding 连接成功！维度: {dim}", "capability": "embedding", "model": model}
     except Exception as e:
-        return {"success": False, "message": f"连接失败: {str(e)}"}
+        return {"success": False, "message": f"Embedding 连接失败: {str(e)}", "capability": "embedding", "model": model}
 
 
 @router.get("/health")
@@ -160,7 +164,7 @@ async def rag_health(
     返回的数据用于前端展示连接状态。
     """
     rag = get_rag_service()
-    status = await rag.get_status()
+    status = await rag.get_status(int(current_user.id))
 
     return {
         "enabled": status["enabled"],
@@ -168,7 +172,11 @@ async def rag_health(
         "total_chunks": status.get("total_chunks", 0),
         "embedding_model": status.get("embedding_model", ""),
         "chunk_size": status.get("chunk_size", 0),
-        "rag_online": status["initialized"],
+        "rag_online": status["initialized"] and status.get("embedding_enabled", False),
+        "embedding_enabled": status.get("embedding_enabled", False),
+        "fallback_active": status.get("fallback_active", False),
+        "last_error": status.get("last_error", ""),
+        "last_retrieval_status": status.get("last_retrieval_status", {}),
         "message": status.get("message", ""),
     }
 
@@ -194,6 +202,9 @@ async def reindex_material(
         return {"ok": False, "message": "资料无文本内容"}
 
     rag = get_rag_service()
+    status = await rag.get_status(int(current_user.id))
+    if not status.get("embedding_enabled"):
+        return {"ok": False, "chunk_count": 0, "message": "未配置 embedding API Key，资料仍可通过普通关键词/全文上下文使用；配置后可重新索引启用语义检索。"}
     project_ids = await _get_material_project_ids(db, material.id, current_user.id)
     count = await rag.index_material(
         material_id=material.id,
@@ -224,6 +235,14 @@ async def reindex_all(
     materials = result.scalars().all()
 
     rag = get_rag_service()
+    status = await rag.get_status(int(current_user.id))
+    if not status.get("embedding_enabled"):
+        return {
+            "ok": False,
+            "materials_indexed": 0,
+            "total_chunks": 0,
+            "message": "未配置 embedding API Key，已跳过向量索引；资料仍可通过普通关键词/全文上下文使用。",
+        }
     total_chunks = 0
     for mat in materials:
         project_ids = await _get_material_project_ids(db, mat.id, current_user.id)

@@ -79,6 +79,25 @@ export interface AgentActionExecuteResponse {
   route?: string | null
 }
 
+export type AgentWriteIntent = 'none' | 'create_note' | 'create_goal_tasks' | 'add_daily_plan_items'
+
+export interface AgentWriteDraftResponse {
+  intent: AgentWriteIntent
+  confidence?: number
+  summary?: string
+  draft: Record<string, any>
+  duplicate_warnings?: string[]
+  requires_confirmation?: boolean
+}
+
+export interface AgentWriteExecuteResponse {
+  status: string
+  intent: AgentWriteIntent
+  created?: Record<string, any> | null
+  route?: string | null
+  message?: string
+}
+
 export interface AgentPersonalizationItem {
   id: string
   text: string
@@ -186,6 +205,29 @@ export async function getAgentBrief(useLlm = false): Promise<AgentBrief | null> 
 export async function getAgentPrompt(): Promise<{ prompt: string } | null> {
   try {
     return await apiFetch<{ prompt: string }>('/api/agent/prompt')
+  } catch {
+    return null
+  }
+}
+
+
+export async function draftAgentWrite(message: string): Promise<AgentWriteDraftResponse | null> {
+  try {
+    return await apiFetch<AgentWriteDraftResponse>('/api/agent/write/draft', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function executeAgentWrite(intent: AgentWriteIntent, draft: Record<string, any>): Promise<AgentWriteExecuteResponse | null> {
+  try {
+    return await apiFetch<AgentWriteExecuteResponse>('/api/agent/write/execute', {
+      method: 'POST',
+      body: JSON.stringify({ intent, draft }),
+    })
   } catch {
     return null
   }

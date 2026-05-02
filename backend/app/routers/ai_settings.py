@@ -52,6 +52,9 @@ class SetActiveRequest(BaseModel):
 class TestResult(BaseModel):
     success: bool
     message: str
+    capability: Optional[str] = None
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
 
 
 class RoutingOut(BaseModel):
@@ -421,7 +424,7 @@ async def test_provider(
     api_key, base_url, model = _get_effective_values(row)
 
     if not api_key:
-        return TestResult(success=False, message="API Key 未配置")
+        return TestResult(success=False, message="API Key 未配置", capability="chat", provider_name=row.provider_name, model=model)
 
     try:
         from app.ai.factory import AIProviderFactory
@@ -436,10 +439,10 @@ async def test_provider(
             temperature=0.0,
         )
         if response:
-            return TestResult(success=True, message=f"连接成功！模型回复：{response[:100]}")
-        return TestResult(success=False, message="模型返回空响应")
+            return TestResult(success=True, message=f"Chat 连接成功！模型回复：{response[:100]}", capability="chat", provider_name=row.provider_name, model=model)
+        return TestResult(success=False, message="Chat 模型返回空响应", capability="chat", provider_name=row.provider_name, model=model)
     except Exception as e:
-        return TestResult(success=False, message=f"连接失败：{str(e)}")
+        return TestResult(success=False, message=f"Chat 连接失败：{str(e)}", capability="chat", provider_name=row.provider_name, model=model)
 
 
 @router.get("/routing", response_model=List[RoutingOut])

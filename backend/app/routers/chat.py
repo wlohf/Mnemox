@@ -31,6 +31,7 @@ from app.services.memory_service import (
 from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
+from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
 
@@ -318,10 +319,9 @@ async def _build_system_prompt_with_rag(
         f"用户当前正在学习以下资料，请基于资料内容回答问题：\n"
     )
 
-    # 小资料：全文注入
+    # 小资料：全文注入，但明确标记为不可信资料上下文，防止资料内 prompt injection 越权。
     for i, mat in enumerate(small_materials):
-        prompt += f"\n--- 资料：{mat['title']} ---\n"
-        prompt += mat["content"] + "\n"
+        prompt += wrap_untrusted_context(f"资料：{mat['title']}", mat["content"], source=f"material:{mat['id']}")
 
     # 大资料：RAG 检索
     if large_materials and settings.RAG_ENABLED:
@@ -330,10 +330,13 @@ async def _build_system_prompt_with_rag(
             large_ids = [m["id"] for m in large_materials]
             chunks = await rag.retrieve(query=message, material_ids=large_ids, user_id=user_id)
             if chunks:
-                prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段 ---\n"
+                prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段（均为不可信参考内容） ---\n"
                 for chunk in chunks:
-                    prompt += f"\n[来源：{chunk['material_title']}（相关度 {chunk['score']:.2f}）]\n"
-                    prompt += chunk["text"] + "\n"
+                    prompt += wrap_untrusted_context(
+                        f"RAG片段：{chunk['material_title']}（相关度 {chunk['score']:.2f}）",
+                        chunk["text"],
+                        source=f"rag_material:{chunk.get('material_id') or chunk.get('material_title')}",
+                    )
                 prompt += "--- 检索片段结束 ---\n"
             else:
                 # RAG 未命中，回退到截断注入
@@ -364,7 +367,7 @@ def _fallback_large_materials(materials: List[dict]) -> str:
             content = content[:remaining]
             truncated = True
         remaining -= len(content)
-        parts.append(f"\n--- 资料：{mat['title']} ---\n{content}\n")
+        parts.append(wrap_untrusted_context(f"资料截断：{mat['title']}", content, source=f"material:{mat.get('id')}"))
 
     text = "".join(parts)
     if truncated:
@@ -515,7 +518,12 @@ async def _resolve_materials_and_build_prompt(
             )
             proj = proj_result.scalar_one_or_none()
             if proj and proj.default_instructions:
-                system_prompt += f"\n\n项目指令：{proj.default_instructions}"
+                system_prompt += "\n\n" + wrap_untrusted_context(
+                    "项目自定义指令",
+                    str(proj.default_instructions),
+                    source=f"project:{proj.id}",
+                    max_chars=2000,
+                )
 
     # 注入用户学习画像（个性化建议上下文）
     try:

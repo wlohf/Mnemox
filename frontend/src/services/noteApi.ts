@@ -92,3 +92,43 @@ export async function suggestNoteMetadata(content: string, context?: string): Pr
     return null
   }
 }
+
+export type NoteAIAssistAction = 'continue' | 'review' | 'restructure' | 'summarize'
+
+export interface NoteAIAssistResult {
+  ok: boolean
+  action: NoteAIAssistAction
+  title: string
+  suggestion: string
+  message: string
+}
+
+export async function assistNoteWithAI(
+  id: number,
+  data: { action: NoteAIAssistAction; instruction?: string; selected_text?: string },
+): Promise<NoteAIAssistResult | null> {
+  try {
+    return await apiFetch<NoteAIAssistResult>(`/api/notes/${id}/ai/assist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+  } catch (error) {
+    const err = error as Error & { status?: number }
+    let detail = 'AI 辅助暂不可用，请检查 AI 设置或稍后重试'
+    if (err.message) {
+      try {
+        detail = JSON.parse(err.message)?.detail || detail
+      } catch {
+        // keep fallback message
+      }
+    }
+    return {
+      ok: false,
+      action: data.action,
+      title: 'AI 辅助不可用',
+      suggestion: '',
+      message: detail,
+    }
+  }
+}

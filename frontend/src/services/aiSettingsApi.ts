@@ -32,6 +32,9 @@ export interface ProviderCreate {
 export interface TestResult {
   success: boolean
   message: string
+  capability?: string
+  provider_name?: string
+  model?: string
 }
 
 export interface AIRoutingItem {
@@ -137,6 +140,12 @@ export async function updateRoutingSetting(
 
 // ---- RAG Embedding Settings ----
 
+export interface RagRetrievalStatus {
+  ok?: boolean
+  mode?: 'rag' | 'fallback' | 'not_run' | string
+  message?: string
+}
+
 export interface RagSettings {
   api_key_masked: string
   base_url: string
@@ -147,6 +156,10 @@ export interface RagSettings {
   chunk_overlap: number
   top_k: number
   similarity_threshold: number
+  embedding_enabled?: boolean
+  fallback_active?: boolean
+  last_error?: string
+  last_retrieval_status?: RagRetrievalStatus
 }
 
 export interface RagSettingsUpdate {

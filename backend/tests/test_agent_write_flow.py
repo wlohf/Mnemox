@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
 from app.models.chat import ChatConversation, ChatMessage
+from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
 from app.models.note import Note
 from app.models.user import User
@@ -47,6 +48,56 @@ class AgentWriteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks["draft"]["goal_title"], "英语学习计划")
         self.assertEqual(len(tasks["draft"]["tasks"]), 2)
         self.assertTrue(all("拆成任务" not in item["title"] for item in tasks["draft"]["tasks"]))
+
+    def test_heuristic_detects_daily_plan_and_classified_note(self):
+        plan = _heuristic_write_intent("今天的任务是 背单词，复习数学错题", date(2026, 5, 2))
+        self.assertEqual(plan["intent"], "add_daily_plan_items")
+        self.assertEqual(plan["draft"]["date"], "2026-05-02")
+        self.assertEqual([item["title"] for item in plan["draft"]["items"]], ["背单词", "复习数学错题"])
+
+        note = _heuristic_write_intent("临时有个想法：用费曼法复盘错题", date(2026, 5, 2))
+        self.assertEqual(note["intent"], "create_note")
+        self.assertIn(note["draft"]["note_type"], {"idea", "method"})
+        self.assertTrue({"灵感", "学习方法"}.intersection(set(note["draft"]["tags"])))
+
+    def test_heuristic_handles_more_natural_daily_plan_phrases(self):
+        plan = _heuristic_write_intent("帮我安排到今天：刷两套真题，然后总结错题", date(2026, 5, 2))
+        self.assertEqual(plan["intent"], "add_daily_plan_items")
+        titles = [item["title"] for item in plan["draft"]["items"]]
+        self.assertIn("刷两套真题", titles)
+        self.assertIn("然后总结错题", titles)
+        self.assertNotIn("安排到今天：刷两套真题", titles)
+
+        tomorrow = _heuristic_write_intent("明天的计划是 复习英语阅读", date(2026, 5, 2))
+        self.assertEqual(tomorrow["draft"]["date"], "2026-05-03")
+        self.assertEqual(tomorrow["draft"]["items"][0]["planned_date"], "2026-05-03")
+
+    async def test_daily_plan_items_are_appended_and_deduplicated(self):
+        user_id = await self._create_user()
+        today = date.today().isoformat()
+        async with self.sessionmaker() as session:
+            session.add(DailyPlan(user_id=user_id, date=today, content=f"# {today} 学习计划\n- [ ] 📝 背单词"))
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            draft = await build_agent_write_draft(session, user_id, "今天的任务是 背单词，复习数学错题")
+        self.assertEqual(draft["intent"], "add_daily_plan_items")
+        self.assertTrue(draft["draft"].get("existing_plan_id"))
+        self.assertTrue(draft["draft"]["items"][0].get("duplicate"))
+        self.assertFalse(draft["draft"]["items"][1].get("duplicate", False))
+
+        async with self.sessionmaker() as session:
+            result = await execute_agent_write_draft(session, user_id, draft["intent"], draft["draft"])
+            await session.commit()
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(len(result["created"]["items"]), 1)
+        self.assertEqual(len(result["created"]["skipped_items"]), 1)
+
+        async with self.sessionmaker() as session:
+            row = (await session.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == today))).scalar_one()
+            self.assertIn("背单词", row.content)
+            self.assertIn("复习数学错题", row.content)
+            self.assertEqual(row.content.count("背单词"), 1)
 
     async def test_duplicate_note_is_skipped(self):
         user_id = await self._create_user()

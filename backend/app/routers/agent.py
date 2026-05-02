@@ -13,7 +13,9 @@ from app.services.agent_service import (
     build_agent_action_draft,
     build_agent_brief,
     build_agent_prompt_snippet,
+    build_agent_write_draft,
     execute_agent_action,
+    execute_agent_write_draft,
     collect_agent_profile_control_logs,
     remember_agent_feedback,
     update_agent_profile_item,
@@ -61,6 +63,15 @@ class AgentActionExecuteResponse(BaseModel):
     draft: dict[str, Any]
     created_task: dict[str, Any] | None = None
     route: str | None = None
+
+
+class AgentWriteDraftRequest(BaseModel):
+    message: str
+
+
+class AgentWriteExecuteRequest(BaseModel):
+    intent: Literal["create_note", "create_goal_tasks", "add_daily_plan_items"]
+    draft: dict[str, Any]
 
 
 class AgentTaskTriggerRequest(BaseModel):
@@ -162,6 +173,32 @@ async def get_agent_brief(
 ):
     """获取 Agent 今日简报：感知当前状态并给出下一步行动建议。"""
     return await build_agent_brief(db, int(current_user.id), use_llm=use_llm)
+
+
+
+@router.post("/write/draft")
+async def draft_agent_write(
+    body: AgentWriteDraftRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """根据自然语言生成写入草案；只预览，不直接写入。"""
+    return await build_agent_write_draft(db, int(current_user.id), body.message)
+
+
+@router.post("/write/execute")
+async def execute_agent_write(
+    body: AgentWriteExecuteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """确认执行自然语言写入草案。"""
+    try:
+        result = await execute_agent_write_draft(db, int(current_user.id), body.intent, body.draft)
+        await db.commit()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/prompt")

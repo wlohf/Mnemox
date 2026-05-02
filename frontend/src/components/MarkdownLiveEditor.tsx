@@ -47,6 +47,7 @@ export interface MarkdownLiveEditorHandle {
   insertText: (text: string) => void
   setMarkdown: (text: string) => void
   getMarkdown: () => string
+  getSelectedText: () => string
 }
 
 export const MarkdownLiveEditor = forwardRef<MarkdownLiveEditorHandle, MarkdownLiveEditorProps>(
@@ -212,6 +213,7 @@ export const MarkdownLiveEditor = forwardRef<MarkdownLiveEditorHandle, MarkdownL
           editorRef.current?.setMarkdown(text || '')
         },
         getMarkdown: () => editorRef.current?.getMarkdown() || '',
+        getSelectedText: () => editorRef.current?.getSelectedText() || '',
       }),
       [],
     )

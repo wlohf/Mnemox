@@ -6,7 +6,7 @@ import rehypeKatex from 'rehype-katex'
 import 'highlight.js/styles/github-dark.css'
 import 'katex/dist/katex.min.css'
 import { Tooltip } from 'antd'
-import { CopyOutlined, FormOutlined, SyncOutlined, DislikeOutlined } from '@ant-design/icons'
+import { CopyOutlined, FormOutlined, SyncOutlined, DislikeOutlined, BranchesOutlined, EditOutlined } from '@ant-design/icons'
 import './ChatMessageBubble.css'
 
 interface ChatMessageBubbleProps {
@@ -15,9 +15,12 @@ interface ChatMessageBubbleProps {
   imageData?: string[]
   isStreaming?: boolean
   onQuoteToNote?: (content: string) => void
+  onRegenerate?: () => void
+  onBranch?: () => void
+  onEdit?: (content: string) => void
 }
 
-export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuoteToNote }: ChatMessageBubbleProps) {
+export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuoteToNote, onRegenerate, onBranch, onEdit }: ChatMessageBubbleProps) {
   const isUser = role === 'user'
 
   const handleCopy = () => {
@@ -119,9 +122,21 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
                     <button className="chat-action-btn" onClick={() => onQuoteToNote(content)}><FormOutlined /></button>
                   </Tooltip>
                 )}
-                <Tooltip title="重新生成" placement="bottom">
-                  <button className="chat-action-btn"><SyncOutlined /></button>
-                </Tooltip>
+                {onRegenerate && (
+                  <Tooltip title="重新生成" placement="bottom">
+                    <button className="chat-action-btn" onClick={onRegenerate}><SyncOutlined /></button>
+                  </Tooltip>
+                )}
+                {onBranch && (
+                  <Tooltip title="从这里分支" placement="bottom">
+                    <button className="chat-action-btn" onClick={onBranch}><BranchesOutlined /></button>
+                  </Tooltip>
+                )}
+                {onEdit && isUser && (
+                  <Tooltip title="编辑并重发" placement="bottom">
+                    <button className="chat-action-btn" onClick={() => onEdit(content)}><EditOutlined /></button>
+                  </Tooltip>
+                )}
                 <Tooltip title="踩" placement="bottom">
                   <button className="chat-action-btn"><DislikeOutlined /></button>
                 </Tooltip>

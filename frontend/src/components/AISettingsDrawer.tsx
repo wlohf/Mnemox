@@ -444,8 +444,10 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               <Space>
                 <DatabaseOutlined />
                 <span>RAG 知识库 (Embedding)</span>
-                {ragSettings?.initialized ? (
-                  <Tag color="green">已初始化 · {ragSettings.total_chunks} chunks</Tag>
+                {ragSettings?.initialized && ragSettings.embedding_enabled ? (
+                  <Tag color="green">在线 · {ragSettings.total_chunks} chunks</Tag>
+                ) : ragSettings?.initialized ? (
+                  <Tag color="orange">Fallback · 未配置 Embedding</Tag>
                 ) : (
                   <Tag color="default">未初始化</Tag>
                 )}
@@ -557,6 +559,16 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
             <div style={{ fontSize: 12, color: '#999' }}>
               需要 OpenAI 兼容的 /v1/embeddings 接口。大部分中转站选 "OpenAI compatible" 格式即可。
             </div>
+            {ragSettings?.last_retrieval_status?.message && (
+              <div style={{ marginTop: 8, fontSize: 12, color: ragSettings.fallback_active ? '#fa8c16' : '#52c41a' }}>
+                最近检索状态：{ragSettings.last_retrieval_status.message}
+              </div>
+            )}
+            {ragSettings?.last_error && (
+              <div style={{ marginTop: 4, fontSize: 12, color: '#ff4d4f' }}>
+                最近错误：{ragSettings.last_error}
+              </div>
+            )}
           </Card>
 
           {/* 提供商列表 */}

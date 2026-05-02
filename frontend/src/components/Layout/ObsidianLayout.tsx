@@ -7,6 +7,7 @@ import {
   Button,
   Input,
   InputNumber,
+  DatePicker,
   Modal,
   Progress,
   message,
@@ -123,6 +124,16 @@ interface ProjectSearchResult {
   text: string
 }
 
+interface AgentWriteTaskDraftItem {
+  title?: string
+  description?: string
+  task_type?: string
+  planned_date?: string
+  duplicate?: boolean
+}
+
+type AgentWriteDraftData = Record<string, any>
+
 interface DailyPlan {
   date: string
   content: string
@@ -189,6 +200,10 @@ export function ObsidianLayout() {
     enabled: boolean
     rag_online: boolean
     total_chunks: number
+    embedding_enabled?: boolean
+    fallback_active?: boolean
+    last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
+    message?: string
   } | null>(null)
 
   // 资料预览状态
@@ -604,6 +619,9 @@ export function ObsidianLayout() {
           enabled: boolean
           rag_online: boolean
           total_chunks: number
+          embedding_enabled?: boolean
+          fallback_active?: boolean
+          last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
           message: string
         }>('/api/rag/health')
         setRagStatus(j)
@@ -685,20 +703,55 @@ export function ObsidianLayout() {
 
   const shouldCheckAgentWrite = (text: string) => {
     const triggers = [
-      '记个笔记', '记一条笔记', '记一个笔记', '记个灵感', '记一个灵感', '记录一下', '写入笔记', '存到笔记', '保存到笔记', '记到笔记', '记进笔记',
+      '记个笔记', '记一条笔记', '记一个笔记', '记个灵感', '记一个灵感', '记录一下', '写入笔记', '存到笔记', '保存到笔记', '记到笔记', '记进笔记', '突然有个想法', '临时有个想法', '有个想法', '有一个想法', '我想到',
+      '今天的任务', '今天任务', '今日任务', '今天的计划', '今天计划', '今日计划', '今天待办', '今日待办', '加入今天计划', '加到今天计划', '写到今天计划', '安排到今天',
       '创建任务', '添加任务', '加入任务', '安排任务', '制定任务', '拆成任务', '拆成子任务', '拆解任务', '生成任务', '做成任务', '目标是', '我的目标', '接下来我要', '接下来我的目标',
     ]
     return triggers.some(trigger => text.includes(trigger))
   }
 
+  const updateAgentWriteDraft = (patch: AgentWriteDraftData) => {
+    setAgentWriteDraft(prev => prev ? { ...prev, draft: { ...prev.draft, ...patch } } : prev)
+  }
+
+  const updateAgentWriteListItem = (field: 'items' | 'tasks', index: number, patch: AgentWriteTaskDraftItem) => {
+    setAgentWriteDraft(prev => {
+      if (!prev) return prev
+      const list = Array.isArray(prev.draft[field]) ? [...prev.draft[field]] : []
+      list[index] = { ...(list[index] || {}), ...patch, duplicate: false }
+      return { ...prev, draft: { ...prev.draft, [field]: list } }
+    })
+  }
+
+  const removeAgentWriteListItem = (field: 'items' | 'tasks', index: number) => {
+    setAgentWriteDraft(prev => {
+      if (!prev) return prev
+      const list = Array.isArray(prev.draft[field]) ? [...prev.draft[field]] : []
+      list.splice(index, 1)
+      return { ...prev, draft: { ...prev.draft, [field]: list } }
+    })
+  }
+
   const confirmAgentWrite = async () => {
     if (!agentWriteDraft || agentWriteDraft.intent === 'none') return
-    if (agentWriteDraft.intent !== 'create_note' && agentWriteDraft.intent !== 'create_goal_tasks') return
+    if (!['create_note', 'create_goal_tasks', 'add_daily_plan_items'].includes(agentWriteDraft.intent)) return
+    if (agentWriteDraft.intent === 'create_note' && !String(agentWriteDraft.draft.content || '').trim()) {
+      message.warning('笔记内容不能为空')
+      return
+    }
+    if (agentWriteDraft.intent === 'add_daily_plan_items' && !((agentWriteDraft.draft.items || []) as AgentWriteTaskDraftItem[]).some(item => String(item.title || '').trim())) {
+      message.warning('至少保留一个计划项')
+      return
+    }
+    if (agentWriteDraft.intent === 'create_goal_tasks' && !((agentWriteDraft.draft.tasks || []) as AgentWriteTaskDraftItem[]).some(item => String(item.title || '').trim())) {
+      message.warning('至少保留一个任务')
+      return
+    }
     setAgentWriteExecuting(true)
-    const result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft)
+    const result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft).catch(() => null)
     setAgentWriteExecuting(false)
     if (!result) {
-      message.error('Agent 写入失败，请稍后重试')
+      message.error('Agent 写入失败，请检查草案内容后重试')
       return
     }
     message.success(result.message || 'Agent 已写入系统')
@@ -1941,13 +1994,18 @@ export function ObsidianLayout() {
                               </div>
                               {ragStatus && (
                                 <div style={{ marginBottom: 8 }}>
-                                  <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : 'default'}>
-                                    RAG 知识库: {ragStatus.rag_online ? '在线' : '离线'}
+                                  <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : ragStatus.fallback_active || !ragStatus.embedding_enabled ? 'orange' : 'default'}>
+                                    RAG 知识库: {ragStatus.rag_online ? '在线' : 'Fallback'}
                                   </Tag>
                                   {ragStatus.rag_online && (
                                     <Tag color="blue">
                                       {ragStatus.total_chunks} chunks
                                     </Tag>
+                                  )}
+                                  {ragStatus.last_retrieval_status?.message && (
+                                    <div style={{ marginTop: 4, fontSize: 12, color: ragStatus.fallback_active ? '#fa8c16' : 'var(--text-secondary)' }}>
+                                      {ragStatus.last_retrieval_status.message}
+                                    </div>
                                   )}
                                 </div>
                               )}
@@ -3240,7 +3298,7 @@ export function ObsidianLayout() {
       </Drawer>
 
       <Modal
-        title={agentWriteDraft?.intent === 'create_note' ? '确认创建笔记' : '确认创建目标与任务'}
+        title={agentWriteDraft?.intent === 'create_note' ? '确认创建笔记' : agentWriteDraft?.intent === 'add_daily_plan_items' ? '确认加入当天计划' : '确认创建目标与任务'}
         open={!!agentWriteDraft}
         onCancel={() => {
           setAgentWriteDraft(null)
@@ -3267,50 +3325,149 @@ export function ObsidianLayout() {
               </div>
             )}
             {agentWriteDraft.intent === 'create_note' ? (
-              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
                 <div>
-                  <strong>标题：</strong>{agentWriteDraft.draft.title || '对话笔记'}
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>标题</div>
+                  <Input
+                    value={agentWriteDraft.draft.title || ''}
+                    placeholder="对话笔记"
+                    onChange={event => updateAgentWriteDraft({ title: event.target.value })}
+                  />
                 </div>
+                <Space wrap>
+                  <span style={{ fontWeight: 600 }}>类型</span>
+                  <Select
+                    size="small"
+                    value={agentWriteDraft.draft.note_type || 'general'}
+                    style={{ width: 120 }}
+                    onChange={value => updateAgentWriteDraft({ note_type: value })}
+                    options={[
+                      { value: 'general', label: '普通' },
+                      { value: 'idea', label: '灵感' },
+                      { value: 'method', label: '方法' },
+                      { value: 'summary', label: '总结' },
+                      { value: 'question', label: '问题' },
+                      { value: 'resource', label: '资料' },
+                    ]}
+                  />
+                  <span style={{ fontWeight: 600 }}>标签</span>
+                  <Select
+                    mode="tags"
+                    size="small"
+                    value={(agentWriteDraft.draft.tags || []) as string[]}
+                    style={{ minWidth: 260, flex: 1 }}
+                    maxTagCount="responsive"
+                    tokenSeparators={[',', '，', ' ']}
+                    onChange={tags => updateAgentWriteDraft({ tags: tags.slice(0, 6) })}
+                    placeholder="输入标签后回车"
+                  />
+                </Space>
                 <div>
-                  <strong>标签：</strong>
-                  {(agentWriteDraft.draft.tags || []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>内容</div>
+                  <TextArea
+                    value={agentWriteDraft.draft.content || ''}
+                    autoSize={{ minRows: 5, maxRows: 10 }}
+                    onChange={event => updateAgentWriteDraft({ content: event.target.value })}
+                  />
                 </div>
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflow: 'auto',
-                    whiteSpace: 'pre-wrap',
-                    background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-light)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: 12,
-                    lineHeight: 1.7,
-                  }}
-                >
-                  {agentWriteDraft.draft.content}
-                </div>
+              </Space>
+            ) : agentWriteDraft.intent === 'add_daily_plan_items' ? (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space wrap>
+                  <strong>日期</strong>
+                  <DatePicker
+                    size="small"
+                    value={agentWriteDraft.draft.date ? dayjs(agentWriteDraft.draft.date) : undefined}
+                    onChange={value => updateAgentWriteDraft({ date: value ? value.format('YYYY-MM-DD') : undefined })}
+                  />
+                  {agentWriteDraft.draft.existing_plan_id && <Tag color="blue">追加到已有计划</Tag>}
+                </Space>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={(agentWriteDraft.draft.items || []) as AgentWriteTaskDraftItem[]}
+                  locale={{ emptyText: '暂无计划项' }}
+                  renderItem={(item, index) => (
+                    <List.Item actions={[<Button key="remove" size="small" type="link" danger onClick={() => removeAgentWriteListItem('items', index)}>删除</Button>]}>
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        <Input
+                          size="small"
+                          value={item.title || ''}
+                          placeholder="计划项标题"
+                          status={item.duplicate ? 'warning' : undefined}
+                          onChange={event => updateAgentWriteListItem('items', index, { title: event.target.value })}
+                        />
+                        <Space wrap>
+                          <Select
+                            size="small"
+                            value={item.task_type || 'learn'}
+                            style={{ width: 110 }}
+                            onChange={value => updateAgentWriteListItem('items', index, { task_type: value })}
+                            options={[
+                              { value: 'learn', label: '学习' },
+                              { value: 'review', label: '复习' },
+                              { value: 'practice', label: '练习' },
+                              { value: 'summarize', label: '总结' },
+                            ]}
+                          />
+                          <DatePicker
+                            size="small"
+                            value={item.planned_date ? dayjs(item.planned_date) : agentWriteDraft.draft.date ? dayjs(agentWriteDraft.draft.date) : undefined}
+                            onChange={value => updateAgentWriteListItem('items', index, { planned_date: value ? value.format('YYYY-MM-DD') : undefined })}
+                          />
+                          {item.duplicate && <Tag color="orange">疑似重复，编辑后可继续写入</Tag>}
+                        </Space>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
               </Space>
             ) : (
               <Space direction="vertical" size={10} style={{ width: '100%' }}>
                 <div>
-                  <strong>目标：</strong>{agentWriteDraft.draft.goal_title || '学习目标'}
-                  {agentWriteDraft.draft.existing_goal_id && <Tag color="blue" style={{ marginLeft: 8 }}>复用已有目标</Tag>}
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>目标</div>
+                  <Input
+                    value={agentWriteDraft.draft.goal_title || ''}
+                    placeholder="学习目标"
+                    onChange={event => updateAgentWriteDraft({ goal_title: event.target.value })}
+                  />
+                  {agentWriteDraft.draft.existing_goal_id && <Tag color="blue" style={{ marginTop: 6 }}>复用已有目标</Tag>}
                 </div>
                 <List
                   size="small"
                   bordered
-                  dataSource={agentWriteDraft.draft.tasks || []}
+                  dataSource={(agentWriteDraft.draft.tasks || []) as AgentWriteTaskDraftItem[]}
                   locale={{ emptyText: '暂无任务' }}
-                  renderItem={(item) => (
-                    <List.Item>
-                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                  renderItem={(item, index) => (
+                    <List.Item actions={[<Button key="remove" size="small" type="link" danger onClick={() => removeAgentWriteListItem('tasks', index)}>删除</Button>]}>
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        <Input
+                          size="small"
+                          value={item.title || ''}
+                          placeholder="任务标题"
+                          status={item.duplicate ? 'warning' : undefined}
+                          onChange={event => updateAgentWriteListItem('tasks', index, { title: event.target.value })}
+                        />
                         <Space wrap>
-                          <span>{item.title}</span>
-                          <Tag>{item.planned_date || '今天'}</Tag>
-                          <Tag>{item.task_type || 'learn'}</Tag>
-                          {item.duplicate && <Tag color="orange">将跳过重复</Tag>}
+                          <Select
+                            size="small"
+                            value={item.task_type || 'learn'}
+                            style={{ width: 110 }}
+                            onChange={value => updateAgentWriteListItem('tasks', index, { task_type: value })}
+                            options={[
+                              { value: 'learn', label: '学习' },
+                              { value: 'review', label: '复习' },
+                              { value: 'practice', label: '练习' },
+                              { value: 'summarize', label: '总结' },
+                            ]}
+                          />
+                          <DatePicker
+                            size="small"
+                            value={item.planned_date ? dayjs(item.planned_date) : undefined}
+                            onChange={value => updateAgentWriteListItem('tasks', index, { planned_date: value ? value.format('YYYY-MM-DD') : undefined })}
+                          />
+                          {item.duplicate && <Tag color="orange">疑似重复，编辑后可继续写入</Tag>}
                         </Space>
-                        {item.description && <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{item.description}</span>}
                       </Space>
                     </List.Item>
                   )}

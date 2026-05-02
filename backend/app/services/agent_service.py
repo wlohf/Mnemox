@@ -16,6 +16,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentExecutionLog
+from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
 from app.models.material import Material
 from app.models.memory import UserMemory
@@ -95,6 +96,87 @@ def _compact_text(value: Any, limit: int = 200) -> str:
 
 def _normalize_match_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _similar_text(a: Any, b: Any) -> bool:
+    """Small dependency-free fuzzy match for duplicate detection."""
+    left = _normalize_match_text(a)
+    right = _normalize_match_text(b)
+    if not left or not right:
+        return False
+    if left == right or left in right or right in left:
+        return True
+    left_tokens = set(re.findall(r"[\w\u4e00-\u9fff]+", str(a or "").lower()))
+    right_tokens = set(re.findall(r"[\w\u4e00-\u9fff]+", str(b or "").lower()))
+    if not left_tokens or not right_tokens:
+        return False
+    overlap = len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+    return overlap >= 0.72
+
+
+def _classify_note(content: str, source_text: str = "") -> tuple[str, list[str]]:
+    text = f"{source_text}\n{content}".strip()
+    rules = [
+        ("idea", "灵感", ["灵感", "想法", "创意", "idea", "突然想到", "可以试试", "点子"]),
+        ("method", "学习方法", ["学习方法", "方法", "技巧", "策略", "怎么学", "复盘法", "记忆法", "费曼", "番茄钟"]),
+        ("summary", "总结", ["总结", "小结", "复盘", "归纳", "整理一下"]),
+        ("question", "问题", ["问题", "疑问", "不理解", "为什么", "怎么回事", "困惑"]),
+        ("resource", "资料", ["资料", "书", "文章", "链接", "课程", "视频", "论文"]),
+    ]
+    tags: list[str] = []
+    for note_type, tag, keywords in rules:
+        if any(k.lower() in text.lower() for k in keywords):
+            tags.append(tag)
+            return note_type, tags
+    return "general", ["对话记录"]
+
+
+def _clean_note_content(text: str) -> str:
+    content = text.strip()
+    patterns = [
+        r"^(?:记个|记一个|记一条)?(?:笔记|灵感|想法)[:：]?",
+        r"^(?:记录一下|写入笔记|存到笔记|保存到笔记|记到笔记|记进笔记)[:：]?",
+        r"^(?:突然|临时)?(?:有个|有一个|想到一个)?(?:想法|灵感)[:：]?",
+        r"^(?:我有个|我有一个)(?:想法|灵感)[:：]?",
+    ]
+    for pattern in patterns:
+        content = re.sub(pattern, "", content, flags=re.IGNORECASE).strip()
+    for sep in ["：", ":", "\n"]:
+        if sep in content and len(content.split(sep, 1)[0]) <= 24:
+            head, tail = content.split(sep, 1)
+            if any(k in head for k in ["笔记", "灵感", "想法", "记录", "保存"]):
+                content = tail.strip()
+                break
+    return content or text.strip()
+
+
+def _extract_plan_items(text: str, today: date) -> list[dict[str, Any]]:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^(?:帮我|请帮我|麻烦)?(?:把|将)?", "", cleaned).strip()
+    cleaned = re.sub(r"^(?:今天|今日|明天|明日|后天)?(?:的)?(?:任务|计划|待办)(?:是|：|:)?", "", cleaned).strip()
+    cleaned = re.sub(r"^(?:加入|加到|写到|安排到)(?:今天|今日|明天|明日|后天)(?:计划|待办)?(?:里|中)?(?:是|：|:)?", "", cleaned).strip()
+    planned_date = today
+    if any(k in text for k in ["明天", "明日"]):
+        planned_date = today + timedelta(days=1)
+    elif "后天" in text:
+        planned_date = today + timedelta(days=2)
+    parts = [p.strip(" -[]☐✅") for p in re.split(r"[，,。；;、\n]+", cleaned) if p.strip(" -[]☐✅")]
+    if not parts:
+        parts = [cleaned or text]
+    stop_words = {"今天的任务是", "今天任务是", "今日任务是", "今天计划是", "今日计划是", "任务是"}
+    items = []
+    for part in parts[:12]:
+        title = _compact_text(part, 100)
+        if not title or title in stop_words:
+            continue
+        task_type = "review" if "复习" in title else "practice" if any(k in title for k in ["练习", "刷题", "训练"]) else "summarize" if any(k in title for k in ["总结", "整理", "复盘"]) else "learn"
+        items.append({
+            "title": title,
+            "description": "由对话 Agent 根据你的自然语言计划加入每日计划。",
+            "task_type": task_type,
+            "planned_date": planned_date.isoformat(),
+        })
+    return items
 
 
 def _parse_agent_date(value: Any, default: date) -> date:
@@ -1436,6 +1518,36 @@ def _heuristic_write_intent(message: str, today: date) -> dict[str, Any]:
         "保存到笔记",
         "记到笔记",
         "记进笔记",
+        "突然有个想法",
+        "临时有个想法",
+        "有个想法",
+        "有一个想法",
+        "我想到",
+    ]
+    plan_triggers = [
+        "今天的任务",
+        "今天任务",
+        "今日任务",
+        "今天的计划",
+        "今天计划",
+        "今日计划",
+        "今天待办",
+        "今日待办",
+        "加入今天计划",
+        "加到今天计划",
+        "写到今天计划",
+        "安排到今天",
+        "明天的任务",
+        "明天任务",
+        "明日任务",
+        "明天的计划",
+        "明天计划",
+        "明日计划",
+        "明天待办",
+        "明日待办",
+        "安排到明天",
+        "后天的任务",
+        "后天计划",
     ]
     task_triggers = [
         "创建任务",
@@ -1455,25 +1567,33 @@ def _heuristic_write_intent(message: str, today: date) -> dict[str, Any]:
     ]
 
     if any(trigger in text for trigger in note_triggers):
-        content = text
-        for sep in ["：", ":", "\n"]:
-            if sep in content:
-                content = content.split(sep, 1)[1].strip()
-                break
-        content = content or text
-        title = _compact_text(content.splitlines()[0], 48) or "对话灵感"
-        tags = ["对话记录"]
-        if "灵感" in text or "想法" in text:
-            tags.insert(0, "灵感")
+        content = _clean_note_content(text)
+        title = _compact_text(content.splitlines()[0], 48) or "对话笔记"
+        note_type, tags = _classify_note(content, text)
+        if "对话记录" not in tags:
+            tags.append("对话记录")
         return {
             "intent": "create_note",
             "confidence": 0.78,
-            "summary": f"创建笔记「{title}」",
+            "summary": f"创建{tags[0] if tags else '笔记'}「{title}」",
             "draft": {
                 "title": title,
                 "content": content,
-                "note_type": "general",
-                "tags": tags[:5],
+                "note_type": note_type,
+                "tags": tags[:6],
+            },
+        }
+
+    if any(trigger in text for trigger in plan_triggers):
+        tasks = _extract_plan_items(text, today)
+        return {
+            "intent": "add_daily_plan_items",
+            "confidence": 0.82,
+            "summary": f"加入 {len(tasks)} 条到当天计划",
+            "draft": {
+                "date": tasks[0]["planned_date"] if tasks else today.isoformat(),
+                "items": tasks,
+                "also_create_tasks": False,
             },
         }
 
@@ -1535,7 +1655,7 @@ def _sanitize_write_intent(raw: dict[str, Any] | None, message: str, today: date
     if not raw:
         return fallback
     intent = str(raw.get("intent") or "none").strip()
-    if intent not in {"none", "create_note", "create_goal_tasks"}:
+    if intent not in {"none", "create_note", "create_goal_tasks", "add_daily_plan_items"}:
         return fallback
     try:
         confidence = float(raw.get("confidence") or 0)
@@ -1555,19 +1675,57 @@ def _sanitize_write_intent(raw: dict[str, Any] | None, message: str, today: date
         note = raw.get("note") if isinstance(raw.get("note"), dict) else raw.get("draft")
         if not isinstance(note, dict):
             return fallback
-        content = str(note.get("content") or message).strip()
+        content = _clean_note_content(str(note.get("content") or message).strip())[:8000]
         title = _compact_text(note.get("title") or content.splitlines()[0] or "对话笔记", 80)
+        note_type, inferred_tags = _classify_note(content, message)
         tags_raw = note.get("tags") if isinstance(note.get("tags"), list) else []
-        tags = [_compact_text(t, 20) for t in tags_raw if _compact_text(t, 20)][:6] or ["对话记录"]
+        tags = [_compact_text(t, 20) for t in tags_raw if _compact_text(t, 20)]
+        for tag in inferred_tags + ["对话记录"]:
+            if tag and tag not in tags:
+                tags.append(tag)
         return {
             "intent": "create_note",
             "confidence": confidence,
             "summary": _compact_text(raw.get("summary") or f"创建笔记「{title}」", 120),
             "draft": {
                 "title": title,
-                "content": content[:8000],
-                "note_type": str(note.get("note_type") or "general")[:20],
-                "tags": tags,
+                "content": content,
+                "note_type": str(note.get("note_type") or note_type)[:20],
+                "tags": tags[:6],
+            },
+        }
+
+    if intent == "add_daily_plan_items":
+        plan = raw.get("plan") if isinstance(raw.get("plan"), dict) else raw.get("draft")
+        items_raw = plan.get("items") if isinstance(plan, dict) and isinstance(plan.get("items"), list) else []
+        items = []
+        for item in items_raw[:12]:
+            if not isinstance(item, dict):
+                continue
+            title = _compact_text(item.get("title"), 120)
+            if not title:
+                continue
+            planned = _parse_agent_date(item.get("planned_date") or (plan or {}).get("date"), today)
+            task_type = str(item.get("task_type") or "learn").strip()
+            if task_type not in {"learn", "review", "practice", "summarize"}:
+                task_type = "learn"
+            items.append({
+                "title": title,
+                "description": _compact_text(item.get("description") or "由对话 Agent 根据你的自然语言计划加入每日计划。", 800),
+                "task_type": task_type,
+                "planned_date": planned.isoformat(),
+            })
+        if not items:
+            items = _extract_plan_items(message, today)
+        plan_date = items[0]["planned_date"] if items else today.isoformat()
+        return {
+            "intent": "add_daily_plan_items",
+            "confidence": confidence,
+            "summary": _compact_text(raw.get("summary") or f"加入 {len(items)} 条到当天计划", 120),
+            "draft": {
+                "date": plan_date,
+                "items": items[:12],
+                "also_create_tasks": bool((plan or {}).get("also_create_tasks", False)) if isinstance(plan, dict) else False,
             },
         }
 
@@ -1612,13 +1770,16 @@ async def _detect_agent_write_intent(db: AsyncSession, user_id: int, message: st
     prompt = (
         "判断用户是否在请求你写入学习系统数据。只在用户明确要求记录、保存、创建、添加、安排时返回写入意图；"
         "普通提问、讨论、解释、聊天必须返回 none。\n"
-        "支持两类写入：create_note（笔记/灵感/想法）和 create_goal_tasks（目标/任务/每日计划）。\n"
+        "支持三类写入：create_note（笔记/灵感/想法）、add_daily_plan_items（只加入当天/指定日期计划）、create_goal_tasks（创建目标与任务）。\n"
+        "如果用户说“今天的任务/计划/待办是...”，优先返回 add_daily_plan_items，而不是 create_goal_tasks。\n"
+        "note_type 只能使用 general|idea|method|summary|question|resource。\n"
         "输出严格 JSON，不要 Markdown：\n"
         "{"
-        "\"intent\":\"none|create_note|create_goal_tasks\","
+        "\"intent\":\"none|create_note|add_daily_plan_items|create_goal_tasks\","
         "\"confidence\":0.0,"
         "\"summary\":\"简短中文摘要\","
-        "\"note\":{\"title\":\"\",\"content\":\"\",\"note_type\":\"general\",\"tags\":[\"\"]},"
+        "\"note\":{\"title\":\"\",\"content\":\"\",\"note_type\":\"general|idea|method|summary|question|resource\",\"tags\":[\"\"]},"
+        "\"plan\":{\"date\":\"YYYY-MM-DD|今天|明天\",\"items\":[{\"title\":\"\",\"description\":\"\",\"task_type\":\"learn|review|practice|summarize\",\"planned_date\":\"YYYY-MM-DD|今天|明天\"}],\"also_create_tasks\":false},"
         "\"goal\":{\"title\":\"\",\"description\":\"\",\"tasks\":[{\"title\":\"\",\"description\":\"\",\"task_type\":\"learn|review|practice|summarize\",\"planned_date\":\"YYYY-MM-DD|今天|明天\"}]}"
         "}\n"
         f"今天日期：{today.isoformat()}\n"
@@ -1655,6 +1816,25 @@ async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, inten
                 duplicates.append(f"可能已存在同名/同内容笔记：{note.title}")
                 draft["duplicate_note_id"] = note.id
                 break
+    elif intent.get("intent") == "add_daily_plan_items":
+        plan_date = str(draft.get("date") or date.today().isoformat())[:10]
+        draft["date"] = plan_date
+        result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
+        row = result.scalar_one_or_none()
+        existing_content = row.content if row else ""
+        existing_lines = [re.sub(r"^[-*]\s*\[[ xX]\]\s*", "", line).strip() for line in existing_content.splitlines()]
+        existing_lines = [re.sub(r"^[📖📝⚠️❌✅💡\s]+", "", line).strip() for line in existing_lines if line.strip()]
+        for item in draft.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            title = _compact_text(item.get("title"), 120)
+            item["title"] = title
+            item["planned_date"] = str(item.get("planned_date") or plan_date)[:10]
+            item["duplicate"] = any(_similar_text(title, line) for line in existing_lines)
+            if item["duplicate"]:
+                duplicates.append(f"跳过当天计划重复项：{title}")
+        if row:
+            draft["existing_plan_id"] = row.id
     elif intent.get("intent") == "create_goal_tasks":
         goal_title = str(draft.get("goal_title") or "")
         goal_key = _normalize_match_text(goal_title)
@@ -1684,7 +1864,7 @@ async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, inten
                     task["duplicate"] = False
     intent["draft"] = draft
     intent["duplicate_warnings"] = duplicates
-    intent["requires_confirmation"] = intent.get("intent") in {"create_note", "create_goal_tasks"}
+    intent["requires_confirmation"] = intent.get("intent") in {"create_note", "create_goal_tasks", "add_daily_plan_items"}
     return intent
 
 
@@ -1722,6 +1902,47 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
             "created": {"note": {"id": note.id, "title": note.title, "route": "/notes"}},
             "route": "/notes",
             "message": f"已创建笔记：{note.title}",
+        }
+
+    if intent == "add_daily_plan_items":
+        plan_date = str(draft.get("date") or date.today().isoformat())[:10]
+        result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
+        row = result.scalar_one_or_none()
+        existing_content = row.content if row else ""
+        existing_lines = [re.sub(r"^[-*]\s*\[[ xX]\]\s*", "", line).strip() for line in existing_content.splitlines()]
+        existing_lines = [re.sub(r"^[📖📝⚠️❌✅💡\s]+", "", line).strip() for line in existing_lines if line.strip()]
+        created_items: list[dict[str, Any]] = []
+        skipped_items: list[dict[str, Any]] = []
+        for item in (draft.get("items") if isinstance(draft.get("items"), list) else [])[:12]:
+            if not isinstance(item, dict):
+                continue
+            title = _compact_text(item.get("title"), 120)
+            if not title:
+                continue
+            if bool(item.get("duplicate")) or any(_similar_text(title, line) for line in existing_lines):
+                skipped_items.append({"title": title, "reason": "duplicate"})
+                continue
+            task_type = str(item.get("task_type") or "learn")
+            emoji = "📖" if task_type == "review" else "✍️" if task_type == "practice" else "🧠" if task_type == "summarize" else "📝"
+            line = f"- [ ] {emoji} {title}"
+            existing_lines.append(title)
+            created_items.append({"title": title, "line": line, "task_type": task_type})
+        if row is None:
+            header = f"# {plan_date} 学习计划\n"
+            content = header + ("\n".join(item["line"] for item in created_items) if created_items else "今日计划已存在类似内容，未新增。")
+            row = DailyPlan(user_id=user_id, date=plan_date, content=content)
+            db.add(row)
+        elif created_items:
+            suffix = "\n" if row.content and not row.content.endswith("\n") else ""
+            row.content = (row.content or "") + suffix + "\n".join(item["line"] for item in created_items)
+        await db.flush()
+        await db.refresh(row)
+        return {
+            "status": "created" if created_items else "skipped_duplicate",
+            "intent": intent,
+            "created": {"plan": {"id": row.id, "date": row.date, "route": "/plans"}, "items": created_items, "skipped_items": skipped_items},
+            "route": "/plans",
+            "message": f"已加入 {len(created_items)} 条到 {plan_date} 计划，跳过 {len(skipped_items)} 条重复项。",
         }
 
     if intent != "create_goal_tasks":
