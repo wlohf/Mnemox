@@ -553,6 +553,9 @@ export function ConversationSidebar({
       {/* Search */}
       <div ref={searchSectionRef} style={{ padding: '0 14px 10px' }}>
         <Input
+          id="conversation-search"
+          name="conversation-search"
+          aria-label="搜索对话"
           ref={searchInputRef}
           placeholder="搜索对话..."
           prefix={<SearchOutlined style={{ color: 'var(--text-tertiary)' }} />}

@@ -336,6 +336,8 @@ export function ObsidianLayout() {
     loadConversations,
     reloadConversationsForCurrentView,
     createNewConversation,
+    reconcilePersistedSelections,
+    restoreActiveConversation,
     setActiveConversation,
   } = useChatStore()
 
@@ -715,9 +717,7 @@ export function ObsidianLayout() {
       initialConversationRestoreRef.current = true
       void Promise.allSettled([
         loadMaterials(),
-        loadProjects(),
-        loadConversations(),
-        shouldRestoreConversation ? setActiveConversation(activeConversationId) : Promise.resolve(false),
+        shouldRestoreConversation ? restoreActiveConversation() : reconcilePersistedSelections(),
       ])
 
       window.setTimeout(() => {
@@ -742,7 +742,7 @@ export function ObsidianLayout() {
       }, 1600)
     }
     void loadAll()
-  }, [backendReady, loadConversations, loadMaterials, loadProjects, setActiveConversation, syncPendingRecords])
+  }, [backendReady, loadMaterials, reconcilePersistedSelections, restoreActiveConversation, syncPendingRecords])
 
   useEffect(() => {
     if (!backendReady) return
@@ -896,7 +896,7 @@ export function ObsidianLayout() {
   }, [activeProjectId])
 
   useEffect(() => {
-    if (!activeProjectId) {
+    if (!activeProjectId || !projects.some((project) => project.id === activeProjectId)) {
       setActiveProjectMaterialIds([])
       return
     }
@@ -904,7 +904,7 @@ export function ObsidianLayout() {
       const detail = await getProject(activeProjectId)
       setActiveProjectMaterialIds(detail?.material_ids || [])
     })()
-  }, [activeProjectId, projectSettingsOpen])
+  }, [activeProjectId, projectSettingsOpen, projects])
 
   useEffect(() => {
     setSelectedMaterialIds((prev) => {
@@ -1787,7 +1787,7 @@ export function ObsidianLayout() {
     return () => window.clearTimeout(timer)
   }, [showPlanModal])
 
-  const dateCellRender = (value: Dayjs) => {
+  const renderDateBadge = (value: Dayjs) => {
     const dateStr = value.format('YYYY-MM-DD')
     const hasPlan = dailyPlans[dateStr]
     return hasPlan ? (
@@ -2517,6 +2517,8 @@ export function ObsidianLayout() {
                     />
                   </Tooltip>
                   <TextArea
+                    id="mnemox-chat-input"
+                    name="mnemox-chat-input"
                     className="mnemox-chat-input"
                     placeholder="输入问题，或让 AI 基于当前资料生成计划..."
                     autoSize={{ minRows: isChatEmpty ? 1 : 2, maxRows: 7 }}
@@ -2583,6 +2585,8 @@ export function ObsidianLayout() {
                 )}
                 {/* Hidden file input for image upload */}
                 <input
+                  id="mnemox-image-upload"
+                  name="mnemox-image-upload"
                   ref={imageInputRef}
                   type="file"
                   accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
@@ -2820,7 +2824,15 @@ export function ObsidianLayout() {
               style={{ marginBottom: 12 }}
             >
               {calendarExpanded ? (
-                <div className="compact-calendar"><Calendar fullscreen={false} onSelect={onDateSelect} cellRender={dateCellRender} /></div>
+                <div className="compact-calendar">
+                  <Calendar
+                    fullscreen={false}
+                    onSelect={onDateSelect}
+                    cellRender={(current, info) => (
+                      info.type === 'date' ? <>{info.originNode}{renderDateBadge(current)}</> : info.originNode
+                    )}
+                  />
+                </div>
               ) : (
                 <div style={{ textAlign: 'center', padding: '4px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>点击展开查看完整日历</div>
               )}

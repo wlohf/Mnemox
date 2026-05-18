@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useRef } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Spin, ConfigProvider, theme } from 'antd'
+import { App as AntdApp, Spin, ConfigProvider, theme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { syncEngine } from './sync/SyncEngine'
@@ -168,83 +168,96 @@ function App() {
   }, [isAuthenticated])
 
   const isDark = resolvedTheme === 'dark'
+  const antdTheme = useMemo(() => ({
+    algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    token: isDark ? {
+      colorPrimary: '#5d9c8e',
+      colorBgContainer: '#111922',
+      colorBgLayout: '#0b1117',
+      colorBgElevated: '#17232d',
+      colorBorder: 'rgba(196, 222, 216, 0.12)',
+      colorBorderSecondary: 'rgba(196, 222, 216, 0.07)',
+      colorText: '#eef4f1',
+      colorTextSecondary: '#a8b9b4',
+      colorTextTertiary: '#718781',
+      borderRadius: 12,
+      colorLink: '#7bb7a8',
+      colorSuccess: '#72c9ba',
+      colorError: '#d9838d',
+      colorWarning: '#d9b56a',
+      colorInfo: '#7bb7a8',
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
+    } : {
+      colorPrimary: '#3f4a43',
+      colorBgContainer: '#fffaf2',
+      colorBgLayout: '#f4efe5',
+      colorBgElevated: '#fffdf8',
+      colorBorder: '#ddd3c2',
+      colorBorderSecondary: '#eadfce',
+      colorText: '#282721',
+      colorTextSecondary: '#6d685d',
+      colorTextTertiary: '#9a9284',
+      borderRadius: 12,
+      colorLink: '#3f4a43',
+      colorSuccess: '#3f7d68',
+      colorError: '#b85f68',
+      colorWarning: '#a87332',
+      colorInfo: '#637267',
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
+    },
+    components: {
+      Card: {
+        colorBgContainer: isDark ? '#111922' : '#fffaf2',
+      },
+      Layout: {
+        siderBg: isDark ? '#111922' : '#fffaf2',
+        headerBg: isDark ? '#111922' : '#fffaf2',
+      }
+    }
+  }), [isDark])
+
+  useEffect(() => {
+    ConfigProvider.config({
+      holderRender: (children) => (
+        <ConfigProvider locale={zhCN} theme={antdTheme}>
+          <AntdApp>{children}</AntdApp>
+        </ConfigProvider>
+      ),
+    })
+  }, [antdTheme])
 
   return (
     <ConfigProvider
       locale={zhCN}
-      theme={{
-        algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
-        token: isDark ? {
-          colorPrimary: '#5d9c8e',
-          colorBgContainer: '#111922',
-          colorBgLayout: '#0b1117',
-          colorBgElevated: '#17232d',
-          colorBorder: 'rgba(196, 222, 216, 0.12)',
-          colorBorderSecondary: 'rgba(196, 222, 216, 0.07)',
-          colorText: '#eef4f1',
-          colorTextSecondary: '#a8b9b4',
-          colorTextTertiary: '#718781',
-          borderRadius: 12,
-          colorLink: '#7bb7a8',
-          colorSuccess: '#72c9ba',
-          colorError: '#d9838d',
-          colorWarning: '#d9b56a',
-          colorInfo: '#7bb7a8',
-          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
-        } : {
-          colorPrimary: '#3f4a43',
-          colorBgContainer: '#fffaf2',
-          colorBgLayout: '#f4efe5',
-          colorBgElevated: '#fffdf8',
-          colorBorder: '#ddd3c2',
-          colorBorderSecondary: '#eadfce',
-          colorText: '#282721',
-          colorTextSecondary: '#6d685d',
-          colorTextTertiary: '#9a9284',
-          borderRadius: 12,
-          colorLink: '#3f4a43',
-          colorSuccess: '#3f7d68',
-          colorError: '#b85f68',
-          colorWarning: '#a87332',
-          colorInfo: '#637267',
-          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
-        },
-        components: {
-          Card: {
-            colorBgContainer: isDark ? '#111922' : '#fffaf2',
-          },
-          Layout: {
-            siderBg: isDark ? '#111922' : '#fffaf2',
-            headerBg: isDark ? '#111922' : '#fffaf2',
-          }
-        }
-      }}
+      theme={antdTheme}
     >
-      <BrowserRouter>
-        <Suspense fallback={<PageSpinner />}>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
-            <Route path="/pomodoro" element={<ProtectedRoute><PomodoroPage /></ProtectedRoute>} />
-            <Route path="/wrong-questions" element={<ProtectedRoute><WrongQuestionsPage /></ProtectedRoute>} />
-            <Route path="/review" element={<ProtectedRoute><ReviewPage /></ProtectedRoute>} />
-            <Route path="/goals" element={<ProtectedRoute><GoalsTasksPage /></ProtectedRoute>} />
-            <Route path="/notes" element={<ProtectedRoute><NotesPage /></ProtectedRoute>} />
-            <Route path="/memory" element={<ProtectedRoute><MemoryPage /></ProtectedRoute>} />
-            <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-            <Route path="/mastery" element={<ProtectedRoute><MasteryMapPage /></ProtectedRoute>} />
-            <Route path="/progress" element={<ProtectedRoute><ProgressEnginePage /></ProtectedRoute>} />
-            <Route path="/profile" element={<ProtectedRoute><UserProfilePage /></ProtectedRoute>} />
-            <Route path="/prompts" element={<ProtectedRoute><PromptsPage /></ProtectedRoute>} />
-            <Route path="/eda" element={<ProtectedRoute><EDAReportPage /></ProtectedRoute>} />
-            <Route path="/intervention" element={<ProtectedRoute><Navigate to="/eda?tab=intervention" replace /></ProtectedRoute>} />
-            <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
-            <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
-            <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
+      <AntdApp>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Suspense fallback={<PageSpinner />}>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
+              <Route path="/pomodoro" element={<ProtectedRoute><PomodoroPage /></ProtectedRoute>} />
+              <Route path="/wrong-questions" element={<ProtectedRoute><WrongQuestionsPage /></ProtectedRoute>} />
+              <Route path="/review" element={<ProtectedRoute><ReviewPage /></ProtectedRoute>} />
+              <Route path="/goals" element={<ProtectedRoute><GoalsTasksPage /></ProtectedRoute>} />
+              <Route path="/notes" element={<ProtectedRoute><NotesPage /></ProtectedRoute>} />
+              <Route path="/memory" element={<ProtectedRoute><MemoryPage /></ProtectedRoute>} />
+              <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+              <Route path="/mastery" element={<ProtectedRoute><MasteryMapPage /></ProtectedRoute>} />
+              <Route path="/progress" element={<ProtectedRoute><ProgressEnginePage /></ProtectedRoute>} />
+              <Route path="/profile" element={<ProtectedRoute><UserProfilePage /></ProtectedRoute>} />
+              <Route path="/prompts" element={<ProtectedRoute><PromptsPage /></ProtectedRoute>} />
+              <Route path="/eda" element={<ProtectedRoute><EDAReportPage /></ProtectedRoute>} />
+              <Route path="/intervention" element={<ProtectedRoute><Navigate to="/eda?tab=intervention" replace /></ProtectedRoute>} />
+              <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
+              <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
+              <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+      </AntdApp>
     </ConfigProvider>
   )
 }

@@ -61,18 +61,30 @@ export function LoginPage() {
       key: 'login',
       label: '登录',
       children: (
-        <Form onFinish={handleLogin} autoComplete="off" size="large" style={{ marginTop: 16 }}>
+        <Form name="login" onFinish={handleLogin} autoComplete="on" size="large" style={{ marginTop: 16 }}>
           <Form.Item
             name="username"
             rules={[{ required: true, message: '请输入用户名' }]}
           >
-            <Input prefix={<UserOutlined style={{ color: 'var(--text-secondary)' }} />} placeholder="用户名" />
+            <Input
+              id="login-username"
+              name="username"
+              autoComplete="username"
+              prefix={<UserOutlined style={{ color: 'var(--text-secondary)' }} />}
+              placeholder="用户名"
+            />
           </Form.Item>
           <Form.Item
             name="password"
             rules={[{ required: true, message: '请输入密码' }]}
           >
-            <Input.Password prefix={<LockOutlined style={{ color: 'var(--text-secondary)' }} />} placeholder="密码" />
+            <Input.Password
+              id="login-password"
+              name="password"
+              autoComplete="current-password"
+              prefix={<LockOutlined style={{ color: 'var(--text-secondary)' }} />}
+              placeholder="密码"
+            />
           </Form.Item>
           <Form.Item style={{ marginTop: 32 }}>
             <Button
@@ -91,7 +103,7 @@ export function LoginPage() {
       key: 'register',
       label: '注册',
       children: (
-        <Form onFinish={handleRegister} autoComplete="off" size="large" style={{ marginTop: 16 }}>
+        <Form name="register" onFinish={handleRegister} autoComplete="on" size="large" style={{ marginTop: 16 }}>
           <Form.Item
             name="username"
             rules={[
@@ -99,7 +111,13 @@ export function LoginPage() {
               { min: 2, max: 50, message: '用户名长度 2-50' },
             ]}
           >
-            <Input prefix={<UserOutlined style={{ color: 'var(--text-secondary)' }} />} placeholder="用户名" />
+            <Input
+              id="register-username"
+              name="username"
+              autoComplete="username"
+              prefix={<UserOutlined style={{ color: 'var(--text-secondary)' }} />}
+              placeholder="用户名"
+            />
           </Form.Item>
           <Form.Item
             name="email"
@@ -108,7 +126,13 @@ export function LoginPage() {
               { type: 'email', message: '邮箱格式不正确' },
             ]}
           >
-            <Input prefix={<MailOutlined style={{ color: 'var(--text-secondary)' }} />} placeholder="邮箱" />
+            <Input
+              id="register-email"
+              name="email"
+              autoComplete="email"
+              prefix={<MailOutlined style={{ color: 'var(--text-secondary)' }} />}
+              placeholder="邮箱"
+            />
           </Form.Item>
           <Form.Item
             name="password"
@@ -117,7 +141,13 @@ export function LoginPage() {
               { min: 6, message: '密码至少 6 位' },
             ]}
           >
-            <Input.Password prefix={<LockOutlined style={{ color: 'var(--text-secondary)' }} />} placeholder="密码" />
+            <Input.Password
+              id="register-password"
+              name="password"
+              autoComplete="new-password"
+              prefix={<LockOutlined style={{ color: 'var(--text-secondary)' }} />}
+              placeholder="密码"
+            />
           </Form.Item>
           <Form.Item style={{ marginTop: 32 }}>
             <Button

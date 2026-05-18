@@ -39,8 +39,10 @@ interface ChatStore {
   setActiveProjectId: (id: number | null) => void
 
   // Actions - Conversations
-  loadConversations: (projectId?: number | null, search?: string) => Promise<void>
+  loadConversations: (projectId?: number | null, search?: string) => Promise<Conversation[]>
   createNewConversation: (projectId?: number | null) => Promise<Conversation | null>
+  reconcilePersistedSelections: () => Promise<void>
+  restoreActiveConversation: () => Promise<boolean>
   setActiveConversation: (id: number | null) => Promise<boolean>
   deleteConversation: (id: number) => Promise<void>
   renameConversation: (id: number, title: string) => Promise<void>
@@ -158,6 +160,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const conversations = await listConversations(params)
     set({ conversations })
+    return conversations
+  },
+
+  reconcilePersistedSelections: async () => {
+    const { activeProjectId, activeConversationId } = get()
+    const conversations = await get().loadConversations()
+    const projects = await listProjects()
+    set({ projects })
+
+    if (activeProjectId !== null && !projects.some((project) => project.id === activeProjectId)) {
+      set({ activeProjectId: null })
+      persistId('chat_activeProjectId', null)
+    }
+
+    if (activeConversationId !== null && !conversations.some((conversation) => conversation.id === activeConversationId)) {
+      set({ activeConversationId: null, messages: [], streamingContent: '' })
+      persistId('chat_activeConversationId', null)
+    }
   },
 
   createNewConversation: async (projectId) => {
@@ -177,6 +197,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       persistId('chat_activeConversationId', conv.id)
     }
     return conv
+  },
+
+  restoreActiveConversation: async () => {
+    await get().reconcilePersistedSelections()
+    const id = get().activeConversationId
+    if (!id) {
+      return false
+    }
+
+    return get().setActiveConversation(id)
   },
 
   setActiveConversation: async (id) => {

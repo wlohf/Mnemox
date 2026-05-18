@@ -261,23 +261,29 @@ export function PlansPage() {
               setProbeResult(null)
             }
           }}
-          dateCellRender={(current) => {
+          cellRender={(current, info) => {
+            if (info.type !== 'date') {
+              return info.originNode
+            }
             const hasPlan = planDateSet.has(current.format('YYYY-MM-DD'))
-            if (!hasPlan) return null
+            if (!hasPlan) return info.originNode
             return (
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    background: 'var(--text-primary)',
-                    border: '1px solid var(--bg-secondary)',
-                    opacity: 0.9,
-                    display: 'inline-block',
-                  }}
-                />
-              </div>
+              <>
+                {info.originNode}
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: 'var(--text-primary)',
+                      border: '1px solid var(--bg-secondary)',
+                      opacity: 0.9,
+                      display: 'inline-block',
+                    }}
+                  />
+                </div>
+              </>
             )
           }}
         />
