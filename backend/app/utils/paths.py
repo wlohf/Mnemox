@@ -5,6 +5,7 @@ Windows 下如果用相对路径，很容易把文件写到 backend/data/ 而不
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -23,8 +24,22 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def get_data_dir() -> Path:
+def get_runtime_data_root() -> Path:
+    configured = os.environ.get("MNEMOX_DATA_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
     return get_project_root() / "data"
+
+
+def resolve_runtime_path(path: str | Path) -> Path:
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p
+    return get_runtime_data_root() / p
+
+
+def get_data_dir() -> Path:
+    return get_runtime_data_root()
 
 
 def get_uploads_dir() -> Path:
@@ -65,5 +80,5 @@ def from_repo_relative(rel_path: str) -> Path:
     p = Path(rel_path)
     if p.is_absolute():
         return p
-    return get_project_root() / p
+    return get_runtime_data_root() / p
 

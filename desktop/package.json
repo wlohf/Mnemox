@@ -1,0 +1,69 @@
+{
+  "name": "mnemox-desktop",
+  "version": "1.0.1",
+  "description": "Mnemox desktop shell",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "test": "node --test src/*.test.js",
+    "dist": "electron-builder --win nsis --x64",
+    "pack": "electron-builder --win dir --x64"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "app.mnemox.desktop",
+    "productName": "Mnemox",
+    "directories": {
+      "output": "../release/desktop"
+    },
+    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wlohf",
+        "repo": "Mnemox"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../desktop-build/backend/mnemox-backend",
+        "to": "backend/mnemox-backend"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "frontend/dist"
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Mnemox"
+    }
+  }
+}

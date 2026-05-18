@@ -2,7 +2,10 @@ import { useState, useEffect } from 'react'
 import {
   Drawer,
   Select,
+  AutoComplete,
+  Collapse,
   Card,
+  Alert,
   Input,
   InputNumber,
   Button,
@@ -10,6 +13,7 @@ import {
   Space,
   Tag,
   Spin,
+  Tooltip,
 } from 'antd'
 import {
   CheckCircleOutlined,
@@ -17,6 +21,8 @@ import {
   SaveOutlined,
   LoadingOutlined,
   DatabaseOutlined,
+  SearchOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons'
 import {
   getAllProviders,
@@ -30,20 +36,65 @@ import {
   getRagSettings,
   updateRagSettings,
   testRagEmbedding,
+  searchProviderModels,
+  notifyAIProvidersUpdated,
   type AIProvider,
   type AIRoutingItem,
   type RagSettings,
 } from '../services/aiSettingsApi'
+import { getApiErrorMessage } from '../services/apiClient'
 
 interface AISettingsDrawerProps {
   open: boolean
   onClose: () => void
 }
 
+function showApiError(error: unknown, fallback: string) {
+  message.error(getApiErrorMessage(error, fallback))
+}
+
 interface EditState {
   api_key: string
+  clear_api_key: boolean
   base_url: string
   model: string
+  available_models: string[]
+}
+
+interface ProviderFeedback {
+  type: 'success' | 'error' | 'info'
+  title: string
+  detail?: string
+  providerName?: string
+  model?: string
+  baseUrl?: string
+  timestamp: number
+}
+
+function normalizeModels(models: string[]) {
+  return Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)))
+}
+
+function withDefaultModel(models: string[], model?: string) {
+  return normalizeModels([model || '', ...models])
+}
+
+function modelOptions(models: string[], model?: string) {
+  return withDefaultModel(models, model).map((item) => ({ label: item, value: item }))
+}
+
+function buildProviderEditStates(data: AIProvider[]): Record<string, EditState> {
+  const states: Record<string, EditState> = {}
+  for (const p of data) {
+    states[p.provider_name] = {
+      api_key: '',
+      clear_api_key: false,
+      base_url: p.base_url,
+      model: p.model,
+      available_models: withDefaultModel(p.available_models || [], p.model),
+    }
+  }
+  return states
 }
 
 export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
@@ -53,6 +104,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
   const [editStates, setEditStates] = useState<Record<string, EditState>>({})
   const [savingProvider, setSavingProvider] = useState<string | null>(null)
   const [testingProvider, setTestingProvider] = useState<string | null>(null)
+  const [searchingProvider, setSearchingProvider] = useState<string | null>(null)
+  const [providerFeedback, setProviderFeedback] = useState<Record<string, ProviderFeedback>>({})
   const [routingSettings, setRoutingSettings] = useState<AIRoutingItem[]>([])
   const [savingScenario, setSavingScenario] = useState<string | null>(null)
   const [creatingProvider, setCreatingProvider] = useState(false)
@@ -63,6 +116,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     api_key: '',
     base_url: '',
     model: '',
+    available_models: [] as string[],
   })
 
   // RAG settings state
@@ -81,42 +135,59 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
   const loadProviders = async () => {
     setLoading(true)
-    const data = await getAllProviders()
-    const routeData = await getRoutingSettings()
-    const ragData = await getRagSettings()
-    if (data) {
-      setProviders(data)
-      const states: Record<string, EditState> = {}
-      for (const p of data) {
-        states[p.provider_name] = {
-          api_key: '',
-          base_url: p.base_url,
-          model: p.model,
-        }
+    try {
+      const [providersResult, routingResult, ragResult] = await Promise.allSettled([
+        getAllProviders(),
+        getRoutingSettings(),
+        getRagSettings(),
+      ])
+
+      if (providersResult.status === 'fulfilled') {
+        setProviders(providersResult.value)
+        setEditStates(buildProviderEditStates(providersResult.value))
+      } else {
+        showApiError(providersResult.reason, '加载 AI 提供商失败')
       }
-      setEditStates(states)
+
+      if (routingResult.status === 'fulfilled') {
+        setRoutingSettings(routingResult.value)
+      } else {
+        showApiError(routingResult.reason, '加载场景路由失败')
+      }
+
+      if (ragResult.status === 'fulfilled') {
+        const ragData = ragResult.value
+        setRagSettings(ragData)
+        setRagEdit({
+          api_key: '',
+          base_url: ragData.base_url,
+          model: ragData.model,
+          chunk_size: ragData.chunk_size ?? 512,
+          chunk_overlap: ragData.chunk_overlap ?? 64,
+          top_k: ragData.top_k ?? 5,
+          similarity_threshold: ragData.similarity_threshold ?? 0.3,
+        })
+      } else {
+        showApiError(ragResult.reason, '加载 RAG 设置失败')
+      }
+    } finally {
+      setLoading(false)
     }
-    if (routeData) {
-      setRoutingSettings(routeData)
-    }
-    if (ragData) {
-      setRagSettings(ragData)
-      setRagEdit({
-        api_key: '',
-        base_url: ragData.base_url,
-        model: ragData.model,
-        chunk_size: ragData.chunk_size ?? 512,
-        chunk_overlap: ragData.chunk_overlap ?? 64,
-        top_k: ragData.top_k ?? 5,
-        similarity_threshold: ragData.similarity_threshold ?? 0.3,
-      })
-    }
-    setLoading(false)
   }
 
   useEffect(() => {
     if (open) loadProviders()
   }, [open])
+
+  const setProviderResult = (providerName: string, feedback: Omit<ProviderFeedback, 'timestamp'>) => {
+    setProviderFeedback((prev) => ({
+      ...prev,
+      [providerName]: {
+        ...feedback,
+        timestamp: Date.now(),
+      },
+    }))
+  }
 
   const activeProvider = providers.find((p) => p.is_active)
   const builtInProviders = new Set(['deepseek', 'openai', 'claude', 'gemini', 'qwen'])
@@ -128,14 +199,20 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         : 'https://api.openai.com/v1'
 
   const handleActiveChange = async (providerName: string) => {
-    const result = await setActiveProvider(providerName)
-    if (result) {
+    try {
+      const result = await setActiveProvider(providerName)
       setProviders((prev) =>
         prev.map((p) => ({ ...p, is_active: p.provider_name === providerName }))
       )
+      notifyAIProvidersUpdated({
+        providerName: result.provider_name,
+        model: result.model,
+        availableModels: withDefaultModel(result.available_models || [], result.model),
+        selectModel: true,
+      })
       message.success('已切换 AI 提供商')
-    } else {
-      message.error('切换失败')
+    } catch (error) {
+      showApiError(error, '切换 AI 提供商失败')
     }
   }
 
@@ -144,59 +221,225 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     if (!edit) return
 
     setSavingProvider(providerName)
-    const updateData: Record<string, string> = {}
-    if (edit.api_key) updateData.api_key = edit.api_key
+    const selectedModels = normalizeModels(edit.available_models)
+    const defaultModel = edit.model.trim() || selectedModels[0] || ''
+    const updateData: Record<string, any> = {}
+    if (edit.clear_api_key) {
+      updateData.api_key = ''
+    } else if (edit.api_key.trim()) {
+      updateData.api_key = edit.api_key.trim()
+    }
     updateData.base_url = edit.base_url
-    updateData.model = edit.model
+    updateData.model = defaultModel
+    updateData.available_models = withDefaultModel(selectedModels, defaultModel)
 
-    const result = await updateProvider(providerName, updateData)
-    if (result) {
+    try {
+      const result = await updateProvider(providerName, updateData)
+      const savedModels = withDefaultModel(result.available_models || [], result.model)
       setProviders((prev) =>
         prev.map((p) => (p.provider_name === providerName ? result : p))
       )
       setEditStates((prev) => ({
         ...prev,
-        [providerName]: { ...prev[providerName], api_key: '' },
+        [providerName]: {
+          api_key: '',
+          clear_api_key: false,
+          base_url: result.base_url,
+          model: result.model,
+          available_models: savedModels,
+        },
       }))
+      notifyAIProvidersUpdated({
+        providerName: result.provider_name,
+        model: result.model || savedModels[0],
+        availableModels: savedModels,
+        selectModel: true,
+      })
+      setProviderResult(providerName, {
+        type: 'success',
+        title: '保存成功',
+        detail: edit.clear_api_key ? '已清空保存的 API Key。' : '配置已写入当前账户。',
+        providerName: result.provider_name,
+        model: result.model,
+        baseUrl: result.base_url,
+      })
       message.success('保存成功')
-    } else {
-      message.error('保存失败')
+    } catch (error) {
+      setProviderResult(providerName, {
+        type: 'error',
+        title: '保存失败',
+        detail: getApiErrorMessage(error, '保存 AI 提供商失败'),
+        providerName,
+        model: edit.model,
+        baseUrl: edit.base_url,
+      })
+      showApiError(error, '保存 AI 提供商失败')
+    } finally {
+      setSavingProvider(null)
     }
-    setSavingProvider(null)
   }
 
   const handleTest = async (providerName: string) => {
+    const edit = editStates[providerName]
     setTestingProvider(providerName)
-    const result = await testProvider(providerName)
-    if (result) {
+    try {
+      const apiKeyForTest = edit?.clear_api_key
+        ? ''
+        : edit?.api_key.trim()
+          ? edit.api_key.trim()
+          : undefined
+      const result = await testProvider(providerName, {
+        api_key: apiKeyForTest,
+        base_url: edit?.base_url.trim() || undefined,
+        model: edit?.model.trim() || undefined,
+      })
       if (result.success) {
+        setProviderResult(providerName, {
+          type: 'success',
+          title: '测试通过',
+          detail: result.message,
+          providerName: result.provider_name || providerName,
+          model: result.model || edit?.model,
+          baseUrl: edit?.base_url,
+        })
         message.success(result.message)
       } else {
+        setProviderResult(providerName, {
+          type: 'error',
+          title: '测试失败',
+          detail: result.message,
+          providerName: result.provider_name || providerName,
+          model: result.model || edit?.model,
+          baseUrl: edit?.base_url,
+        })
         message.error(result.message)
       }
-    } else {
-      message.error('测试请求失败，请检查后端是否运行')
+    } catch (error) {
+      setProviderResult(providerName, {
+        type: 'error',
+        title: '测试请求失败',
+        detail: getApiErrorMessage(error, '测试请求失败，请检查后端是否运行'),
+        providerName,
+        model: edit?.model,
+        baseUrl: edit?.base_url,
+      })
+      showApiError(error, '测试请求失败，请检查后端是否运行')
+    } finally {
+      setTestingProvider(null)
     }
-    setTestingProvider(null)
   }
 
-  const updateEditState = (providerName: string, field: keyof EditState, value: string) => {
+  const updateEditState = (
+    providerName: string,
+    field: keyof EditState,
+    value: string | string[] | boolean,
+  ) => {
     setEditStates((prev) => ({
       ...prev,
       [providerName]: { ...prev[providerName], [field]: value },
     }))
   }
 
-  const handleRoutingChange = async (scenario: string, providerName?: string) => {
+  const updateProviderDefaultModel = (providerName: string, model: string) => {
+    setEditStates((prev) => {
+      const current = prev[providerName]
+      if (!current) return prev
+      return {
+        ...prev,
+        [providerName]: {
+          ...current,
+          model,
+        },
+      }
+    })
+  }
+
+  const updateProviderAvailableModels = (providerName: string, models: string[]) => {
+    setEditStates((prev) => {
+      const current = prev[providerName]
+      if (!current) return prev
+      const availableModels = withDefaultModel(models, current.model)
+      const nextModel =
+        current.model && availableModels.includes(current.model)
+          ? current.model
+          : availableModels[0] || current.model
+      return {
+        ...prev,
+        [providerName]: {
+          ...current,
+          available_models: availableModels,
+          model: nextModel,
+        },
+      }
+    })
+  }
+
+  const handleSearchModels = async (providerName: string) => {
+    const edit = editStates[providerName]
+    if (!edit) return
+
+    setSearchingProvider(providerName)
+    try {
+      const apiKeyForSearch = edit.clear_api_key
+        ? ''
+        : edit.api_key.trim()
+          ? edit.api_key.trim()
+          : undefined
+      const result = await searchProviderModels(providerName, {
+        api_key: apiKeyForSearch,
+        base_url: edit.base_url.trim() || undefined,
+        model_hint: edit.model.trim() || undefined,
+      })
+      const discoveredModels = withDefaultModel(result.models, edit.model || result.models[0])
+      setEditStates((prev) => ({
+        ...prev,
+        [providerName]: {
+          ...prev[providerName],
+          available_models: discoveredModels,
+          model: prev[providerName]?.model || discoveredModels[0] || '',
+        },
+      }))
+      setProviderResult(providerName, {
+        type: 'success',
+        title: '模型发现成功',
+        detail: `已发现 ${result.models.length} 个模型，可勾选后再保存。`,
+        providerName,
+        model: edit.model || result.models[0],
+        baseUrl: edit.base_url,
+      })
+      message.success(`已发现 ${result.models.length} 个模型，可在下拉框勾选后保存`)
+    } catch (error) {
+      setProviderResult(providerName, {
+        type: 'error',
+        title: '模型发现失败',
+        detail: getApiErrorMessage(error, '搜索模型失败，请检查 API Key 和 Base URL'),
+        providerName,
+        model: edit.model,
+        baseUrl: edit.base_url,
+      })
+      showApiError(error, '搜索模型失败，请检查 API Key 和 Base URL')
+    } finally {
+      setSearchingProvider(null)
+    }
+  }
+
+  const getModelsForProvider = (providerName?: string | null) => {
+    const provider = providers.find((p) => p.provider_name === providerName)
+    if (!provider) return []
+    return Array.from(new Set([provider.model, ...(provider.available_models || [])].filter(Boolean)))
+  }
+
+  const handleRoutingChange = async (scenario: string, providerName?: string | null, model?: string | null) => {
     setSavingScenario(scenario)
-    const result = await updateRoutingSetting(scenario, providerName || null)
-    if (result) {
+    try {
+      const result = await updateRoutingSetting(scenario, providerName || null, model || null)
       setRoutingSettings((prev) => prev.map((r) => (r.scenario === scenario ? result : r)))
       message.success('场景路由已更新')
-    } else {
-      message.error('更新场景路由失败')
+    } catch (error) {
+      showApiError(error, '更新场景路由失败')
+    } finally {
+      setSavingScenario(null)
     }
-    setSavingScenario(null)
   }
 
   const handleRagSave = async () => {
@@ -210,8 +453,12 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     updateData.top_k = ragEdit.top_k
     updateData.similarity_threshold = ragEdit.similarity_threshold
 
-    const result = await updateRagSettings(updateData)
-    if (result?.ok) {
+    try {
+      const result = await updateRagSettings(updateData)
+      if (!result.ok) {
+        message.error('RAG 设置保存失败')
+        return
+      }
       setRagSettings((prev) =>
         prev
           ? {
@@ -225,25 +472,27 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
       )
       setRagEdit((prev) => ({ ...prev, api_key: '' }))
       message.success('RAG 设置已保存并生效')
-    } else {
-      message.error('RAG 设置保存失败')
+    } catch (error) {
+      showApiError(error, 'RAG 设置保存失败')
+    } finally {
+      setSavingRag(false)
     }
-    setSavingRag(false)
   }
 
   const handleRagTest = async () => {
     setTestingRag(true)
-    const result = await testRagEmbedding()
-    if (result) {
+    try {
+      const result = await testRagEmbedding()
       if (result.success) {
         message.success(result.message)
       } else {
         message.error(result.message)
       }
-    } else {
-      message.error('测试请求失败，请检查后端是否运行')
+    } catch (error) {
+      showApiError(error, '测试请求失败，请检查后端是否运行')
+    } finally {
+      setTestingRag(false)
     }
-    setTestingRag(false)
   }
 
   const handleCreateProvider = async () => {
@@ -254,23 +503,28 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     }
 
     setCreatingProvider(true)
-    const result = await createProvider({
-      display_name: displayName,
-      provider_name: newProvider.provider_name.trim() || undefined,
-      provider_type: newProvider.provider_type,
-      api_key: newProvider.api_key.trim() || undefined,
-      base_url: newProvider.base_url.trim() || undefined,
-      model: newProvider.model.trim() || undefined,
-    })
-
-    if (result) {
+    const selectedModels = normalizeModels(newProvider.available_models)
+    const defaultModel = newProvider.model.trim() || selectedModels[0] || ''
+    try {
+      const result = await createProvider({
+        display_name: displayName,
+        provider_name: newProvider.provider_name.trim() || undefined,
+        provider_type: newProvider.provider_type,
+        api_key: newProvider.api_key.trim() || undefined,
+        base_url: newProvider.base_url.trim() || undefined,
+        model: defaultModel || undefined,
+        available_models: withDefaultModel(selectedModels, defaultModel),
+      })
+      const savedModels = withDefaultModel(result.available_models || [], result.model)
       setProviders((prev) => [...prev, result])
       setEditStates((prev) => ({
         ...prev,
         [result.provider_name]: {
           api_key: '',
+          clear_api_key: false,
           base_url: result.base_url,
           model: result.model,
+          available_models: savedModels,
         },
       }))
       setNewProvider({
@@ -280,21 +534,35 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         api_key: '',
         base_url: '',
         model: '',
+        available_models: [],
+      })
+      notifyAIProvidersUpdated({
+        providerName: result.provider_name,
+        model: result.model || savedModels[0],
+        availableModels: savedModels,
+        selectModel: true,
       })
       message.success('已添加自定义提供商')
-    } else {
-      message.error('添加失败')
+    } catch (error) {
+      showApiError(error, '添加 AI 提供商失败')
+    } finally {
+      setCreatingProvider(false)
     }
-    setCreatingProvider(false)
   }
 
   const handleDeleteProvider = async (providerName: string) => {
-    const ok = await deleteProvider(providerName)
-    if (ok) {
+    try {
+      await deleteProvider(providerName)
+      setProviderFeedback((prev) => {
+        const next = { ...prev }
+        delete next[providerName]
+        return next
+      })
       await loadProviders()
+      notifyAIProvidersUpdated({ resetChatModel: true })
       message.success('已删除提供商')
-    } else {
-      message.error('删除失败')
+    } catch (error) {
+      showApiError(error, '删除 AI 提供商失败')
     }
   }
 
@@ -302,7 +570,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     <Drawer
       title="AI 提供商设置"
       placement="right"
-      width={520}
+      width={640}
       open={open}
       onClose={onClose}
     >
@@ -315,7 +583,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           {/* 激活提供商选择 */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
-              当前使用的 AI 提供商
+              默认提供商（路由未指定时使用）
             </div>
             <Select
               style={{ width: '100%' }}
@@ -328,28 +596,65 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
             />
           </div>
 
-          <Card size="small" style={{ marginBottom: 16 }} title="按场景路由（可用低成本模型处理重复任务）">
-            <div style={{ display: 'grid', gap: 12 }}>
-              {routingSettings.map((item) => (
-                <div key={item.scenario}>
-                  <div style={{ marginBottom: 6, fontSize: 12, color: '#666' }}>{item.label}</div>
-                  <Select
-                    style={{ width: '100%' }}
-                    value={item.provider_name || '__active__'}
-                    loading={savingScenario === item.scenario}
-                    onChange={(v) => void handleRoutingChange(item.scenario, v === '__active__' ? undefined : v)}
-                    options={[
-                      { label: '跟随全局激活提供商', value: '__active__' },
-                      ...providers.map((p) => ({ label: p.display_name, value: p.provider_name })),
-                    ]}
-                  />
+          <Collapse
+            size="small"
+            style={{ marginBottom: 12 }}
+            items={[{
+              key: 'routing',
+              label: '按场景路由',
+              children: (
+                <div style={{ display: 'grid', gap: 14 }}>
+              {routingSettings.map((item) => {
+                const effectiveProviderName = item.provider_name || activeProvider?.provider_name
+                const routeModelOptions = getModelsForProvider(effectiveProviderName)
+                return (
+                  <div key={item.scenario}>
+                    <div style={{ marginBottom: 6, fontSize: 12, color: '#666' }}>{item.label}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8 }}>
+                      <Select
+                        style={{ width: '100%' }}
+                        value={item.provider_name || '__active__'}
+                        loading={savingScenario === item.scenario}
+                        onChange={(v) => void handleRoutingChange(item.scenario, v === '__active__' ? null : v, null)}
+                        options={[
+                          { label: '跟随全局提供商', value: '__active__' },
+                          ...providers.map((p) => ({ label: p.display_name, value: p.provider_name })),
+                        ]}
+                      />
+                      <Select
+                        style={{ width: '100%' }}
+                        value={item.model || '__provider_default__'}
+                        loading={savingScenario === item.scenario}
+                        onChange={(v) => void handleRoutingChange(
+                          item.scenario,
+                          item.provider_name || null,
+                          v === '__provider_default__' ? null : v
+                        )}
+                        options={[
+                          { label: '使用提供商默认模型', value: '__provider_default__' },
+                          ...routeModelOptions.map((model) => ({ label: model, value: model })),
+                        ]}
+                        popupMatchSelectWidth={false}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
                 </div>
-              ))}
-            </div>
-          </Card>
+              ),
+            }]}
+          />
 
-          <Card size="small" style={{ marginBottom: 16 }} title="添加自定义提供商">
-            <div style={{ marginBottom: 12 }}>
+          <Collapse
+            size="small"
+            style={{ marginBottom: 12 }}
+            items={[{
+              key: 'create-provider',
+              label: '添加自定义提供商',
+              children: (
+                <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>显示名称</div>
               <Input
                 placeholder="例如 My Proxy / 自建中转"
@@ -360,7 +665,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>协议类型</div>
               <Select
                 style={{ width: '100%' }}
@@ -375,8 +680,10 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 ]}
               />
             </div>
+            </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>标识（可选）</div>
               <Input
                 placeholder="留空自动生成，例如 my-proxy"
@@ -387,7 +694,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>API Key</div>
               <Input.Password
                 placeholder="输入 API Key（可留空稍后填写）"
@@ -397,8 +704,10 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 }
               />
             </div>
+            </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Base URL</div>
               <Input
                 placeholder={providerBasePlaceholder}
@@ -409,13 +718,59 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>模型名称</div>
-              <Input
-                placeholder="例如 gpt-4o, deepseek-chat"
+            <div>
+              <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>默认模型</div>
+              <AutoComplete
+                style={{ width: '100%' }}
+                placeholder="选择或输入默认模型，例如 gpt-4o"
                 value={newProvider.model}
-                onChange={(e) =>
-                  setNewProvider((prev) => ({ ...prev, model: e.target.value }))
+                onChange={(value) =>
+                  setNewProvider((prev) => ({
+                    ...prev,
+                    model: value,
+                  }))
+                }
+                onSelect={(value) =>
+                  setNewProvider((prev) => ({
+                    ...prev,
+                    model: value,
+                  }))
+                }
+                onBlur={() =>
+                  setNewProvider((prev) => ({
+                    ...prev,
+                    available_models: withDefaultModel(prev.available_models, prev.model),
+                  }))
+                }
+                options={modelOptions(newProvider.available_models, newProvider.model)}
+                filterOption={(inputValue, option) =>
+                  String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
+                }
+              />
+            </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>可用模型（会出现在对话模型切换中）</div>
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                tokenSeparators={[',', '，', ' ']}
+                placeholder="输入模型名后回车，可添加多个"
+                value={newProvider.available_models}
+                onChange={(models) =>
+                  setNewProvider((prev) => {
+                    const nextModels = normalizeModels(models)
+                    const nextModel =
+                      prev.model && nextModels.includes(prev.model)
+                        ? prev.model
+                        : nextModels[0] || prev.model
+                    return {
+                      ...prev,
+                      available_models: nextModels,
+                      model: nextModel,
+                    }
+                  })
                 }
               />
             </div>
@@ -434,27 +789,34 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
             <div style={{ fontSize: 12, color: '#999' }}>
               自定义提供商按 OpenAI 兼容接口处理。
             </div>
-          </Card>
+                </>
+              ),
+            }]}
+          />
 
           {/* RAG 知识库 Embedding 设置 */}
-          <Card
+          <Collapse
             size="small"
-            style={{ marginBottom: 16 }}
-            title={
-              <Space>
-                <DatabaseOutlined />
-                <span>RAG 知识库 (Embedding)</span>
-                {ragSettings?.initialized && ragSettings.embedding_enabled ? (
-                  <Tag color="green">在线 · {ragSettings.total_chunks} chunks</Tag>
-                ) : ragSettings?.initialized ? (
-                  <Tag color="orange">Fallback · 未配置 Embedding</Tag>
-                ) : (
-                  <Tag color="default">未初始化</Tag>
-                )}
-              </Space>
-            }
-          >
-            <div style={{ marginBottom: 12 }}>
+            style={{ marginBottom: 12 }}
+            items={[{
+              key: 'rag',
+              label: (
+                <Space>
+                  <DatabaseOutlined />
+                  <span>RAG 知识库</span>
+                  {ragSettings?.initialized && ragSettings.embedding_enabled ? (
+                    <Tag color="green">在线</Tag>
+                  ) : ragSettings?.initialized ? (
+                    <Tag color="orange">Fallback</Tag>
+                  ) : (
+                    <Tag color="default">未初始化</Tag>
+                  )}
+                </Space>
+              ),
+              children: (
+                <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                 API Key
                 {ragSettings?.api_key_masked && (
@@ -470,7 +832,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Base URL</div>
               <Input
                 placeholder="https://api.openai.com/v1"
@@ -478,8 +840,10 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 onChange={(e) => setRagEdit((prev) => ({ ...prev, base_url: e.target.value }))}
               />
             </div>
+            </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Embedding 模型</div>
               <Input
                 placeholder="text-embedding-3-small"
@@ -488,7 +852,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Chunk Size（分块大小）</div>
               <InputNumber
                 min={64}
@@ -499,8 +863,10 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 onChange={(v) => setRagEdit((prev) => ({ ...prev, chunk_size: v ?? 512 }))}
               />
             </div>
+            </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Chunk Overlap（分块重叠）</div>
               <InputNumber
                 min={0}
@@ -512,7 +878,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Top K（检索结果数）</div>
               <InputNumber
                 min={1}
@@ -524,7 +890,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               />
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div>
               <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Similarity Threshold（相似度阈值）</div>
               <InputNumber
                 min={0}
@@ -534,6 +900,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 value={ragEdit.similarity_threshold}
                 onChange={(v) => setRagEdit((prev) => ({ ...prev, similarity_threshold: v ?? 0.3 }))}
               />
+            </div>
             </div>
 
             <div style={{ marginBottom: 12 }}>
@@ -569,13 +936,26 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 最近错误：{ragSettings.last_error}
               </div>
             )}
-          </Card>
+                </>
+              ),
+            }]}
+          />
 
           {/* 提供商列表 */}
+          <Collapse
+            size="small"
+            defaultActiveKey={['providers']}
+            style={{ marginBottom: 12 }}
+            items={[{
+              key: 'providers',
+              label: '供应商配置',
+              children: (
+                <>
           {providers.map((provider) => {
             const isExpanded = expandedProvider === provider.provider_name
             const edit = editStates[provider.provider_name]
             const isCustom = !builtInProviders.has(provider.provider_name)
+            const feedback = providerFeedback[provider.provider_name]
 
             return (
               <Card
@@ -586,6 +966,9 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                   border: provider.is_active
                     ? '1px solid #1890ff'
                     : '1px solid #f0f0f0',
+                }}
+                bodyStyle={{
+                  display: isExpanded ? undefined : 'none',
                 }}
                 title={
                   <div
@@ -625,13 +1008,41 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                           </span>
                         )}
                       </div>
-                      <Input.Password
-                        placeholder="输入新的 API Key（留空则不修改）"
-                        value={edit.api_key}
-                        onChange={(e) =>
-                          updateEditState(provider.provider_name, 'api_key', e.target.value)
-                        }
-                      />
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Input.Password
+                          placeholder={
+                            edit.clear_api_key
+                              ? '保存后清空当前 Key'
+                              : provider.api_key_masked
+                                ? `留空使用已保存 Key（${provider.api_key_masked}）`
+                                : '输入 API Key'
+                          }
+                          value={edit.api_key}
+                          disabled={edit.clear_api_key}
+                          onChange={(e) => {
+                            updateEditState(provider.provider_name, 'api_key', e.target.value)
+                            if (e.target.value) {
+                              updateEditState(provider.provider_name, 'clear_api_key', false)
+                            }
+                          }}
+                        />
+                        <Tooltip title="清空已保存 Key">
+                          <Button
+                            danger={edit.clear_api_key}
+                            icon={<DeleteOutlined />}
+                            disabled={!provider.api_key_masked}
+                            onClick={() => {
+                              updateEditState(provider.provider_name, 'api_key', '')
+                              updateEditState(provider.provider_name, 'clear_api_key', !edit.clear_api_key)
+                            }}
+                          />
+                        </Tooltip>
+                      </Space.Compact>
+                      {edit.clear_api_key && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: '#ff4d4f' }}>
+                          保存后会删除此供应商的已保存 Key。
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ marginBottom: 12 }}>
@@ -647,17 +1058,49 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       />
                     </div>
 
-                    <div style={{ marginBottom: 16 }}>
+                    <div style={{ marginBottom: 12 }}>
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
-                        模型名称
+                        默认模型（不限制对话切换）
                       </div>
-                      <Input
-                        placeholder="例如 gpt-4, deepseek-chat"
+                      <AutoComplete
+                        style={{ width: '100%' }}
+                        placeholder="选择或输入默认模型"
                         value={edit.model}
-                        onChange={(e) =>
-                          updateEditState(provider.provider_name, 'model', e.target.value)
+                        onChange={(value) => updateProviderDefaultModel(provider.provider_name, value)}
+                        onSelect={(value) => updateProviderDefaultModel(provider.provider_name, value)}
+                        onBlur={() => updateProviderAvailableModels(provider.provider_name, edit.available_models)}
+                        options={modelOptions(edit.available_models || [], edit.model)}
+                        filterOption={(inputValue, option) =>
+                          String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
                         }
                       />
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                        可用模型（会出现在对话模型切换中）
+                      </div>
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Select
+                          mode="tags"
+                          style={{ width: '100%' }}
+                          tokenSeparators={[',', '，', ' ']}
+                          placeholder="输入模型名后回车，或点击右侧搜索"
+                          value={edit.available_models}
+                          options={modelOptions(edit.available_models || [], edit.model)}
+                          onChange={(models) => {
+                            updateProviderAvailableModels(provider.provider_name, models)
+                          }}
+                          popupMatchSelectWidth={false}
+                        />
+                        <Button
+                          icon={<SearchOutlined />}
+                          loading={searchingProvider === provider.provider_name}
+                          onClick={() => void handleSearchModels(provider.provider_name)}
+                        >
+                          发现模型
+                        </Button>
+                      </Space.Compact>
                     </div>
 
                     <Space>
@@ -674,7 +1117,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                         loading={testingProvider === provider.provider_name}
                         onClick={() => handleTest(provider.provider_name)}
                       >
-                        测试连接
+                        测试当前配置
                       </Button>
                       {isCustom && (
                         <Button
@@ -685,11 +1128,34 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                         </Button>
                       )}
                     </Space>
+
+                    {feedback && (
+                      <Alert
+                        style={{ marginTop: 16 }}
+                        type={feedback.type}
+                        showIcon
+                        message={feedback.title}
+                        description={
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            {feedback.detail && <div>{feedback.detail}</div>}
+                            <div style={{ fontSize: 12, color: '#666' }}>
+                              供应商：{feedback.providerName || provider.display_name}
+                              {feedback.model ? ` · 模型：${feedback.model}` : ''}
+                              {feedback.baseUrl ? ` · Base URL：${feedback.baseUrl}` : ''}
+                            </div>
+                          </div>
+                        }
+                      />
+                    )}
                   </div>
                 )}
               </Card>
             )
           })}
+                </>
+              ),
+            }]}
+          />
         </>
       )}
     </Drawer>

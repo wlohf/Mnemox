@@ -1,5 +1,6 @@
 """FastAPI 应用入口"""
 import logging
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import init_db, close_db
-from app.utils.paths import get_uploads_dir, ensure_data_dirs
+from app.middleware.security import RateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
+from app.frontend_static import register_frontend_static
+from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
 
 
 @asynccontextmanager
@@ -103,8 +106,8 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="学习助手 API",
-    description="基于认知科学学习方法的智能学习助手系统",
+    title="Mnemox API",
+    description="AI 驱动的个性化学习教练 API",
     version=settings.APP_VERSION,
     lifespan=lifespan
 )
@@ -117,6 +120,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Pydantic 422 验证错误 → 用户友好的中文提示
@@ -151,7 +157,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def root():
     """根路径"""
     return {
-        "message": "学习助手 API",
+        "message": "Mnemox API",
         "version": settings.APP_VERSION,
         "docs": "/docs"
     }
@@ -198,6 +204,20 @@ app.include_router(system.router, prefix="/api/system", tags=["系统"])
 # StaticFiles checks the directory at import time, so create it for fresh clones too.
 ensure_data_dirs()
 app.mount("/api/uploads", StaticFiles(directory=str(get_uploads_dir())), name="uploads")
+
+
+def _resolve_frontend_dist_dir():
+    configured = (settings.FRONTEND_DIST_DIR or "").strip()
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            return configured_path.resolve()
+        return (get_project_root() / configured_path).resolve()
+    return (get_project_root() / "frontend" / "dist").resolve()
+
+
+if settings.SERVE_FRONTEND:
+    register_frontend_static(app, _resolve_frontend_dist_dir())
 
 
 if __name__ == "__main__":
