@@ -16,6 +16,18 @@ import { useThemeStore, type ThemeMode } from '../stores/themeStore'
 import { AISettingsDrawer } from './AISettingsDrawer'
 import { generateAIQuote } from '../services/motivationApi'
 import { checkSystemUpdate, getSystemVersion, type SystemUpdateInfo } from '../services/systemApi'
+import { getApiErrorMessage } from '../services/apiClient'
+import {
+  checkForDesktopUpdate,
+  downloadDesktopUpdate,
+  getDesktopUpdateState,
+  getDesktopUpdateSettings,
+  isDesktopUpdaterAvailable,
+  quitAndInstallDesktopUpdate,
+  setDesktopUpdateSettings,
+  subscribeDesktopUpdateState,
+  type DesktopUpdateState,
+} from '../services/desktopUpdater'
 import { useNavigate } from 'react-router-dom'
 
 interface SettingsModalProps {
@@ -47,13 +59,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     },
     {
       value: 'warm',
-      label: <span><SunOutlined style={{ marginRight: 6 }} />米白暖色</span>,
-      desc: '温暖米白色调，护眼舒适',
+      label: <span><SunOutlined style={{ marginRight: 6 }} />白天 · 暖灰工作台</span>,
+      desc: '暖灰纸感背景，适合日间专注学习',
     },
     {
       value: 'dark',
-      label: <span><MoonOutlined style={{ marginRight: 6 }} />深色模式</span>,
-      desc: '深色背景，适合夜间使用',
+      label: <span><MoonOutlined style={{ marginRight: 6 }} />黑夜 · 深色研究舱</span>,
+      desc: '石墨深色界面，适合夜间阅读和长时间研究',
     },
   ]
 
@@ -201,6 +213,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 }
 
 function SystemSettings() {
+  const compactUpdateNotes = (notes?: string | null) => {
+    const text = (notes || '').trim()
+    if (!text) return ''
+    if (text.includes('APP_UPDATE_MANIFEST_URL')) return '未配置更新源'
+    return text.split('\n')[0].trim().slice(0, 80)
+  }
+
   const parseIntWithDefault = (value: string | null, fallback: number) => {
     const parsed = Number.parseInt(value ?? '', 10)
     return Number.isNaN(parsed) ? fallback : parsed
@@ -215,6 +234,8 @@ function SystemSettings() {
   const [currentVersion, setCurrentVersion] = useState('1.0.0')
   const [updateInfo, setUpdateInfo] = useState<SystemUpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null)
+  const desktopUpdaterAvailable = isDesktopUpdaterAvailable()
   const [autoCheckUpdate, setAutoCheckUpdate] = useState(() => {
     return localStorage.getItem('sys_update_auto_check') !== 'false'
   })
@@ -229,23 +250,22 @@ function SystemSettings() {
   )
 
   const loadVersion = async () => {
-    const version = await getSystemVersion()
-    if (version?.current_version) {
+    try {
+      const version = await getSystemVersion()
       setCurrentVersion(version.current_version)
+    } catch {
+      // Version is non-critical in settings; manual update checks surface errors.
     }
   }
 
   const checkUpdate = async (showToast: boolean) => {
     setCheckingUpdate(true)
     try {
-      const result = await checkSystemUpdate()
-      if (!result) {
-        if (showToast) {
-          message.error('检查更新失败，请稍后再试')
-        }
-        return
+      if (desktopUpdaterAvailable) {
+        const desktopState = await checkForDesktopUpdate()
+        setDesktopUpdateState(desktopState)
       }
-
+      const result = await checkSystemUpdate()
       setUpdateInfo(result)
       localStorage.setItem('sys_update_last', JSON.stringify(result))
       if (result.latest_version) {
@@ -260,12 +280,28 @@ function SystemSettings() {
       } else {
         message.info('当前已是最新版本')
       }
+    } catch (error) {
+      if (showToast) {
+        message.error(getApiErrorMessage(error, '检查更新失败，请稍后再试'))
+      }
     } finally {
       setCheckingUpdate(false)
     }
   }
 
-  const handleOpenUpdateLink = () => {
+  const handleOpenUpdateLink = async () => {
+    if (desktopUpdaterAvailable) {
+      try {
+        const nextState = await downloadDesktopUpdate()
+        setDesktopUpdateState(nextState)
+        message.success('开始下载更新')
+        return
+      } catch (error) {
+        message.error(getApiErrorMessage(error, '下载更新失败，请稍后再试'))
+        return
+      }
+    }
+
     const url = updateInfo?.download_url || updateInfo?.release_page
     if (!url) {
       message.warning('当前版本暂无可用下载链接')
@@ -286,7 +322,41 @@ function SystemSettings() {
         localStorage.removeItem('sys_update_last')
       }
     }
-  }, [])
+
+    if (!desktopUpdaterAvailable) {
+      return
+    }
+
+    void getDesktopUpdateSettings()
+      .then((settings) => {
+        setAutoCheckUpdate(settings.autoCheck)
+        setUpdateCheckIntervalMin(settings.intervalMinutes)
+      })
+      .catch(() => {
+        // keep local defaults when desktop settings are unavailable
+      })
+
+    void getDesktopUpdateState()
+      .then(setDesktopUpdateState)
+      .catch(() => {
+        // ignore initial desktop updater state failures
+      })
+
+    const unsubscribe = subscribeDesktopUpdateState((state) => {
+      setDesktopUpdateState(state)
+    })
+    return () => {
+      unsubscribe?.()
+    }
+  }, [desktopUpdaterAvailable])
+
+  const handleQuitAndInstall = async () => {
+    try {
+      await quitAndInstallDesktopUpdate()
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '安装更新失败，请稍后再试'))
+    }
+  }
 
   const save = () => {
     localStorage.setItem('sys_notif', String(notifEnabled))
@@ -301,6 +371,13 @@ function SystemSettings() {
     window.dispatchEvent(new StorageEvent('storage', { key: 'sys_update_interval_min', newValue: String(updateCheckIntervalMin) }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_enabled', newValue: String(interventionEnabled) }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_interval_min', newValue: String(interventionInterval) }))
+
+    if (desktopUpdaterAvailable) {
+      void setDesktopUpdateSettings({
+        autoCheck: autoCheckUpdate,
+        intervalMinutes: updateCheckIntervalMin,
+      })
+    }
     message.success('系统设置已保存')
   }
 
@@ -353,7 +430,12 @@ function SystemSettings() {
           </Button>
           {updateInfo?.has_update && (
             <Button type="primary" size="small" onClick={handleOpenUpdateLink}>
-              下载更新
+              {desktopUpdaterAvailable ? '下载并安装更新' : '下载更新'}
+            </Button>
+          )}
+          {desktopUpdaterAvailable && desktopUpdateState?.phase === 'downloaded' && (
+            <Button type="primary" size="small" onClick={() => void handleQuitAndInstall()}>
+              重启并安装
             </Button>
           )}
         </Space>
@@ -368,9 +450,17 @@ function SystemSettings() {
           最新版本：v{updateInfo.latest_version}
         </div>
       )}
-      {!!updateInfo?.release_notes && (
+      {!!compactUpdateNotes(updateInfo?.release_notes) && (
         <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          更新说明：{updateInfo.release_notes}
+          更新说明：{compactUpdateNotes(updateInfo?.release_notes)}
+        </div>
+      )}
+      {desktopUpdaterAvailable && !!desktopUpdateState?.message && (
+        <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-tertiary)' }}>
+          桌面更新状态：{desktopUpdateState.message}
+          {desktopUpdateState.phase === 'downloading' && typeof desktopUpdateState.progressPercent === 'number'
+            ? `（${desktopUpdateState.progressPercent}%）`
+            : ''}
         </div>
       )}
       <Divider style={{ margin: '12px 0' }} />
@@ -390,7 +480,7 @@ function SystemSettings() {
       )}
       <Divider style={{ margin: '12px 0' }} />
       <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8 }}>
-        版本：Study Assistant v{currentVersion} · 数据存储于本地
+        版本：Mnemox v{currentVersion} · 数据存储于本地
       </div>
       <Button type="primary" size="small" onClick={save}>保存设置</Button>
     </div>

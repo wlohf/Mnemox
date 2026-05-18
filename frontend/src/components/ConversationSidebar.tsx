@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Input, Button, Dropdown, Modal, Tag, Empty, Tooltip } from 'antd'
+import { Input, Button, Dropdown, Modal, Tag, Empty, Tooltip, message } from 'antd'
 import {
   PlusOutlined,
   SearchOutlined,
@@ -61,6 +61,7 @@ export function ConversationSidebar({
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null)
   const [displayLimit, setDisplayLimit] = useState(9)
   const [hoveredId, setHoveredId] = useState<number | null>(null)
+  const [loadingConversationId, setLoadingConversationId] = useState<number | null>(null)
   const searchInputRef = useRef<any>(null)
   const searchSectionRef = useRef<HTMLDivElement | null>(null)
   const categorySectionRef = useRef<HTMLDivElement | null>(null)
@@ -157,6 +158,19 @@ export function ConversationSidebar({
     }
   }
 
+  const handleOpenConversation = async (id: number) => {
+    if (renameId === id || loadingConversationId === id) return
+    setLoadingConversationId(id)
+    try {
+      const ok = await setActiveConversation(id)
+      if (!ok) {
+        message.error('加载历史对话失败，请稍后重试')
+      }
+    } finally {
+      setLoadingConversationId(null)
+    }
+  }
+
   useEffect(() => {
     if (collapsed || !expandTarget) return
 
@@ -181,7 +195,7 @@ export function ConversationSidebar({
     return (
       <div
         key={conv.id}
-        onClick={() => !isRenaming && setActiveConversation(conv.id)}
+        onClick={() => void handleOpenConversation(conv.id)}
         draggable={!isRenaming}
         onDragStart={(e) => {
           if (isRenaming) return
@@ -234,7 +248,7 @@ export function ConversationSidebar({
                 {highlightTitle(conv.title)}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                {dayjs(conv.updated_at).fromNow()}
+                {loadingConversationId === conv.id ? '加载中...' : dayjs(conv.updated_at).fromNow()}
               </div>
               {searchQuery.trim() && conv.matched_preview && (
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -559,14 +573,15 @@ export function ConversationSidebar({
       {/* Project filter tabs */}
       <div ref={categorySectionRef} style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: 5 }}>
         <Tag
-          color={activeProjectId === null ? 'default' : undefined}
           style={{
             cursor: 'pointer',
             margin: 0,
             borderRadius: 'var(--radius-sm)',
-            borderColor: dropTargetKey === getDropKey(null) ? 'var(--accent-500)' : undefined,
-            background: dropTargetKey === getDropKey(null) ? 'var(--accent-50)' : undefined,
             fontSize: 12,
+            fontWeight: activeProjectId === null ? 600 : 400,
+            background: activeProjectId === null ? 'var(--primary-600)' : (dropTargetKey === getDropKey(null) ? 'var(--accent-50)' : undefined),
+            color: activeProjectId === null ? '#fff' : undefined,
+            borderColor: activeProjectId === null ? 'var(--primary-600)' : (dropTargetKey === getDropKey(null) ? 'var(--accent-500)' : undefined),
           }}
           onClick={() => handleProjectFilter(null)}
           onDragOver={(e) => {
@@ -584,43 +599,50 @@ export function ConversationSidebar({
         >
           全部
         </Tag>
-        {projects.map((p) => (
-          <Tag
-            key={p.id}
-            color={activeProjectId === p.id ? 'default' : undefined}
-            style={{
-              cursor: 'pointer',
-              margin: 0,
-              borderRadius: 'var(--radius-sm)',
-              borderColor: dropTargetKey === getDropKey(p.id) ? p.color : undefined,
-              background: dropTargetKey === getDropKey(p.id) ? 'var(--accent-50)' : undefined,
-              fontSize: 12,
-            }}
-            onClick={() => handleProjectFilter(p.id)}
-            onDragOver={(e) => {
-              if (draggingConversationId === null) return
-              e.preventDefault()
-              setDropTargetKey(getDropKey(p.id))
-            }}
-            onDragLeave={() => {
-              if (dropTargetKey === getDropKey(p.id)) setDropTargetKey(null)
-            }}
-            onDrop={(e) => {
-              e.preventDefault()
-              void handleDropToProject(p.id)
-            }}
-          >
-            <span style={{
-              display: 'inline-block',
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: p.color,
-              marginRight: 4,
-            }} />
-            {p.name}
-          </Tag>
-        ))}
+        {projects.map((p) => {
+          const isActive = activeProjectId === p.id
+          const isDrop = dropTargetKey === getDropKey(p.id)
+          return (
+            <Tag
+              key={p.id}
+              style={{
+                cursor: 'pointer',
+                margin: 0,
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 12,
+                fontWeight: isActive ? 600 : 400,
+                background: isActive ? p.color : (isDrop ? 'var(--accent-50)' : undefined),
+                color: isActive ? '#fff' : undefined,
+                borderColor: isActive ? p.color : (isDrop ? p.color : undefined),
+              }}
+              onClick={() => handleProjectFilter(p.id)}
+              onDragOver={(e) => {
+                if (draggingConversationId === null) return
+                e.preventDefault()
+                setDropTargetKey(getDropKey(p.id))
+              }}
+              onDragLeave={() => {
+                if (dropTargetKey === getDropKey(p.id)) setDropTargetKey(null)
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                void handleDropToProject(p.id)
+              }}
+            >
+              {!isActive && (
+                <span style={{
+                  display: 'inline-block',
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: p.color,
+                  marginRight: 4,
+                }} />
+              )}
+              {p.name}
+            </Tag>
+          )
+        })}
         <Tag
           style={{ cursor: 'pointer', borderStyle: 'dashed', margin: 0, borderRadius: 'var(--radius-sm)', fontSize: 12 }}
           onClick={() => onOpenProjectSettings()}

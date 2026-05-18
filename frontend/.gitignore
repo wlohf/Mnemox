@@ -1,1 +1,15 @@
+# Local tool/session state
 .ace-tool/
+
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+
+# Local env/logs
+*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

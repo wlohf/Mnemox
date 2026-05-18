@@ -4,6 +4,7 @@ import { Form, Input, Button, Tabs, message, Card } from 'antd'
 import { UserOutlined, LockOutlined, MailOutlined, ThunderboltOutlined, ReadOutlined, FieldTimeOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../stores/authStore'
 import { register } from '../services/authApi'
+import { MnemoxLogo } from '../components/MnemoxLogo'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -161,20 +162,14 @@ export function LoginPage() {
         backdropFilter: 'blur(20px)'
       }}>
         <div style={{ maxWidth: 480 }}>
-          <div style={{ 
-            width: 64, height: 64, borderRadius: 16, 
-            background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: 32, fontWeight: 'bold', marginBottom: 32,
-            boxShadow: '0 8px 24px rgba(99, 102, 241, 0.4)'
-          }}>
-            S
+          <div style={{ marginBottom: 32 }}>
+            <MnemoxLogo size={64} />
           </div>
-          <h1 style={{ fontSize: 48, fontWeight: 700, marginBottom: 16, fontFamily: 'Space Grotesk', letterSpacing: '-0.02em', background: 'linear-gradient(to right, #fff, var(--text-secondary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            深空学习舱
+          <h1 style={{ fontSize: 48, fontWeight: 700, marginBottom: 16, fontFamily: 'Space Grotesk', letterSpacing: 0, background: 'linear-gradient(to right, #fff, var(--text-secondary))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+            Mnemox
           </h1>
           <p style={{ fontSize: 18, color: 'var(--text-secondary)', marginBottom: 48, lineHeight: 1.6 }}>
-            你的专业级个人学习工作站。构建知识体系，专注目标达成。
+            你的 AI 学习记忆教练。连接资料、计划、复盘与长期记忆。
           </p>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -222,7 +217,7 @@ export function LoginPage() {
         >
           <div style={{ textAlign: 'center', marginBottom: 24 }}>
             <h2 style={{ fontSize: 24, fontWeight: 600, margin: 0, fontFamily: 'Space Grotesk' }}>欢迎回来</h2>
-            <p style={{ color: 'var(--text-secondary)', marginTop: 8 }}>登录以同步你的学习进度</p>
+            <p style={{ color: 'var(--text-secondary)', marginTop: 8 }}>登录以继续你的学习闭环</p>
           </div>
           <Tabs items={items} centered size="large" />
         </Card>

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Layout,
   Card,
@@ -7,6 +7,7 @@ import {
   Button,
   Input,
   InputNumber,
+  DatePicker,
   Modal,
   Progress,
   message,
@@ -20,14 +21,13 @@ import {
   Col,
   Switch,
   Tag,
-  Dropdown,
   Segmented,
   Checkbox,
   Tabs,
   Select,
-  Collapse,
   Spin,
   Tooltip,
+  Space,
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -48,35 +48,28 @@ import {
   CloseCircleFilled,
   LogoutOutlined,
   UserOutlined,
-  BookOutlined,
   CheckSquareOutlined,
-  QuestionCircleOutlined,
-  FileTextOutlined,
-  CreditCardOutlined,
-  DashboardOutlined,
   MenuOutlined,
-  RobotOutlined,
+  DoubleLeftOutlined,
+  DoubleRightOutlined,
+  SendOutlined,
 } from '@ant-design/icons'
-import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
 import { useThemeStore } from '../../stores/themeStore'
 import * as pomodoroApi from '../../services/pomodoroApi'
-import { SettingsModal } from '../SettingsModal'
-import { StatsModal } from './StatsModal'
-import { MotivationModal } from './MotivationModal'
-import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator, type ProgressFeedback } from '../../services/chatApi'
+import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator } from '../../services/chatApi'
 import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
-import { ProjectSettingsModal } from '../ProjectSettingsModal'
 import { useChatStore } from '../../stores/chatStore'
-import { getProject, archiveUnassignedMaterials, addProjectMaterial, removeProjectMaterial } from '../../services/conversationApi'
+import { getProject, archiveUnassignedMaterials, addProjectMaterial, removeProjectMaterial, forkConversation, appendConversationMessages } from '../../services/conversationApi'
 import { listWrongQuestions } from '../../services/wrongQuestionApi'
 import { useAuthStore } from '../../stores/authStore'
 import { listReviewTasks, getDueReviewCount, type ReviewTaskItem } from '../../services/reviewApi'
-import { createNote, suggestNoteMetadata } from '../../services/noteApi'
+import { createNote, suggestNoteMetadata, type NoteLink } from '../../services/noteApi'
 import { getDashboard, startLearningPipeline, startBatchLearningPipeline, generateDailyPlan, type DashboardData } from '../../services/learningApi'
-import { getDailyIntervention, type DailyInterventionReport } from '../../services/interventionApi'
+import { getDailyIntervention } from '../../services/interventionApi'
+import { draftAgentWrite, executeAgentWrite, type AgentWriteDraftResponse } from '../../services/agentApi'
 import { createMemory } from '../../services/memoryApi'
 import {
   getCurrentQuote,
@@ -89,16 +82,29 @@ import {
   type MotivationSettings,
 } from '../../services/motivationApi'
 import { apiFetch } from '../../services/apiClient'
+import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
-import { TodayFocusActions } from './TodayFocusActions'
-import { MarkdownLiveEditor, type MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
+import { BackendLoadingOverlay } from './BackendLoadingOverlay'
+import { GlobalNavRail } from './GlobalNavRail'
+import type { MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
+import { getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
+import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
 
+const ReactMarkdown = lazy(() => import('react-markdown'))
+const SettingsModal = lazy(() => import('../SettingsModal').then(m => ({ default: m.SettingsModal })))
+const StatsModal = lazy(() => import('./StatsModal').then(m => ({ default: m.StatsModal })))
+const MotivationModal = lazy(() => import('./MotivationModal').then(m => ({ default: m.MotivationModal })))
+const ProjectSettingsModal = lazy(() => import('../ProjectSettingsModal').then(m => ({ default: m.ProjectSettingsModal })))
+const MarkdownLiveEditor = lazy(() => import('../MarkdownLiveEditor').then(m => ({ default: m.MarkdownLiveEditor })))
+const OnboardingModal = lazy(() => import('../OnboardingModal').then(m => ({ default: m.OnboardingModal })))
+
 
 interface PomodoroConfig {
   duration: number
+  breakDuration: number
   taskName: string
   taskId: number | null
 }
@@ -120,6 +126,16 @@ interface ProjectSearchResult {
   text: string
 }
 
+interface AgentWriteTaskDraftItem {
+  title?: string
+  description?: string
+  task_type?: string
+  planned_date?: string
+  duplicate?: boolean
+}
+
+type AgentWriteDraftData = Record<string, any>
+
 interface DailyPlan {
   date: string
   content: string
@@ -131,8 +147,21 @@ interface WrongQuestionPreview {
   mastery_status: 'not_mastered' | 'partial' | 'mastered'
 }
 
+interface QuoteNoteDraft {
+  sourceContent: string
+  title: string
+  content: string
+  tags: string[]
+  links: NoteLink[]
+  metadataLoading: boolean
+  saving: boolean
+  titleEdited: boolean
+  tagsEdited: boolean
+}
+
 export function ObsidianLayout() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, logout } = useAuthStore()
   const { bgImage, bgOpacity } = useThemeStore()
   // 使用zustand store管理番茄钟
@@ -142,7 +171,10 @@ export function ObsidianLayout() {
     remainingTime,
     currentTask,
     duration,
+    timerMode,
+    breakDuration,
     startTimer,
+    setBreakDuration,
     pauseTimer,
     resumeTimer,
     completeTimer,
@@ -158,6 +190,7 @@ export function ObsidianLayout() {
 
   const [pomodoroConfig, setPomodoroConfig] = useState<PomodoroConfig>({
     duration: 25,
+    breakDuration,
     taskName: '',
     taskId: null,
   })
@@ -182,10 +215,15 @@ export function ObsidianLayout() {
   const [syncToRAG, setSyncToRAG] = useState(true)
   const [materialSearch, setMaterialSearch] = useState('')
   const [materialTypeFilter, setMaterialTypeFilter] = useState('all')
+  const [showUploadArea, setShowUploadArea] = useState(false)
   const [ragStatus, setRagStatus] = useState<{
     enabled: boolean
     rag_online: boolean
     total_chunks: number
+    embedding_enabled?: boolean
+    fallback_active?: boolean
+    last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
+    message?: string
   } | null>(null)
 
   // 资料预览状态
@@ -200,7 +238,7 @@ export function ObsidianLayout() {
   const [showPlanModal, setShowPlanModal] = useState(false)
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
   const [currentPlan, setCurrentPlan] = useState('')
-  const [weeklyPlans, setWeeklyPlans] = useState<DailyPlan[]>([])
+  const [, setWeeklyPlans] = useState<DailyPlan[]>([])
   const planEditorRef = useRef<MarkdownLiveEditorHandle | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [motivationQuote, setMotivationQuote] = useState<MotivationQuote | null>(null)
@@ -236,7 +274,7 @@ export function ObsidianLayout() {
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [])
-  const DEFAULT_CARD_ORDER = ['motivation', 'calendar', 'current', 'review', 'progress', 'pomodoro']
+  const DEFAULT_CARD_ORDER = ['current', 'review', 'progress', 'pomodoro', 'calendar', 'motivation']
   const ALL_CARDS = [
     { id: 'motivation', label: '每日格言' },
     { id: 'calendar', label: '今天与计划' },
@@ -245,22 +283,42 @@ export function ObsidianLayout() {
     { id: 'progress', label: '学习数据' },
     { id: 'pomodoro', label: '番茄工作法' }
   ]
+  const CARD_ID_SET = new Set(ALL_CARDS.map(card => card.id))
+  const normalizeCardOrder = (ids: string[]) => {
+    const knownIds = ids.filter((id, index) => CARD_ID_SET.has(id) && ids.indexOf(id) === index)
+    const missingIds = DEFAULT_CARD_ORDER.filter(id => !knownIds.includes(id))
+    return [...knownIds, ...missingIds]
+  }
+  const normalizeVisibleCards = (ids: string[]) => ids.filter((id, index) => CARD_ID_SET.has(id) && ids.indexOf(id) === index)
   const [cardOrder, setCardOrder] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('right_card_order')
-      if (saved) return JSON.parse(saved) as string[]
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[]
+        if (parsed.join(',') !== 'motivation,calendar,current,review,progress,pomodoro') return normalizeCardOrder(parsed)
+      }
     } catch { /* ignore */ }
     return DEFAULT_CARD_ORDER
   })
   const [visibleCards, setVisibleCards] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('right_visible_cards')
-      if (saved) return JSON.parse(saved) as string[]
+      if (saved) return normalizeVisibleCards(JSON.parse(saved) as string[])
     } catch { /* ignore */ }
     return DEFAULT_CARD_ORDER
   })
   const [sortMode, setSortMode] = useState(false)
+  const [customizeOpen, setCustomizeOpen] = useState(false)
   const dragCardRef = useRef<string | null>(null)
+  const updateCardVisibility = (cardId: string, checked: boolean) => {
+    setVisibleCards(prev => {
+      const next = checked
+        ? normalizeVisibleCards([...prev, cardId])
+        : prev.filter(id => id !== cardId)
+      localStorage.setItem('right_visible_cards', JSON.stringify(next))
+      return next
+    })
+  }
 
   // Chat store
   const {
@@ -271,11 +329,12 @@ export function ObsidianLayout() {
     activeConversationId,
     activeProjectId,
     addMessage,
+    setMessages,
     setStreamingContent,
     setIsStreaming: setChatLoading,
-    clearMessages,
     loadProjects,
     loadConversations,
+    reloadConversationsForCurrentView,
     createNewConversation,
     setActiveConversation,
   } = useChatStore()
@@ -284,9 +343,17 @@ export function ObsidianLayout() {
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<Set<number>>(new Set())
   const [detectedMaterials, setDetectedMaterials] = useState<DetectedMaterial[]>([])
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true)
+  const [agentWriteDraft, setAgentWriteDraft] = useState<AgentWriteDraftResponse | null>(null)
+  const [agentWriteSourceText, setAgentWriteSourceText] = useState('')
+  const [agentWriteLoading, setAgentWriteLoading] = useState(false)
+  const [agentWriteExecuting, setAgentWriteExecuting] = useState(false)
+  const [chatProviders, setChatProviders] = useState<AIProvider[]>([])
+  const [selectedChatModel, setSelectedChatModel] = useState<string>(() => localStorage.getItem('chat_model_override') || '__route__')
+  const [quoteNoteDraft, setQuoteNoteDraft] = useState<QuoteNoteDraft | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const initialConversationRestoreRef = useRef(false)
 
   // Image upload state
   const [pendingImages, setPendingImages] = useState<string[]>([])
@@ -296,9 +363,10 @@ export function ObsidianLayout() {
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<number | undefined>()
   const [leftSidebarTab, setLeftSidebarTab] = useState<string>('conversations')
-  const [leftCollapsed, setLeftCollapsed] = useState(false)
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('layout_left_collapsed') === 'true')
   const [leftExpandTarget, setLeftExpandTarget] = useState<'default' | 'search' | 'categories' | 'history' | null>(null)
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false)
+  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('layout_right_collapsed') === 'true')
 
   // Draggable panel splitter state
   const [leftWidth, setLeftWidth] = useState<number>(() => {
@@ -311,31 +379,30 @@ export function ObsidianLayout() {
   })
   const [dragging, setDragging] = useState<'left' | 'right' | null>(null)
   const effectiveLeftWidth = leftCollapsed ? 72 : leftWidth
+  const effectiveRightWidth = rightCollapsed ? 0 : rightWidth
   const [activeProjectMaterialIds, setActiveProjectMaterialIds] = useState<number[]>([])
-  const [wrongQuestions, setWrongQuestions] = useState<WrongQuestionPreview[]>([])
+  const [, setWrongQuestions] = useState<WrongQuestionPreview[]>([])
   const [reviewDueCount, setReviewDueCount] = useState(0)
   const [reviewPreviewTasks, setReviewPreviewTasks] = useState<ReviewTaskItem[]>([])
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
-  const [dailyIntervention, setDailyIntervention] = useState<DailyInterventionReport | null>(null)
-
-  const topPendingTask = useMemo(
-    () => (dashboardData?.today_tasks || []).find((task) => task.status !== 'completed'),
-    [dashboardData],
-  )
-
   // Backend readiness polling (Feature 1)
   const [backendReady, setBackendReady] = useState(false)
 
+  // First-run onboarding and demo workspace
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null)
+  const [demoSeedLoading, setDemoSeedLoading] = useState(false)
+  const [beginnerMode, setBeginnerMode] = useState(() => localStorage.getItem('learner_view_mode') !== 'advanced')
+
   // Coach mode (Feature 5)
-  const [chatMode, setChatMode] = useState<'normal' | 'coach'>('normal')
+  const [chatMode] = useState<'normal' | 'coach'>('normal')
 
   // Memory indicators (Feature 2)
-  const [memoryIndicators, setMemoryIndicators] = useState<MemoryIndicator[]>([])
+  const [, setMemoryIndicators] = useState<MemoryIndicator[]>([])
 
-  // Progress feedback (achievement card)
-  const [progressFeedback, setProgressFeedback] = useState<ProgressFeedback | null>(null)
   // Start learning loading state (Feature 1)
   const [startLearningLoadingId, setStartLearningLoadingId] = useState<number | null>(null)
+  const [hoveredMaterialId, setHoveredMaterialId] = useState<number | null>(null)
   // Batch learning state
   const [batchLearningLoading, setBatchLearningLoading] = useState(false)
   const [archiveMaterialsLoading, setArchiveMaterialsLoading] = useState(false)
@@ -546,11 +613,68 @@ export function ObsidianLayout() {
     return map
   }, [projects])
 
+  const chatModelOptions = useMemo(() => {
+    const groups = chatProviders
+      .filter((provider) => provider.enabled)
+      .map((provider) => {
+        const models = Array.from(new Set([provider.model, ...(provider.available_models || [])].filter(Boolean)))
+        return {
+          label: provider.display_name,
+          options: models.map((model) => ({
+            label: model,
+            value: `${provider.provider_name}::${model}`,
+          })),
+        }
+      })
+      .filter((group) => group.options.length > 0)
+
+    return [
+      { label: '跟随路由', value: '__route__' },
+      ...groups,
+    ]
+  }, [chatProviders])
+
+  const chatModelValues = useMemo(() => {
+    const values = new Set<string>(['__route__'])
+    for (const provider of chatProviders) {
+      if (!provider.enabled) continue
+      const models = Array.from(new Set([provider.model, ...(provider.available_models || [])].filter(Boolean)))
+      for (const model of models) {
+        values.add(`${provider.provider_name}::${model}`)
+      }
+    }
+    return values
+  }, [chatProviders])
+
+  const selectedChatModelConfig = useMemo(() => {
+    if (!selectedChatModel || selectedChatModel === '__route__') return {}
+    const [providerName, ...modelParts] = selectedChatModel.split('::')
+    const model = modelParts.join('::')
+    if (!providerName || !model) return {}
+    return { providerName, model }
+  }, [selectedChatModel])
+
   useEffect(() => {
     if (leftCollapsed && leftSidebarTab !== 'conversations') {
       setLeftSidebarTab('conversations')
     }
   }, [leftCollapsed, leftSidebarTab])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('layout_left_collapsed', String(leftCollapsed))
+    } catch {
+      // ignore
+    }
+  }, [leftCollapsed])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('layout_right_collapsed', String(rightCollapsed))
+    } catch {
+      // ignore
+    }
+  }, [rightCollapsed])
 
   useEffect(() => {
     try {
@@ -582,46 +706,182 @@ export function ObsidianLayout() {
     return () => { cancelled = true }
   }, [backendReady])
 
-  // Once backend is ready, load ALL data
+  // Once backend is ready, load only first-screen essentials immediately.
+  // Secondary dashboard/agent signals are deferred so the chat shell becomes usable first.
   useEffect(() => {
     if (!backendReady) return
     const loadAll = async () => {
+      const shouldRestoreConversation = !initialConversationRestoreRef.current && !!activeConversationId
+      initialConversationRestoreRef.current = true
+      void Promise.allSettled([
+        loadMaterials(),
+        loadProjects(),
+        loadConversations(),
+        shouldRestoreConversation ? setActiveConversation(activeConversationId) : Promise.resolve(false),
+      ])
+
+      window.setTimeout(() => {
+        void apiFetch<{
+          enabled: boolean
+          rag_online: boolean
+          total_chunks: number
+          embedding_enabled?: boolean
+          fallback_active?: boolean
+          last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
+          message: string
+        }>('/api/rag/health').then(setRagStatus).catch(() => undefined)
+        void loadWeeklyPlans()
+        void loadWrongQuestions()
+        void loadReviewOverview()
+        void loadDashboardOverview()
+      }, 400)
+
+      window.setTimeout(() => {
+        void loadDailyIntervention()
+        void syncPendingRecords()
+      }, 1600)
+    }
+    void loadAll()
+  }, [backendReady, loadConversations, loadMaterials, loadProjects, setActiveConversation, syncPendingRecords])
+
+  useEffect(() => {
+    if (!backendReady) return
+    let cancelled = false
+    const loadChatProviders = async (detail?: AIProvidersUpdatedDetail) => {
+      const data = await getAllProviders()
+      if (cancelled || !data) return
+      const nextData = data.map((provider) => {
+        if (provider.provider_name !== detail?.providerName) return provider
+        const models = Array.from(new Set([
+          provider.model,
+          ...(provider.available_models || []),
+          ...(detail.availableModels || []),
+          detail.model,
+        ].filter(Boolean) as string[]))
+        return {
+          ...provider,
+          model: detail.model || provider.model,
+          available_models: models,
+        }
+      })
+      setChatProviders(nextData)
+      if (detail?.resetChatModel) {
+        setSelectedChatModel('__route__')
+        return
+      }
+      if (detail?.selectModel && detail.providerName) {
+        const provider = nextData.find((item) => item.provider_name === detail.providerName)
+        if (!provider?.enabled) return
+        const models = Array.from(new Set([
+          provider.model,
+          ...(provider.available_models || []),
+          ...(detail.availableModels || []),
+          detail.model,
+        ].filter(Boolean) as string[]))
+        const model = detail.model && models.includes(detail.model)
+          ? detail.model
+          : provider.model || models[0]
+        if (model) {
+          setSelectedChatModel(`${provider.provider_name}::${model}`)
+        }
+      }
+    }
+    const handleProvidersUpdated = (event: Event) => {
+      const detail = event instanceof CustomEvent
+        ? event.detail as AIProvidersUpdatedDetail
+        : undefined
+      void loadChatProviders(detail)
+    }
+    void loadChatProviders()
+    window.addEventListener(AI_PROVIDERS_UPDATED_EVENT, handleProvidersUpdated)
+    return () => {
+      cancelled = true
+      window.removeEventListener(AI_PROVIDERS_UPDATED_EVENT, handleProvidersUpdated)
+    }
+  }, [backendReady])
+
+  useEffect(() => {
+    localStorage.setItem('chat_model_override', selectedChatModel)
+  }, [selectedChatModel])
+
+  useEffect(() => {
+    if (chatProviders.length === 0) return
+    if (!chatModelValues.has(selectedChatModel)) {
+      setSelectedChatModel('__route__')
+    }
+  }, [chatModelValues, chatProviders.length, selectedChatModel])
+
+  useEffect(() => {
+    if (!backendReady || !user?.id) return
+    let cancelled = false
+    const loadStatus = async () => {
+      const status = await getOnboardingStatus()
+      if (cancelled || !status) return
+      setOnboardingStatus(status)
+      const dismissedKey = `mnemox_onboarding_dismissed_${user.id}`
+      const dismissed = localStorage.getItem(dismissedKey) === 'true'
+      if (!dismissed && status.stage !== 'loop_ready') {
+        setShowOnboarding(true)
+      }
+    }
+    void loadStatus()
+    return () => { cancelled = true }
+  }, [backendReady, user?.id])
+
+  useEffect(() => {
+    localStorage.setItem('learner_view_mode', beginnerMode ? 'beginner' : 'advanced')
+  }, [beginnerMode])
+
+  const closeOnboarding = () => {
+    if (user?.id) {
+      localStorage.setItem(`mnemox_onboarding_dismissed_${user.id}`, 'true')
+    }
+    setShowOnboarding(false)
+  }
+
+  const handleSeedDemo = async () => {
+    setDemoSeedLoading(true)
+    try {
+      const result = await seedDemoWorkspace()
+      if (!result?.ok) {
+        message.error('Demo 数据导入失败，请稍后重试')
+        return
+      }
+      message.success(result.already_seeded ? 'Demo 数据已存在' : result.message)
+      const status = await getOnboardingStatus()
+      if (status) setOnboardingStatus(status)
       await loadMaterials()
       await loadProjects()
       await loadConversations()
-      if (activeConversationId) {
-        setActiveConversation(activeConversationId)
-      }
-      try {
-        const ragRes = await fetch('/api/rag/health')
-        if (ragRes.ok) {
-          const j = await ragRes.json()
-          setRagStatus(j)
-        }
-      } catch {
-        // ignore
-      }
       await loadWeeklyPlans()
       await loadWrongQuestions()
       await loadReviewOverview()
       await loadDashboardOverview()
       await loadDailyIntervention()
-      // Sync pomodoro data
-      await syncPendingRecords()
+      setLeftCollapsed(false)
+      setLeftSidebarTab('materials')
+      closeOnboarding()
+      navigate('/dashboard')
+    } finally {
+      setDemoSeedLoading(false)
     }
-    loadAll()
-  }, [backendReady])
+  }
+
+  const openOnboardingMaterials = () => {
+    setLeftCollapsed(false)
+    setLeftSidebarTab('materials')
+    setShowOnboarding(false)
+  }
 
   useEffect(() => {
     if (!backendReady) return
     void loadCurrentQuote()
     void loadMotivationSettings()
-    void loadAllQuotes()
     const interval = setInterval(() => {
       void loadCurrentQuote()
     }, 5 * 60 * 1000)
     return () => clearInterval(interval)
-  }, [backendReady, loadAllQuotes, loadCurrentQuote, loadMotivationSettings])
+  }, [backendReady, loadCurrentQuote, loadMotivationSettings])
 
   useEffect(() => {
     if (!projectMaterialsOpen) {
@@ -674,12 +934,111 @@ export function ObsidianLayout() {
     return ''
   }
 
-  const handleSendMessage = async (forcedText?: string) => {
+  const shouldCheckAgentWrite = (text: string) => {
+    const triggers = [
+      '记个笔记', '记一条笔记', '记一个笔记', '记个灵感', '记一个灵感', '记录一下', '写入笔记', '存到笔记', '保存到笔记', '记到笔记', '记进笔记', '突然有个想法', '临时有个想法', '有个想法', '有一个想法', '我想到',
+      '今天的任务', '今天任务', '今日任务', '今天的计划', '今天计划', '今日计划', '今天待办', '今日待办', '加入今天计划', '加到今天计划', '写到今天计划', '安排到今天',
+      '创建任务', '添加任务', '加入任务', '安排任务', '制定任务', '拆成任务', '拆成子任务', '拆解任务', '生成任务', '做成任务', '目标是', '我的目标', '接下来我要', '接下来我的目标',
+    ]
+    return triggers.some(trigger => text.includes(trigger))
+  }
+
+  const updateAgentWriteDraft = (patch: AgentWriteDraftData) => {
+    setAgentWriteDraft(prev => prev ? { ...prev, draft: { ...prev.draft, ...patch } } : prev)
+  }
+
+  const updateAgentWriteListItem = (field: 'items' | 'tasks', index: number, patch: AgentWriteTaskDraftItem) => {
+    setAgentWriteDraft(prev => {
+      if (!prev) return prev
+      const list = Array.isArray(prev.draft[field]) ? [...prev.draft[field]] : []
+      list[index] = { ...(list[index] || {}), ...patch, duplicate: false }
+      return { ...prev, draft: { ...prev.draft, [field]: list } }
+    })
+  }
+
+  const removeAgentWriteListItem = (field: 'items' | 'tasks', index: number) => {
+    setAgentWriteDraft(prev => {
+      if (!prev) return prev
+      const list = Array.isArray(prev.draft[field]) ? [...prev.draft[field]] : []
+      list.splice(index, 1)
+      return { ...prev, draft: { ...prev.draft, [field]: list } }
+    })
+  }
+
+  const confirmAgentWrite = async () => {
+    if (!agentWriteDraft || agentWriteDraft.intent === 'none') return
+    if (!['create_note', 'create_goal_tasks', 'add_daily_plan_items'].includes(agentWriteDraft.intent)) return
+    if (agentWriteDraft.intent === 'create_note' && !String(agentWriteDraft.draft.content || '').trim()) {
+      message.warning('笔记内容不能为空')
+      return
+    }
+    if (agentWriteDraft.intent === 'add_daily_plan_items' && !((agentWriteDraft.draft.items || []) as AgentWriteTaskDraftItem[]).some(item => String(item.title || '').trim())) {
+      message.warning('至少保留一个计划项')
+      return
+    }
+    if (agentWriteDraft.intent === 'create_goal_tasks' && !((agentWriteDraft.draft.tasks || []) as AgentWriteTaskDraftItem[]).some(item => String(item.title || '').trim())) {
+      message.warning('至少保留一个任务')
+      return
+    }
+    setAgentWriteExecuting(true)
+    const result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft).catch(() => null)
+    setAgentWriteExecuting(false)
+    if (!result) {
+      message.error('Agent 写入失败，请检查草案内容后重试')
+      return
+    }
+    message.success(result.message || 'Agent 已写入系统')
+    const userEntry: ChatMessage = { role: 'user', content: agentWriteSourceText }
+    const assistantEntry: ChatMessage = {
+      role: 'assistant',
+      content: result.message || (agentWriteDraft.intent === 'create_note' ? '已创建笔记。' : '已创建任务。'),
+    }
+    let conversationId = activeConversationId
+    if (!conversationId) {
+      const conv = await createNewConversation(activeProjectId)
+      conversationId = conv?.id ?? null
+    }
+    addMessage(userEntry)
+    addMessage(assistantEntry)
+
+    if (conversationId) {
+      const saved = await appendConversationMessages(conversationId, [userEntry, assistantEntry])
+      if (saved) {
+        await setActiveConversation(conversationId)
+        await loadConversations(activeProjectId ?? undefined)
+      }
+    }
+    setAgentWriteDraft(null)
+    setAgentWriteSourceText('')
+    await syncEngine.syncAll()
+    void loadDashboardOverview()
+  }
+
+  const handleSendMessage = async (
+    forcedText?: string,
+    options?: {
+      conversationId?: number
+      history?: ChatMessage[]
+      replaceMessages?: ChatMessage[]
+    },
+  ) => {
     const text = (forcedText ?? chatInput).trim()
-    if (!text || chatLoading) return
+    if (!text || chatLoading || agentWriteLoading) return
+
+    if (!forcedText && !options && pendingImages.length === 0 && shouldCheckAgentWrite(text)) {
+      setAgentWriteLoading(true)
+      const draft = await draftAgentWrite(text)
+      setAgentWriteLoading(false)
+      if (draft?.requires_confirmation && draft.intent !== 'none') {
+        setAgentWriteDraft(draft)
+        setAgentWriteSourceText(text)
+        setChatInput('')
+        return
+      }
+    }
 
     // Auto-create conversation if none active
-    let convId = activeConversationId
+    let convId = options?.conversationId ?? activeConversationId
     if (!convId) {
       const conv = await createNewConversation(activeProjectId)
       if (!conv) {
@@ -690,21 +1049,25 @@ export function ObsidianLayout() {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: text }
-    addMessage(userMsg)
+    const historyForRequest = options?.history ?? chatMessages
+    if (options?.replaceMessages) {
+      setMessages([...options.replaceMessages, userMsg])
+    } else {
+      addMessage(userMsg)
+    }
     if (!forcedText) setChatInput('')
     setPendingImages([])
     setAutoScrollEnabled(true)
     setChatLoading(true)
     setStreamingContent('')
     setDetectedMaterials([])
-    setProgressFeedback(null)
     let accumulated = ''
     const controller = new AbortController()
     abortControllerRef.current = controller
 
     await sendMessageStream(
       text,
-      chatMessages,
+      historyForRequest,
       (chunk) => {
         accumulated += chunk
         setStreamingContent(accumulated)
@@ -717,7 +1080,7 @@ export function ObsidianLayout() {
         setChatLoading(false)
         abortControllerRef.current = null
         // Refresh conversation list to update title/timestamp
-        loadConversations()
+        reloadConversationsForCurrentView()
         // Refresh review count after chat (may have auto-created wrong questions)
         loadReviewOverview()
       },
@@ -736,7 +1099,7 @@ export function ObsidianLayout() {
       },
       controller.signal,
       convId,
-      pendingImages.length > 0 ? pendingImages : undefined,
+      !forcedText && pendingImages.length > 0 ? pendingImages : undefined,
       (() => {
         try {
           const raw = localStorage.getItem('study_active_session_id')
@@ -750,9 +1113,29 @@ export function ObsidianLayout() {
         setMemoryIndicators(memories)
       },
       (feedback) => {
-        setProgressFeedback(feedback)
-        setTimeout(() => setProgressFeedback(null), 6000)
+        notification.open({
+          key: 'progress-feedback',
+          message: '进度提醒',
+          description: feedback.message,
+          icon: <span style={{ fontSize: 18 }}>{feedback.emoji}</span>,
+          placement: 'bottomRight',
+          duration: 8,
+          actions: (
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => {
+                notification.destroy('progress-feedback')
+                navigate('/progress')
+              }}
+            >
+              查看详情
+            </Button>
+          ),
+        })
       },
+      selectedChatModelConfig.providerName,
+      selectedChatModelConfig.model,
     )
   }
 
@@ -762,6 +1145,67 @@ export function ObsidianLayout() {
       abortControllerRef.current.abort()
     }
   }, [])
+
+  const forkAtMessage = async (messageIndex: number, title?: string) => {
+    if (!activeConversationId) {
+      message.warning('当前对话尚未保存，先发送一轮消息后再创建分支')
+      return null
+    }
+    const fork = await forkConversation(activeConversationId, {
+      title,
+      up_to_index: messageIndex,
+    })
+    if (!fork) {
+      message.error('创建对话分支失败')
+      return null
+    }
+    await setActiveConversation(fork.id)
+    await loadConversations()
+    return fork
+  }
+
+  const handleBranchFromAssistant = async (messageIndex: number) => {
+    const prefix = chatMessages.slice(0, messageIndex + 1)
+    const fork = await forkAtMessage(messageIndex, '对话分支')
+    if (!fork) return
+    setMessages(prefix)
+    message.success('已创建对话分支')
+  }
+
+  const handleRegenerateAssistant = async (assistantIndex: number) => {
+    if (chatLoading) return
+    let userIndex = -1
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+      if (chatMessages[i].role === 'user') {
+        userIndex = i
+        break
+      }
+    }
+    if (userIndex < 0) {
+      message.warning('未找到对应的用户消息')
+      return
+    }
+    const prefix = chatMessages.slice(0, userIndex)
+    const fork = await forkAtMessage(userIndex - 1, '重新生成分支')
+    if (!fork) return
+    await handleSendMessage(chatMessages[userIndex].content, {
+      conversationId: fork.id,
+      history: prefix,
+      replaceMessages: prefix,
+    })
+  }
+
+  const handleEditUserMessage = async (messageIndex: number, nextContent: string) => {
+    if (chatLoading) return
+    const prefix = chatMessages.slice(0, messageIndex)
+    const fork = await forkAtMessage(messageIndex - 1, '编辑消息分支')
+    if (!fork) return
+    await handleSendMessage(nextContent, {
+      conversationId: fork.id,
+      history: prefix,
+      replaceMessages: prefix,
+    })
+  }
 
   const handleImageSelect = (file: File) => {
     if (!file.type.startsWith('image/')) return
@@ -787,7 +1231,7 @@ export function ObsidianLayout() {
     if (!dragging) return
     const onMouseMove = (e: MouseEvent) => {
       if (dragging === 'left') {
-        const newWidth = Math.min(480, Math.max(180, e.clientX))
+        const newWidth = Math.min(480, Math.max(180, e.clientX - 64))
         setLeftWidth(newWidth)
       } else {
         const newWidth = Math.min(480, Math.max(200, window.innerWidth - e.clientX))
@@ -849,7 +1293,6 @@ export function ObsidianLayout() {
   const loadDailyIntervention = async () => {
     try {
       const report = await getDailyIntervention()
-      setDailyIntervention(report)
       if (!report || !report.should_push) return
 
       // 每2小时最多提醒一次（key 包含时间段）
@@ -869,41 +1312,37 @@ export function ObsidianLayout() {
             ))}
           </div>
         ),
-        placement: 'topRight',
+        placement: 'bottomRight',
         duration: report.risk_level === 'high' ? 0 : 6,
-        btn: (
-          <Button size="small" type="primary" onClick={() => navigate('/intervention')}>
+        actions: (
+          <Button size="small" type="primary" onClick={() => navigate('/eda?tab=intervention')}>
             查看详情
           </Button>
         ),
       })
     } catch {
-      setDailyIntervention(null)
+      // ignore
     }
-  }
-
-  const getCompletionStats = (text: string): { completed: number; total: number } => {
-    const lines = text.split('\n')
-    let total = 0
-    let completed = 0
-    for (const line of lines) {
-      if (/^- \[ \] /.test(line)) { total++ }
-      else if (/^- \[x\] /.test(line)) { total++; completed++ }
-    }
-    return { completed, total }
   }
 
   useEffect(() => {
+    let lastFocusRefreshAt = 0
     const onFocus = () => {
       if (!backendReady) return
-      // 重新加载所有关键数据
+      const now = Date.now()
+      if (now - lastFocusRefreshAt < 30_000) return
+      lastFocusRefreshAt = now
+
+      // Focus refresh stays light; heavier overviews are background work.
       void loadMaterials()
       void loadProjects()
       void loadConversations()
-      void loadWrongQuestions()
-      void loadReviewOverview()
-      void loadDashboardOverview()
-      void loadDailyIntervention()
+      window.setTimeout(() => {
+        void loadWrongQuestions()
+        void loadReviewOverview()
+        void loadDashboardOverview()
+        void loadDailyIntervention()
+      }, 600)
     }
     window.addEventListener('focus', onFocus)
 
@@ -925,7 +1364,7 @@ export function ObsidianLayout() {
     setAutoScrollEnabled(nearBottom)
   }
 
-  const quoteAssistantToNote = async (assistantContent: string) => {
+  const quoteAssistantToNote = (assistantContent: string) => {
     const lastUserText = (() => {
       for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
         if (chatMessages[i].role === 'user') return chatMessages[i].content
@@ -934,10 +1373,8 @@ export function ObsidianLayout() {
     })()
 
     const body = `## AI 回答摘录\n\n${assistantContent}\n`
-    const suggested = await suggestNoteMetadata(assistantContent, lastUserText)
-    const title = suggested?.title || `对话摘录 ${dayjs().format('MM-DD HH:mm')}`
-    const tags = (suggested?.tags || []).slice(0, 5)
-    const links: Array<{ link_type: string; link_id: number }> = []
+    const fallbackTitle = `对话摘录 ${dayjs().format('MM-DD HH:mm')}`
+    const links: NoteLink[] = []
     const activeTaskId = (() => {
       try {
         const raw = localStorage.getItem('study_active_task_id')
@@ -950,17 +1387,67 @@ export function ObsidianLayout() {
       links.push({ link_type: 'task', link_id: activeTaskId })
     }
 
+    setQuoteNoteDraft({
+      sourceContent: assistantContent,
+      title: fallbackTitle,
+      content: body,
+      tags: [],
+      links,
+      metadataLoading: true,
+      saving: false,
+      titleEdited: false,
+      tagsEdited: false,
+    })
+
+    void suggestNoteMetadata(assistantContent, lastUserText)
+      .then((suggested) => {
+        setQuoteNoteDraft((prev) => {
+          if (!prev || prev.sourceContent !== assistantContent) return prev
+          return {
+            ...prev,
+            title: !prev.titleEdited && suggested?.title ? suggested.title : prev.title,
+            tags: !prev.tagsEdited && suggested?.tags ? suggested.tags.slice(0, 5) : prev.tags,
+            metadataLoading: false,
+          }
+        })
+      })
+      .catch(() => {
+        setQuoteNoteDraft((prev) => (
+          prev && prev.sourceContent === assistantContent
+            ? { ...prev, metadataLoading: false }
+            : prev
+        ))
+      })
+  }
+
+  const saveQuoteNoteDraft = async () => {
+    if (!quoteNoteDraft || quoteNoteDraft.saving) return
+
+    const title = quoteNoteDraft.title.trim()
+    const content = quoteNoteDraft.content.trim()
+    if (!title) {
+      message.error('请输入笔记标题')
+      return
+    }
+    if (!content) {
+      message.error('笔记内容不能为空')
+      return
+    }
+
+    setQuoteNoteDraft((prev) => prev ? { ...prev, saving: true } : prev)
     const created = await createNote({
       title,
-      content: body,
+      content,
       note_type: 'summary',
-      tags,
-      links,
+      tags: quoteNoteDraft.tags.map((tag) => tag.trim()).filter(Boolean).slice(0, 8),
+      links: quoteNoteDraft.links,
     })
     if (created) {
       message.success('已引用到笔记')
+      setQuoteNoteDraft(null)
     } else {
       message.error('创建笔记失败')
+      setQuoteNoteDraft((prev) => prev ? { ...prev, saving: false } : prev)
     }
   }
 
@@ -1036,7 +1523,7 @@ export function ObsidianLayout() {
 
   const handleCompletePomodoro = () => {
     completeTimer()
-    message.success('番茄钟完成！已记录到统计中')
+    message.success(`番茄钟完成！已记录到统计中，开始休息 ${pomodoroConfig.breakDuration} 分钟`)
     // 写入学习行为记忆，供 AI 感知学习状态
     if (pomodoroConfig.taskName) {
       void createMemory({
@@ -1069,15 +1556,6 @@ export function ObsidianLayout() {
       distracted: '没关系，休息一下再来。已记录状态 😊',
     }
     message.info(msgs[reason])
-  }
-
-  const handleStartFocusFromToday = () => {
-    if (!pomodoroConfig.taskName && topPendingTask?.title) {
-      setPomodoroConfig((prev) => ({ ...prev, taskName: topPendingTask.title, taskId: topPendingTask.id }))
-      startTimer(topPendingTask.title, pomodoroConfig.duration, topPendingTask.id)
-      return
-    }
-    handleStartPomodoro()
   }
 
   useEffect(() => {
@@ -1319,123 +1797,26 @@ export function ObsidianLayout() {
 
   // Feature 1: Show loading overlay while waiting for backend
   if (!backendReady) {
-    return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-        alignItems: 'center',
-        height: '100vh',
-        background: 'var(--bg-primary)',
-        gap: 16,
-      }}>
-        <Spin size="large" />
-        <div style={{ color: 'var(--text-secondary)', fontSize: 16 }}>正在等待后端服务启动...</div>
-        <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>后端服务就绪后将自动加载数据</div>
-      </div>
-    )
+    return <BackendLoadingOverlay />
   }
 
-  const navItems = [
-    { key: '/', icon: <MessageOutlined />, label: '学习助手' },
-    { key: '/dashboard', icon: <DashboardOutlined />, label: '今日概览' },
-    { key: '/review', icon: <BookOutlined />, label: '复习' },
-    { key: '/goals', icon: <CheckSquareOutlined />, label: '任务目标' },
-    { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本' },
-    { key: '/notes', icon: <FileTextOutlined />, label: '笔记' },
-    { key: '/anki', icon: <CreditCardOutlined />, label: 'Anki卡片' },
-    { key: '/plans', icon: <CalendarOutlined />, label: '学习计划' },
-    { key: '/agent', icon: <RobotOutlined />, label: 'Agent' },
-  ]
+  const isChatEmpty = chatMessages.length === 0 && !streamingContent
+  const canSendMessage = Boolean(chatInput.trim()) && !chatLoading && !agentWriteLoading
 
   return (
     <Layout style={{ minHeight: '100vh', position: 'relative' }}>
-      {/* Outer 64px Global Icon Sidebar */}
-      <Sider
-        width={64}
-        style={{
-          background: 'var(--bg-surface)',
-          borderRight: '1px solid var(--border-light)',
-          position: 'fixed',
-          left: 0,
-          top: 0,
-          bottom: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          padding: '16px 0',
-          zIndex: 100,
-        }}
-      >
-        <div style={{ 
-          width: 40, height: 40, borderRadius: '12px', 
-          background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 32,
-          boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)'
-        }}>
-          S
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, width: '100%', alignItems: 'center' }}>
-          {navItems.map(item => {
-            const isActive = window.location.pathname === item.key || (item.key !== '/' && window.location.pathname.startsWith(item.key))
-            return (
-              <Tooltip key={item.key} title={item.label} placement="right">
-                <div
-                  onClick={() => navigate(item.key)}
-                  style={{
-                    width: 44, height: 44, borderRadius: '12px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: 'pointer', fontSize: 20,
-                    color: isActive ? 'var(--brand-400)' : 'var(--text-secondary)',
-                    background: isActive ? 'var(--primary-100)' : 'transparent',
-                    transition: 'all 0.2s',
-                    position: 'relative',
-                  }}
-                >
-                  {isActive && (
-                    <div style={{
-                      position: 'absolute', left: -10, top: 12, bottom: 12, width: 4, 
-                      background: 'var(--brand-500)', borderRadius: '0 4px 4px 0'
-                    }} />
-                  )}
-                  {item.icon}
-                </div>
-              </Tooltip>
-            )
-          })}
-        </div>
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
-          <Tooltip title={isRunning ? `🍅 ${formatTime(remainingTime)}` : isPaused ? `⏸ ${formatTime(remainingTime)}` : '专注番茄钟'} placement="right">
-            <div 
-              onClick={() => setShowPomodoroModal(true)}
-              style={{ 
-                width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', 
-                color: isRunning ? 'var(--error)' : isPaused ? 'var(--warning)' : 'var(--brand-400)', 
-                fontSize: 20, 
-                background: isRunning ? 'rgba(251, 113, 133, 0.1)' : isPaused ? 'rgba(251, 191, 36, 0.1)' : 'rgba(99, 102, 241, 0.1)', 
-                borderRadius: '12px', transition: 'all 0.2s',
-                border: isRunning || isPaused ? `1px solid ${isRunning ? 'var(--error)' : 'var(--warning)'}` : 'none'
-              }}
-              onMouseOver={(e) => {
-                if (!isRunning && !isPaused) e.currentTarget.style.background = 'rgba(99, 102, 241, 0.2)'
-              }}
-              onMouseOut={(e) => {
-                if (!isRunning && !isPaused) e.currentTarget.style.background = 'rgba(99, 102, 241, 0.1)'
-              }}
-            >
-              ⏱
-            </div>
-          </Tooltip>
-          <Tooltip title="设置" placement="right">
-            <div style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 20 }} onClick={() => setShowSettings(true)}>
-              <SettingOutlined />
-            </div>
-          </Tooltip>
-        </div>
-      </Sider>
+      <GlobalNavRail
+        pathname={location.pathname}
+        isRunning={isRunning}
+        isPaused={isPaused}
+        remainingTimeLabel={formatTime(remainingTime)}
+        onNavigate={navigate}
+        onOpenPomodoro={() => setShowPomodoroModal(true)}
+        onOpenOnboarding={() => setShowOnboarding(true)}
+        onOpenSettings={() => setShowSettings(true)}
+        beginnerMode={beginnerMode}
+        onToggleBeginnerMode={() => setBeginnerMode((v) => !v)}
+      />
 
       {bgImage && (
         <div style={{
@@ -1447,6 +1828,7 @@ export function ObsidianLayout() {
       )}
       {/* 第二层左侧边栏（对话/资料库） */}
       <Sider
+        className={`mnemox-left-sidebar${leftCollapsed ? ' is-collapsed' : ''}`}
         width={effectiveLeftWidth}
         style={{
           background: 'var(--bg-surface)',
@@ -1457,6 +1839,7 @@ export function ObsidianLayout() {
           left: 64, // Shifted right by 64px
           display: 'flex',
           flexDirection: 'column',
+          transition: 'width var(--duration-normal) var(--ease-out)',
         }}
       >
         {leftCollapsed ? (
@@ -1520,138 +1903,193 @@ export function ObsidianLayout() {
                 <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-primary)' }}>
                   {/* 资料 */}
                   <div style={{ padding: '16px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                      <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-                        <FileOutlined /> 资料
-                      </h3>
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        {activeProjectId && selectedMaterialIds.size > 0 && (
-                          <Button
-                            type="primary"
-                            size="small"
-                            onClick={async () => {
-                              const ids = Array.from(selectedMaterialIds)
-                              try {
-                                await Promise.all(ids.map((id) => addProjectMaterial(activeProjectId, id)))
-                                const detail = await getProject(activeProjectId)
-                                setActiveProjectMaterialIds(detail?.material_ids || [])
-                                await loadMaterials()
-                                message.success('已绑定到当前项目')
-                              } catch {
-                                message.error('绑定失败')
-                              }
-                            }}
-                            style={{ fontSize: 11 }}
-                          >
-                            绑定到当前项目
-                          </Button>
-                        )}
-                        {activeProjectId && selectedMaterialIds.size > 0 && (
-                          <Button
-                            type="text"
-                            size="small"
-                            onClick={async () => {
-                              const ids = Array.from(selectedMaterialIds)
-                              try {
-                                await Promise.all(ids.map((id) => removeProjectMaterial(activeProjectId, id)))
-                                const detail = await getProject(activeProjectId)
-                                setActiveProjectMaterialIds(detail?.material_ids || [])
-                                await loadMaterials()
-                                message.success('已从当前项目移除')
-                              } catch {
-                                message.error('移除失败')
-                              }
-                            }}
-                            style={{ fontSize: 11, color: 'var(--text-secondary)' }}
-                          >
-                            从当前项目移除
-                          </Button>
-                        )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+                          <FileOutlined /> 资料
+                        </h3>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Tag style={{ margin: 0, fontSize: 11 }}>
+                            {filteredMaterials.length}/{visibleMaterials.length}
+                          </Tag>
+                          <Tooltip title={showUploadArea ? '收起上传' : '上传资料'}>
+                            <Button
+                              type={showUploadArea ? 'primary' : 'text'}
+                              size="small"
+                              icon={<UploadOutlined />}
+                              onClick={() => setShowUploadArea((v) => !v)}
+                              style={{ padding: '0 6px', color: showUploadArea ? undefined : 'var(--primary-600)' }}
+                            />
+                          </Tooltip>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gap: 8 }}>
                         <Segmented
+                          block
                           size="small"
                           value={activeProjectId && projectMaterialsOnly ? 'project' : 'all'}
                           onChange={(val) => setProjectMaterialsOnly(val === 'project')}
                           options={[
-                            { label: '当前项目资料', value: 'project', disabled: !activeProjectId },
-                            { label: '全部资料库', value: 'all' },
+                            { label: '当前项目', value: 'project', disabled: !activeProjectId },
+                            { label: '全部资料', value: 'all' },
                           ]}
                         />
-                        <Select
-                          size="small"
-                          value={materialTypeFilter}
-                          onChange={setMaterialTypeFilter}
-                          options={materialTypeOptions}
-                          style={{ minWidth: 110 }}
-                        />
-                        <Input
-                          size="small"
-                          placeholder="搜索资料..."
-                          value={materialSearch}
-                          onChange={(e) => setMaterialSearch(e.target.value)}
-                          style={{ width: 140 }}
-                          allowClear
-                        />
-                        <Button
-                          type="text"
-                          size="small"
-                          loading={archiveMaterialsLoading}
-                          onClick={async () => {
-                            setArchiveMaterialsLoading(true)
-                            try {
-                              const result = await archiveUnassignedMaterials()
-                              if (!result) {
-                                message.error('归档失败')
-                                return
-                              }
-                              if (result.added_count > 0) {
-                                message.success(`已归档 ${result.added_count} 份资料到 ${result.project_name}`)
-                              } else {
-                                message.info('暂无未分类资料')
-                              }
-                              if (activeProjectId === result.project_id) {
-                                const detail = await getProject(result.project_id)
-                                setActiveProjectMaterialIds(detail?.material_ids || [])
-                              }
-                            } catch {
-                              message.error('归档失败')
-                            } finally {
-                              setArchiveMaterialsLoading(false)
-                            }
-                          }}
-                          style={{ fontSize: 11, color: 'var(--text-secondary)' }}
-                        >
-                          归档未分类
-                        </Button>
-                        {selectedMaterialIds.size > 0 && (
-                          <Button
-                            type="primary"
+                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(96px, 0.8fr) minmax(0, 1.2fr)', gap: 8 }}>
+                          <Select
                             size="small"
-                            loading={batchLearningLoading}
+                            value={materialTypeFilter}
+                            onChange={setMaterialTypeFilter}
+                            options={materialTypeOptions}
+                            style={{ width: '100%' }}
+                          />
+                          <Input
+                            size="small"
+                            placeholder="搜索资料..."
+                            value={materialSearch}
+                            onChange={(e) => setMaterialSearch(e.target.value)}
+                            style={{ width: '100%' }}
+                            allowClear
+                          />
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {activeProjectId && selectedMaterialIds.size > 0 && (
+                            <Button
+                              type="primary"
+                              size="small"
+                              onClick={async () => {
+                                const ids = Array.from(selectedMaterialIds)
+                                try {
+                                  await Promise.all(ids.map((id) => addProjectMaterial(activeProjectId, id)))
+                                  const detail = await getProject(activeProjectId)
+                                  setActiveProjectMaterialIds(detail?.material_ids || [])
+                                  await loadMaterials()
+                                  message.success('已绑定到当前项目')
+                                } catch {
+                                  message.error('绑定失败')
+                                }
+                              }}
+                              style={{ fontSize: 11 }}
+                            >
+                              绑定到当前项目
+                            </Button>
+                          )}
+                          {activeProjectId && selectedMaterialIds.size > 0 && (
+                            <Button
+                              type="text"
+                              size="small"
+                              onClick={async () => {
+                                const ids = Array.from(selectedMaterialIds)
+                                try {
+                                  await Promise.all(ids.map((id) => removeProjectMaterial(activeProjectId, id)))
+                                  const detail = await getProject(activeProjectId)
+                                  setActiveProjectMaterialIds(detail?.material_ids || [])
+                                  await loadMaterials()
+                                  message.success('已从当前项目移除')
+                                } catch {
+                                  message.error('移除失败')
+                                }
+                              }}
+                              style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+                            >
+                              从当前项目移除
+                            </Button>
+                          )}
+                          <Button
+                            type="text"
+                            size="small"
+                            loading={archiveMaterialsLoading}
                             onClick={async () => {
-                              const ids = Array.from(selectedMaterialIds)
-                              setBatchLearningLoading(true)
+                              setArchiveMaterialsLoading(true)
                               try {
-                                const result = await startBatchLearningPipeline(ids)
-                                if (result) {
-                                  message.success(`批量学习完成：共生成 ${result.total_tasks} 个学习任务`)
-                                  await loadReviewOverview()
-                                  await loadDashboardOverview()
+                                const result = await archiveUnassignedMaterials()
+                                if (!result) {
+                                  message.error('归档失败')
+                                  return
+                                }
+                                if (result.added_count > 0) {
+                                  message.success(`已归档 ${result.added_count} 份资料到 ${result.project_name}`)
                                 } else {
-                                  message.error('批量学习失败')
+                                  message.info('暂无未分类资料')
+                                }
+                                if (activeProjectId === result.project_id) {
+                                  const detail = await getProject(result.project_id)
+                                  setActiveProjectMaterialIds(detail?.material_ids || [])
                                 }
                               } catch {
-                                message.error('批量学习失败')
+                                message.error('归档失败')
                               } finally {
-                                setBatchLearningLoading(false)
+                                setArchiveMaterialsLoading(false)
                               }
                             }}
-                            style={{ fontSize: 11 }}
+                            style={{ fontSize: 11, color: 'var(--text-secondary)' }}
                           >
-                            批量学习 ({selectedMaterialIds.size})
+                            归档未分类
                           </Button>
-                        )}
+                          {selectedMaterialIds.size > 0 && (
+                            <Button
+                              type="primary"
+                              size="small"
+                              loading={batchLearningLoading}
+                              onClick={async () => {
+                                const ids = Array.from(selectedMaterialIds)
+                                setBatchLearningLoading(true)
+                                try {
+                                  const result = await startBatchLearningPipeline(ids)
+                                  if (result) {
+                                    message.success(`批量学习完成：共生成 ${result.total_tasks} 个学习任务`)
+                                    await loadReviewOverview()
+                                    await loadDashboardOverview()
+                                  } else {
+                                    message.error('批量学习失败')
+                                  }
+                                } catch {
+                                  message.error('批量学习失败')
+                                } finally {
+                                  setBatchLearningLoading(false)
+                                }
+                              }}
+                              style={{ fontSize: 11 }}
+                            >
+                              批量学习 ({selectedMaterialIds.size})
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
+
+                    {showUploadArea && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>同步到 RAG 知识库</span>
+                          <Switch size="small" checked={syncToRAG} onChange={setSyncToRAG} />
+                        </div>
+                        {ragStatus && (
+                          <div style={{ marginBottom: 6 }}>
+                            <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : ragStatus.fallback_active || !ragStatus.embedding_enabled ? 'orange' : 'default'}>
+                              RAG: {ragStatus.rag_online ? '在线' : 'Fallback'}
+                            </Tag>
+                            {ragStatus.rag_online && <Tag color="blue">{ragStatus.total_chunks} chunks</Tag>}
+                          </div>
+                        )}
+                        <Upload.Dragger
+                          multiple
+                          beforeUpload={handleUpload}
+                          showUploadList={false}
+                          accept=".pdf,.docx,.txt,.md"
+                        >
+                          <p><UploadOutlined style={{ fontSize: 20, color: 'var(--text-secondary)' }} /></p>
+                          <p style={{ fontSize: 12, color: 'var(--text-primary)', margin: '6px 0 2px' }}>点击或拖拽文件上传</p>
+                          <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>PDF、Word、TXT、Markdown</p>
+                        </Upload.Dragger>
+                      </div>
+                    )}
+
+                    {selectedMaterialIds.size > 0 && (
+                      <div style={{ marginBottom: 8, padding: '6px 8px', background: 'var(--accent-50)', borderRadius: 'var(--radius-sm)', fontSize: 11, color: 'var(--accent-700)' }}>
+                        已选 {selectedMaterialIds.size} 份资料，将作为 AI 对话的参考上下文
+                      </div>
+                    )}
+
                     <List
                       size="small"
                       dataSource={filteredMaterials}
@@ -1663,9 +2101,11 @@ export function ObsidianLayout() {
                       }}
                       renderItem={(item) => {
                         const projectNames = (item.project_ids || []).map((id) => projectNameMap.get(id) || `项目 #${id}`)
+                        const isHovered = hoveredMaterialId === item.id
+                        const isSelected = selectedMaterialIds.has(item.id)
                         return (
                           <List.Item
-                            actions={[
+                            actions={isHovered || isSelected ? [
                               <Button
                                 type="text"
                                 size="small"
@@ -1709,13 +2149,16 @@ export function ObsidianLayout() {
                                 onClick={(e) => { e.stopPropagation(); deleteMaterial(item.id) }}
                                 title="删除"
                               />,
-                            ]}
+                            ] : []}
                             style={{
                               cursor: 'pointer',
                               padding: '6px 10px',
-                              background: selectedMaterialIds.has(item.id) ? 'var(--accent-50)' : 'transparent',
-                              borderLeft: selectedMaterialIds.has(item.id) ? '3px solid var(--accent-600)' : '3px solid transparent',
+                              background: isSelected ? 'var(--accent-50)' : isHovered ? 'var(--gray-50)' : 'transparent',
+                              borderLeft: isSelected ? '3px solid var(--accent-600)' : '3px solid transparent',
+                              transition: 'background var(--duration-fast)',
                             }}
+                            onMouseEnter={() => setHoveredMaterialId(item.id)}
+                            onMouseLeave={() => setHoveredMaterialId(null)}
                             onClick={() => {
                               setSelectedMaterialIds((prev) => {
                                 const next = new Set(prev)
@@ -1783,126 +2226,6 @@ export function ObsidianLayout() {
                           </List.Item>
                         )
                       }}
-                    />
-                  </div>
-
-                  <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-color)' }}>
-                    <Collapse
-                      size="small"
-                      ghost
-                      items={[
-                        {
-                          key: 'upload',
-                          label: '导入资料',
-                          children: (
-                            <div style={{ padding: '8px 0' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>同步到 RAG 知识库</span>
-                                <Switch size="small" checked={syncToRAG} onChange={setSyncToRAG} />
-                              </div>
-                              {ragStatus && (
-                                <div style={{ marginBottom: 8 }}>
-                                  <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : 'default'}>
-                                    RAG 知识库: {ragStatus.rag_online ? '在线' : '离线'}
-                                  </Tag>
-                                  {ragStatus.rag_online && (
-                                    <Tag color="blue">
-                                      {ragStatus.total_chunks} chunks
-                                    </Tag>
-                                  )}
-                                </div>
-                              )}
-                              <Upload.Dragger
-                                multiple
-                                beforeUpload={handleUpload}
-                                showUploadList={false}
-                                accept=".pdf,.docx,.txt,.md"
-                              >
-                                <p><UploadOutlined style={{ fontSize: 24, color: 'var(--text-secondary)' }} /></p>
-                                <p style={{ fontSize: 13, color: 'var(--text-primary)', margin: '8px 0 4px' }}>点击或拖拽文件到此处上传</p>
-                                <p style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
-                              </Upload.Dragger>
-                            </div>
-                          ),
-                        },
-                        {
-                          key: 'wrong-questions',
-                          label: '错题本',
-                          children: (
-                            <List
-                              size="small"
-                              dataSource={wrongQuestions}
-                              locale={{ emptyText: '暂无错题，去错题本添加' }}
-                              renderItem={(item) => (
-                                <List.Item style={{ cursor: 'pointer' }} onClick={() => navigate('/wrong-questions')}>
-                                  <List.Item.Meta
-                                    title={
-                                      <span style={{
-                                        fontSize: 12,
-                                        fontWeight: 500,
-                                        color: 'var(--text-primary)',
-                                        whiteSpace: 'nowrap',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        display: 'block',
-                                      }}>
-                                        {item.content}
-                                      </span>
-                                    }
-                                    description={
-                                      <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
-                                        {item.mastery_status === 'mastered' ? '已掌握' : item.mastery_status === 'partial' ? '部分掌握' : '未掌握'}
-                                      </span>
-                                    }
-                                  />
-                                </List.Item>
-                              )}
-                            />
-                          ),
-                        },
-                        {
-                          key: 'weekly-plans',
-                          label: '本周计划',
-                          children: (
-                            <List
-                              size="small"
-                              dataSource={weeklyPlans}
-                              locale={{ emptyText: '本周暂无计划（在右侧日历中添加）' }}
-                              renderItem={(p) => {
-                                const planStats = getCompletionStats(p.content || '')
-                                return (
-                                  <List.Item style={{ padding: '6px 0' }}>
-                                    <div style={{ width: '100%' }}>
-                                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                        {p.date}
-                                        {planStats.total > 0 && (
-                                          <Tag
-                                            color={planStats.completed === planStats.total ? 'green' : 'blue'}
-                                            style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}
-                                          >
-                                            {planStats.completed}/{planStats.total}
-                                          </Tag>
-                                        )}
-                                      </div>
-                                      <div
-                                        style={{
-                                          fontSize: 11,
-                                          color: 'var(--text-secondary)',
-                                          whiteSpace: 'nowrap',
-                                          overflow: 'hidden',
-                                          textOverflow: 'ellipsis',
-                                        }}
-                                      >
-                                        {(p.content || '').split('\n')[0] || '（空）'}
-                                      </div>
-                                    </div>
-                                  </List.Item>
-                                )
-                              }}
-                            />
-                          ),
-                        },
-                      ]}
                     />
                   </div>
                 </div>
@@ -1973,6 +2296,18 @@ export function ObsidianLayout() {
         </div>
       </Sider>
 
+      <Tooltip title={leftCollapsed ? '展开左侧栏' : '收起左侧栏'} placement="right">
+        <Button
+          type="text"
+          shape="circle"
+          icon={leftCollapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}
+          className="mnemox-sidebar-toggle mnemox-sidebar-toggle-left"
+          onClick={() => setLeftCollapsed((value) => !value)}
+          style={{ left: 64 + effectiveLeftWidth - 14 }}
+          aria-label={leftCollapsed ? '展开左侧栏' : '收起左侧栏'}
+        />
+      </Tooltip>
+
       {/* 左侧拖拽分割线 */}
       {!leftCollapsed && (
         <div
@@ -1992,57 +2327,24 @@ export function ObsidianLayout() {
       )}
 
       {/* 中间内容区 */}
-      <Layout style={{ marginLeft: effectiveLeftWidth + 64, marginRight: rightWidth, background: 'transparent' }}>
+      <Layout
+        className="mnemox-main-layout"
+        style={{
+          marginLeft: effectiveLeftWidth + 64,
+          marginRight: effectiveRightWidth,
+          background: 'transparent',
+          transition: 'margin var(--duration-normal) var(--ease-out)',
+        }}
+      >
         <Content style={{ padding: '0', background: 'transparent', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 24px', display: 'flex', flexDirection: 'column', flex: 1 }}>
+          <div className={`mnemox-chat-frame${isChatEmpty ? ' is-empty' : ' has-messages'}`}>
             {/* Top toolbar removed, replaced by PageShell global nav */}
             <div style={{ height: 16 }} />
-              <TodayFocusActions
-                todayTaskCount={dashboardData?.today_task_count || 0}
-                pendingCount={dashboardData?.today_pending_count || 0}
-                dueReviewCount={reviewDueCount}
-                studyMinutes={dashboardData?.today_study_minutes || 0}
-                focusMinutes={pomodoroConfig.duration}
-                onOpenGoals={() => navigate('/goals')}
-                onOpenReview={() => navigate('/review')}
-                onStartFocus={handleStartFocusFromToday}
-                onOpenFeynman={() => {
-                  navigate('/goals')
-                  message.info('请在任务中点击“评估输出”，完成今日费曼复盘')
-                }}
-                onOpenEDA={() => navigate('/eda')}
-                onOpenIntervention={() => navigate('/intervention')}
-              />
-
-              {dailyIntervention && (
-                <div
-                  style={{
-                    marginBottom: 8,
-                    border: '1px solid var(--border-light)',
-                    borderRadius: 'var(--radius-md)',
-                    background: dailyIntervention.risk_level === 'high' ? 'rgba(251, 113, 133, 0.1)' : dailyIntervention.risk_level === 'medium' ? 'rgba(251, 191, 36, 0.1)' : 'rgba(45, 212, 191, 0.1)',
-                    padding: '8px 10px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 10,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>{dailyIntervention.push_title}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {dailyIntervention.push_body}
-                    </div>
-                  </div>
-                  <Button size="small" onClick={() => navigate('/intervention')}>查看</Button>
-                </div>
-              )}
 
             {!focusMode && <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8, padding: '6px 0' }}>
               <Tag style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>{activeConversationId ? `对话 #${activeConversationId}` : '未选择对话'}</Tag>
               <Tag color={activeProjectId ? 'blue' : 'default'} style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>{activeProjectId ? `项目 #${activeProjectId}` : '未分配项目'}</Tag>
               {chatLoading && <Tag color="orange" style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>正在生成</Tag>}
-              {chatMode === 'coach' && <Tag color="purple" style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>教练模式</Tag>}
               <div style={{ flex: 1 }} />
               <Button
                 size="small"
@@ -2154,53 +2456,27 @@ export function ObsidianLayout() {
               </div>
             )}
 
-            {/* 对话区域 */}
-            <div
-              ref={chatScrollRef}
-              style={{
-                flex: 1,
-                minHeight: 400,
-                maxHeight: 'calc(100vh - 300px)',
-                marginTop: 8,
-                padding: '20px 8px',
-                background: 'var(--bg-primary)',
-                borderRadius: 'var(--radius-xl)',
-                overflowY: 'auto',
-              }}
-              onScroll={handleChatScroll}
-            >
-              {chatLoading && (
-                <div style={{ position: 'sticky', top: 0, zIndex: 2, background: 'var(--bg-primary)', paddingBottom: 8, marginBottom: 8, borderBottom: '1px dashed var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-500)', animation: 'pulse 1.5s infinite' }} />
-                    AI 正在回答中...
-                  </span>
-                  <Button size="small" danger onClick={handleStopStreaming} style={{ borderRadius: 'var(--radius-sm)' }}>停止</Button>
-                </div>
-              )}
-              {chatMessages.length === 0 && !streamingContent ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: '80px 20px' }}>
-                  <div style={{
-                    width: 64,
-                    height: 64,
-                    borderRadius: 'var(--radius-xl)',
-                    background: 'linear-gradient(135deg, var(--accent-100), var(--primary-100))',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    margin: '0 auto 20px',
-                    fontSize: 28,
-                  }}>
-                    🎓
+            {isChatEmpty ? (
+              <div className="mnemox-start-screen" aria-label="聊天开始区">
+                <h1 className="mnemox-start-title">
+                  今天想从哪里开始？
+                </h1>
+              </div>
+            ) : (
+              <div
+                ref={chatScrollRef}
+                className="mnemox-chat-stage"
+                onScroll={handleChatScroll}
+              >
+                {chatLoading && (
+                  <div className="mnemox-streaming-status">
+                    <span>
+                      <i aria-hidden="true" />
+                      AI 正在回答中...
+                    </span>
+                    <Button size="small" danger onClick={handleStopStreaming}>停止</Button>
                   </div>
-                  <p style={{ fontSize: 17, color: 'var(--text-primary)', marginBottom: 8, fontWeight: 500 }}>
-                    准备好继续学习了吗？
-                  </p>
-                  <p style={{ fontSize: 13.5, color: 'var(--text-tertiary)', maxWidth: 320, margin: '0 auto' }}>
-                    勾选左侧资料，或直接提问，我随时在这里陪你学习
-                  </p>
-                </div>
-              ) : (
+                )}
                 <div>
                   {chatMessages.map((msg, idx) => (
                     <ChatMessageBubble
@@ -2208,7 +2484,10 @@ export function ObsidianLayout() {
                       role={msg.role}
                       content={msg.content}
                       imageData={msg.image_data}
-                      onQuoteToNote={quoteAssistantToNote}
+                      onQuoteToNote={msg.role === 'assistant' ? quoteAssistantToNote : undefined}
+                      onRegenerate={msg.role === 'assistant' ? () => void handleRegenerateAssistant(idx) : undefined}
+                      onBranch={msg.role === 'assistant' ? () => void handleBranchFromAssistant(idx) : undefined}
+                      onEdit={msg.role === 'user' ? (next) => void handleEditUserMessage(idx, next) : undefined}
                     />
                   ))}
                   {streamingContent && (
@@ -2220,300 +2499,268 @@ export function ObsidianLayout() {
                   )}
                   <div ref={chatEndRef} />
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* 输入区域 */}
-            <div style={{ marginTop: 12, position: 'sticky', bottom: 12, paddingBottom: 8 }}>
-              {/* Memory indicators banner */}
-              {!focusMode && memoryIndicators.length > 0 && (
-                <div style={{
-                  padding: '6px 12px',
-                  marginBottom: 6,
-                  background: 'var(--accent-50)',
-                  borderRadius: 'var(--radius-md)',
-                  fontSize: 12,
-                  color: 'var(--accent-700)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  flexWrap: 'wrap',
-                }}>
-                  <span style={{ color: 'var(--text-tertiary)', flexShrink: 0 }}>AI 记忆：</span>
-                  {memoryIndicators.slice(0, 4).map((m) => (
-                    <Tag key={m.id} color={
-                      m.category === 'weakness' ? 'orange'
-                        : m.category === 'goal' ? 'gold'
-                        : m.category === 'confusion' ? 'volcano'
-                        : m.category === 'misconception' ? 'red'
-                        : m.memory_type === 'episodic' ? 'cyan'
-                        : 'default'
-                    } style={{ fontSize: 11 }}>
-                      {m.value.length > 20 ? m.value.slice(0, 20) + '...' : m.value}
-                    </Tag>
-                  ))}
-                </div>
-              )}
-              {/* Progress feedback achievement card */}
-              {!focusMode && progressFeedback && (
-                <div style={{
-                  padding: '10px 16px',
-                  marginBottom: 8,
-                  background: 'var(--accent-50)',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--border-light)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  animation: 'fadeIn 0.3s ease',
-                }}>
-                  <span style={{ fontSize: 20 }}>{progressFeedback.emoji}</span>
-                  <span style={{ fontSize: 13, color: 'var(--accent-700)', flex: 1 }}>
-                    {progressFeedback.message}
-                  </span>
-                  <Button
-                    type="text"
-                    size="small"
-                    onClick={() => setProgressFeedback(null)}
-                    style={{ color: '#c4a35a', fontSize: 11 }}
-                  >
-                    收起
-                  </Button>
-                </div>
-              )}
-              <div style={{ background: 'var(--bg-secondary)', border: 'none', borderRadius: 'var(--radius-xl)', padding: 12, boxShadow: 'var(--shadow-md)' }}>
-              {/* Coach mode toggle */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <Segmented
-                  size="small"
-                  value={chatMode}
-                  onChange={(v) => setChatMode(v as 'normal' | 'coach')}
-                  options={[
-                    { label: '普通模式', value: 'normal' },
-                    { label: '教练模式', value: 'coach' },
-                  ]}
-                />
-                {chatMode === 'coach' && (
-                  <span style={{ fontSize: 11, color: '#722ed1' }}>
-                    AI 将用苏格拉底式提问引导你思考
-                  </span>
-                )}
-              </div>
-              <TextArea
-                placeholder="给学习助手发送消息（Enter 发送，Shift+Enter 换行）..."
-                autoSize={{ minRows: 2, maxRows: 6 }}
-                style={{ marginBottom: 8, borderRadius: 'var(--radius-md)', border: 'none', background: 'var(--gray-50)', resize: 'none' }}
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onPaste={(e) => {
-                  const items = e.clipboardData?.items
-                  if (!items) return
-                  for (let i = 0; i < items.length; i++) {
-                    if (items[i].type.startsWith('image/')) {
-                      e.preventDefault()
-                      const file = items[i].getAsFile()
-                      if (file) handleImageSelect(file)
-                      return
-                    }
-                  }
-                }}
-                onPressEnter={(e) => {
-                  if (!e.shiftKey) {
-                    e.preventDefault()
-                    handleSendMessage()
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'ArrowUp' && !chatInput.trim()) {
-                    const last = getLastUserMessage()
-                    if (last) {
-                      e.preventDefault()
-                      setChatInput(last)
-                    }
-                  }
-                }}
-                disabled={false}
-              />
-              {/* Image preview strip */}
-              {pendingImages.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                  {pendingImages.map((img, idx) => (
-                    <div key={idx} style={{ position: 'relative', width: 64, height: 64 }}>
-                      <img
-                        src={`data:image/png;base64,${img}`}
-                        alt={`待发送图片 ${idx + 1}`}
-                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-light)' }}
-                      />
-                      <CloseCircleFilled
-                        onClick={() => setPendingImages(prev => prev.filter((_, i) => i !== idx))}
-                        style={{
-                          position: 'absolute',
-                          top: -6,
-                          right: -6,
-                          fontSize: 18,
-                          color: '#ff4d4f',
-                          cursor: 'pointer',
-                          background: 'var(--bg-elevated)',
-                          borderRadius: '50%',
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* Hidden file input for image upload */}
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (file) handleImageSelect(file)
-                  e.target.value = ''
-                }}
-              />
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button
-                  size="middle"
-                  icon={<PictureOutlined />}
-                  onClick={() => imageInputRef.current?.click()}
-                  title="上传图片"
-                />
-                {chatLoading ? (
-                  <Button
-                    type="primary"
-                    danger
-                    size="middle"
-                    block
-                    onClick={handleStopStreaming}
-                  >
-                    停止生成
-                  </Button>
-                ) : (
-                  <Button
-                    type="primary"
-                    size="middle"
-                    block
-                    onClick={() => void handleSendMessage()}
-                  >
-                    发送
-                  </Button>
-                )}
-                {chatMessages.length > 0 && (
-                  <Button
-                    size="middle"
-                    onClick={() => clearMessages()}
+            <div className="mnemox-chat-composer">
+              <div className="mnemox-input-shell">
+                <div className="mnemox-composer-row">
+                  <Tooltip title="上传图片">
+                    <Button
+                      size="middle"
+                      shape="circle"
+                      className="mnemox-tool-button"
+                      icon={<PictureOutlined />}
+                      onClick={() => imageInputRef.current?.click()}
+                      aria-label="上传图片"
+                    />
+                  </Tooltip>
+                  <TextArea
+                    className="mnemox-chat-input"
+                    placeholder="输入问题，或让 AI 基于当前资料生成计划..."
+                    autoSize={{ minRows: isChatEmpty ? 1 : 2, maxRows: 7 }}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onPaste={(e) => {
+                      const items = e.clipboardData?.items
+                      if (!items) return
+                      for (let i = 0; i < items.length; i++) {
+                        if (items[i].type.startsWith('image/')) {
+                          e.preventDefault()
+                          const file = items[i].getAsFile()
+                          if (file) handleImageSelect(file)
+                          return
+                        }
+                      }
+                    }}
+                    onPressEnter={(e) => {
+                      if (!e.shiftKey) {
+                        e.preventDefault()
+                        if (canSendMessage) {
+                          void handleSendMessage()
+                        }
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowUp' && !chatInput.trim()) {
+                        const last = getLastUserMessage()
+                        if (last) {
+                          e.preventDefault()
+                          setChatInput(last)
+                        }
+                      }
+                    }}
                     disabled={chatLoading}
-                  >
-                    清空
-                  </Button>
+                  />
+                </div>
+                {/* Image preview strip */}
+                {pendingImages.length > 0 && (
+                  <div className="mnemox-image-preview-strip">
+                    {pendingImages.map((img, idx) => (
+                      <div key={idx} style={{ position: 'relative', width: 64, height: 64 }}>
+                        <img
+                          src={`data:image/png;base64,${img}`}
+                          alt={`待发送图片 ${idx + 1}`}
+                          style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-light)' }}
+                        />
+                        <CloseCircleFilled
+                          onClick={() => setPendingImages(prev => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            position: 'absolute',
+                            top: -6,
+                            right: -6,
+                            fontSize: 18,
+                            color: '#ff4d4f',
+                            cursor: 'pointer',
+                            background: 'var(--bg-elevated)',
+                            borderRadius: '50%',
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 )}
-                {!chatLoading && chatMessages.length > 1 && (
-                  <Button
-                    size="middle"
-                    onClick={() => {
-                      const last = getLastUserMessage()
-                      if (last) void handleSendMessage(last)
-                    }}
-                  >
-                    重新生成
-                  </Button>
-                )}
-                {!chatLoading && chatMessages.length > 0 && (
-                  <Button
-                    size="middle"
-                    onClick={() => void handleSendMessage('请继续上一个回答，衔接上文继续输出。')}
-                  >
-                    继续生成
-                  </Button>
-                )}
-                {!autoScrollEnabled && (
-                  <Button
-                    size="middle"
-                    onClick={() => {
-                      setAutoScrollEnabled(true)
-                      chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
-                    }}
-                  >
-                    回到底部
-                  </Button>
-                )}
+                {/* Hidden file input for image upload */}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleImageSelect(file)
+                    e.target.value = ''
+                  }}
+                />
+                <div className="mnemox-input-actions">
+                  {!autoScrollEnabled && (
+                    <Button
+                      size="middle"
+                      onClick={() => {
+                        setAutoScrollEnabled(true)
+                        chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
+                      }}
+                    >
+                      回到底部
+                    </Button>
+                  )}
+                  <Select
+                    size="small"
+                    className="mnemox-model-select"
+                    showSearch
+                    value={selectedChatModel}
+                    onChange={setSelectedChatModel}
+                    options={chatModelOptions}
+                    optionFilterProp="label"
+                    popupMatchSelectWidth={false}
+                    aria-label="聊天模型"
+                  />
+                  {chatLoading ? (
+                    <Button
+                      type="primary"
+                      danger
+                      size="middle"
+                      className="mnemox-stop-button"
+                      onClick={handleStopStreaming}
+                    >
+                      停止生成
+                    </Button>
+                  ) : (
+                    <Button
+                      type="primary"
+                      size="middle"
+                      shape="circle"
+                      className="mnemox-send-button"
+                      icon={<SendOutlined />}
+                      disabled={!canSendMessage}
+                      loading={agentWriteLoading}
+                      onClick={() => void handleSendMessage()}
+                      aria-label="发送"
+                    />
+                  )}
+                </div>
               </div>
-              </div>
+              {isChatEmpty && (
+                <div className="mnemox-prompt-chips" aria-label="快捷提问">
+                  {['复习昨天', '生成今日计划', '出 5 道题', '费曼解释'].map((label) => (
+                    <button
+                      key={label}
+                      className="mnemox-prompt-chip"
+                      type="button"
+                      onClick={() => setChatInput(label)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </Content>
       </Layout>
 
+      <Tooltip title={rightCollapsed ? '展开右侧栏' : '收起右侧栏'} placement="left">
+        <Button
+          type="text"
+          shape="circle"
+          icon={rightCollapsed ? <DoubleLeftOutlined /> : <DoubleRightOutlined />}
+          className="mnemox-sidebar-toggle mnemox-sidebar-toggle-right"
+          onClick={() => setRightCollapsed((value) => !value)}
+          style={{ right: rightCollapsed ? 12 : effectiveRightWidth - 14 }}
+          aria-label={rightCollapsed ? '展开右侧栏' : '收起右侧栏'}
+        />
+      </Tooltip>
+
       {/* 右侧拖拽分割线 */}
-      <div
-        className={`panel-splitter${dragging === 'right' ? ' active' : ''}`}
-        style={{
-          position: 'fixed',
-          right: rightWidth - 3,
-          top: 0,
-          width: 6,
-          height: '100vh',
-          cursor: 'col-resize',
-          zIndex: 100,
-          background: 'transparent',
-        }}
-        onMouseDown={() => setDragging('right')}
-      />
+      {!rightCollapsed && (
+        <div
+          className={`panel-splitter${dragging === 'right' ? ' active' : ''}`}
+          style={{
+            position: 'fixed',
+            right: rightWidth - 3,
+            top: 0,
+            width: 6,
+            height: '100vh',
+            cursor: 'col-resize',
+            zIndex: 100,
+            background: 'transparent',
+          }}
+          onMouseDown={() => setDragging('right')}
+        />
+      )}
 
       {/* 右侧信息栏 */}
       <Sider
-        width={rightWidth}
+        className={`mnemox-right-sidebar${rightCollapsed ? ' is-collapsed' : ''}`}
+        width={effectiveRightWidth}
         style={{
-          background: 'var(--bg-secondary)',
-          borderLeft: '1px solid var(--border-light)',
           overflow: 'hidden',
           height: '100vh',
           position: 'fixed',
           right: 0,
+          transition: 'width var(--duration-normal) var(--ease-out)',
         }}
       >
-        <div style={{ height: '100%', overflowY: 'auto', padding: '16px' }}>
+        {!rightCollapsed && (
+        <div className="mnemox-right-sidebar-content" style={{ height: '100%', overflowY: 'auto', padding: '16px' }}>
         {/* 设置小组件按钮 */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-          <Dropdown
-            trigger={['click']}
-            menu={{
-              items: [
-                {
-                  key: 'sort',
-                  label: sortMode ? '完成排序' : '开启排序模式',
-                  icon: sortMode ? <CheckSquareOutlined /> : <MenuOutlined />,
-                  onClick: () => setSortMode(v => !v)
-                },
-                { type: 'divider' },
-                ...ALL_CARDS.map(card => ({
-                  key: card.id,
-                  label: (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-                      <span>{card.label}</span>
-                      <Switch 
-                        size="small" 
-                        checked={visibleCards.includes(card.id)} 
-                        onChange={(checked) => {
-                          setVisibleCards(prev => {
-                            const next = checked ? [...prev, card.id] : prev.filter(id => id !== card.id)
-                            localStorage.setItem('right_visible_cards', JSON.stringify(next))
-                            return next
-                          })
-                        }} 
-                      />
-                    </div>
-                  )
-                }))
-              ]
-            }}
+        <div style={{ position: 'relative', display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <Button
+            size="small"
+            type={sortMode || customizeOpen ? 'primary' : 'text'}
+            icon={<SettingOutlined />}
+            onClick={() => setCustomizeOpen(value => !value)}
           >
-            <Button size="small" type={sortMode ? 'primary' : 'text'} icon={<SettingOutlined />}>
-              {sortMode ? '完成排序' : '自定义'}
-            </Button>
-          </Dropdown>
+            {sortMode ? '完成排序' : '自定义'}
+          </Button>
+          {customizeOpen && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 34,
+                right: 0,
+                zIndex: 20,
+                width: 236,
+                padding: 8,
+                borderRadius: 12,
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-color)',
+                boxShadow: 'var(--shadow-lg)',
+              }}
+            >
+                <Button
+                  type="text"
+                  block
+                  icon={sortMode ? <CheckSquareOutlined /> : <MenuOutlined />}
+                  onClick={() => setSortMode(v => !v)}
+                  style={{ justifyContent: 'flex-start', marginBottom: 6 }}
+                >
+                  {sortMode ? '完成排序' : '开启排序模式'}
+                </Button>
+                <div style={{ height: 1, background: 'var(--border-light)', margin: '4px 0 6px' }} />
+                {ALL_CARDS.map(card => (
+                  <div
+                    key={card.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      minHeight: 34,
+                      padding: '4px 8px',
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{card.label}</span>
+                    <Switch
+                      size="small"
+                      checked={visibleCards.includes(card.id)}
+                      onChange={(checked) => updateCardVisibility(card.id, checked)}
+                    />
+                  </div>
+                ))}
+              </div>
+          )}
         </div>
         {/* 右侧卡片按 cardOrder 动态渲染 */}
         {cardOrder.filter(id => visibleCards.includes(id)).map(cardId => {
@@ -2540,7 +2787,7 @@ export function ObsidianLayout() {
 
           if (cardId === 'motivation') return (
             <div key="motivation" {...dragProps}>
-            {!focusMode && <Card
+            <Card
               size="small"
               title={
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2560,13 +2807,13 @@ export function ObsidianLayout() {
                 <div style={{ fontSize: 14, fontStyle: 'italic', color: 'var(--text-secondary)', lineHeight: 1.7 }}>{motivationQuote?.content || '加载中...'}</div>
                 {motivationQuote?.author && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>—— {motivationQuote.author}</div>}
               </div>
-            </Card>}
+            </Card>
             </div>
           )
 
           if (cardId === 'calendar') return (
             <div key="calendar" {...dragProps}>
-            {!focusMode && <Card
+            <Card
               size="small"
               title={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><CalendarOutlined style={{ color: 'var(--accent-600)' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>日历</span></div>}
               extra={<Button type="text" size="small" icon={calendarExpanded ? <UpOutlined /> : <DownOutlined />} onClick={() => setCalendarExpanded(!calendarExpanded)} />}
@@ -2577,7 +2824,7 @@ export function ObsidianLayout() {
               ) : (
                 <div style={{ textAlign: 'center', padding: '4px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>点击展开查看完整日历</div>
               )}
-            </Card>}
+            </Card>
             </div>
           )
 
@@ -2671,7 +2918,7 @@ export function ObsidianLayout() {
 
             {(currentTask || pomodoroConfig.taskName) && (
               <div style={{ marginBottom: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>
-                {currentTask || pomodoroConfig.taskName}
+                {timerMode === 'break' ? `休息中（${duration} 分钟）` : (currentTask || pomodoroConfig.taskName)}
               </div>
             )}
 
@@ -2681,7 +2928,7 @@ export function ObsidianLayout() {
                 fontWeight: 'bold',
                 fontFamily: "'JetBrains Mono', monospace",
                 margin: '8px 0',
-                color: isRunning ? 'var(--error)' : 'var(--text-primary)',
+                color: isRunning ? (timerMode === 'break' ? 'var(--teal-500)' : 'var(--error)') : 'var(--text-primary)',
                 letterSpacing: '2px',
               }}
             >
@@ -2690,10 +2937,10 @@ export function ObsidianLayout() {
 
             <Progress
               percent={Math.round(
-                (1 - remainingTime / (duration * 60)) * 100
+                (1 - remainingTime / Math.max(1, duration * 60)) * 100
               )}
               showInfo={false}
-              strokeColor={isRunning ? 'var(--error)' : 'var(--success)'}
+              strokeColor={isRunning ? (timerMode === 'break' ? 'var(--teal-500)' : 'var(--error)') : 'var(--success)'}
             />
 
             <div
@@ -2714,9 +2961,15 @@ export function ObsidianLayout() {
                   <Button icon={<PauseCircleOutlined />} onClick={pauseTimer}>
                     暂停
                   </Button>
-                  <Button danger onClick={handleAbandonPomodoro}>
-                    放弃
-                  </Button>
+                  {timerMode === 'break' ? (
+                    <Button onClick={() => resetTimer()}>
+                      结束休息
+                    </Button>
+                  ) : (
+                    <Button danger onClick={handleAbandonPomodoro}>
+                      放弃
+                    </Button>
+                  )}
                 </>
               )}
 
@@ -2729,12 +2982,20 @@ export function ObsidianLayout() {
                   >
                     继续
                   </Button>
-                  <Button icon={<CheckCircleOutlined />} onClick={handleCompletePomodoro}>
-                    完成
-                  </Button>
-                  <Button danger onClick={handleAbandonPomodoro}>
-                    放弃
-                  </Button>
+                  {timerMode === 'break' ? (
+                    <Button onClick={() => resetTimer()}>
+                      结束休息
+                    </Button>
+                  ) : (
+                    <>
+                      <Button icon={<CheckCircleOutlined />} onClick={handleCompletePomodoro}>
+                        完成
+                      </Button>
+                      <Button danger onClick={handleAbandonPomodoro}>
+                        放弃
+                      </Button>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -2746,6 +3007,7 @@ export function ObsidianLayout() {
           return null
         })}
         </div>
+        )}
       </Sider>
 
       {/* 番茄钟设置弹窗 */}
@@ -2753,6 +3015,7 @@ export function ObsidianLayout() {
         title="番茄钟设置"
         open={showPomodoroModal}
         onOk={() => {
+          setBreakDuration(pomodoroConfig.breakDuration)
           resetTimer(pomodoroConfig.duration)
           setShowPomodoroModal(false)
           message.success('设置成功')
@@ -2770,7 +3033,7 @@ export function ObsidianLayout() {
             style={{ marginTop: 8 }}
           />
         </div>
-        <div>
+        <div style={{ marginBottom: 16 }}>
           <label>番茄时长（分钟）</label>
           <InputNumber
             min={1}
@@ -2790,6 +3053,26 @@ export function ObsidianLayout() {
             style={{ marginTop: 8, width: '100%' }}
           />
         </div>
+        <div>
+          <label>休息时长（分钟）</label>
+          <InputNumber
+            min={1}
+            max={60}
+            value={pomodoroConfig.breakDuration}
+            onChange={(value) => {
+              if (value !== null && value >= 1) {
+                setPomodoroConfig({ ...pomodoroConfig, breakDuration: value })
+              }
+            }}
+            onBlur={(e) => {
+              const parsed = parseInt(e.target.value, 10)
+              const valid = !isNaN(parsed) && parsed >= 1 ? Math.min(parsed, 60) : pomodoroConfig.breakDuration
+              setPomodoroConfig({ ...pomodoroConfig, breakDuration: valid })
+            }}
+            keyboard
+            style={{ marginTop: 8, width: '100%' }}
+          />
+        </div>
       </Modal>
 
       {/* 番茄钟中断原因选择弹窗 */}
@@ -2798,7 +3081,7 @@ export function ObsidianLayout() {
         open={showStopReasonModal}
         footer={null}
         onCancel={() => setShowStopReasonModal(false)}
-        width={360}
+        width={420}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '8px 0' }}>
           <Button
@@ -2806,30 +3089,30 @@ export function ObsidianLayout() {
             size="large"
             type={selectedStopReason === 'early_done' ? 'primary' : 'default'}
             onClick={() => setSelectedStopReason('early_done')}
-            style={{ textAlign: 'left', height: 'auto', padding: '12px 16px' }}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center', textAlign: 'left', height: 'auto', minHeight: 68, padding: '12px 16px', whiteSpace: 'normal' }}
           >
-            <div style={{ fontWeight: 600 }}>✅ 提前完成了任务</div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400 }}>任务做完了，状态不错</div>
+            <div style={{ width: '100%', fontWeight: 600, lineHeight: 1.35 }}>✅ 提前完成了任务</div>
+            <div style={{ width: '100%', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400, lineHeight: 1.45 }}>任务做完了，状态不错</div>
           </Button>
           <Button
             block
             size="large"
             type={selectedStopReason === 'interrupted' ? 'primary' : 'default'}
             onClick={() => setSelectedStopReason('interrupted')}
-            style={{ textAlign: 'left', height: 'auto', padding: '12px 16px' }}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center', textAlign: 'left', height: 'auto', minHeight: 68, padding: '12px 16px', whiteSpace: 'normal' }}
           >
-            <div style={{ fontWeight: 600 }}>📱 临时有事，被打断了</div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400 }}>外部原因，不影响学习评估</div>
+            <div style={{ width: '100%', fontWeight: 600, lineHeight: 1.35 }}>📱 临时有事，被打断了</div>
+            <div style={{ width: '100%', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400, lineHeight: 1.45 }}>外部原因，不影响学习评估</div>
           </Button>
           <Button
             block
             size="large"
             type={selectedStopReason === 'distracted' ? 'primary' : 'default'}
             onClick={() => setSelectedStopReason('distracted')}
-            style={{ textAlign: 'left', height: 'auto', padding: '12px 16px' }}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'center', textAlign: 'left', height: 'auto', minHeight: 68, padding: '12px 16px', whiteSpace: 'normal' }}
           >
-            <div style={{ fontWeight: 600 }}>😔 状态不好，没学进去</div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400 }}>走神了，AI 会帮你分析改善</div>
+            <div style={{ width: '100%', fontWeight: 600, lineHeight: 1.35 }}>😔 状态不好，没学进去</div>
+            <div style={{ width: '100%', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 400, lineHeight: 1.45 }}>走神了，AI 会帮你分析改善</div>
           </Button>
           <Button
             block
@@ -2851,44 +3134,122 @@ export function ObsidianLayout() {
         onCancel={() => { setShowPlanModal(false) }}
         width={600}
       >
-        <MarkdownLiveEditor
-          ref={planEditorRef}
-          value={currentPlan}
-          onChange={setCurrentPlan}
-          height="420px"
-          placeholder={`输入今日计划或学习记录...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题\n- [ ] 整理笔记`}
-        />
+        {showPlanModal && (
+          <Suspense fallback={<Spin />}>
+            <MarkdownLiveEditor
+              ref={planEditorRef}
+              value={currentPlan}
+              onChange={setCurrentPlan}
+              height="420px"
+              placeholder={`输入今日计划或学习记录...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题\n- [ ] 整理笔记`}
+            />
+          </Suspense>
+        )}
       </Modal>
 
       {/* 今日激励管理弹窗 */}
-      <MotivationModal
-        open={showMotivationModal}
-        onClose={() => setShowMotivationModal(false)}
-        allQuotes={allQuotes}
-        motivationSettings={motivationSettings}
-        setMotivationSettings={setMotivationSettings}
-        savingMotivationSettings={savingMotivationSettings}
-        newQuoteContent={newQuoteContent}
-        setNewQuoteContent={setNewQuoteContent}
-        newQuoteAuthor={newQuoteAuthor}
-        setNewQuoteAuthor={setNewQuoteAuthor}
-        onSaveSettings={handleSaveMotivationSettings}
-        onAddQuote={handleAddCustomQuote}
-        onDeleteQuote={handleDeleteQuote}
-        onPinQuote={handlePinCurrentQuote}
-      />
+      {showMotivationModal && (
+        <Suspense fallback={null}>
+          <MotivationModal
+            open={showMotivationModal}
+            onClose={() => setShowMotivationModal(false)}
+            allQuotes={allQuotes}
+            motivationSettings={motivationSettings}
+            setMotivationSettings={setMotivationSettings}
+            savingMotivationSettings={savingMotivationSettings}
+            newQuoteContent={newQuoteContent}
+            setNewQuoteContent={setNewQuoteContent}
+            newQuoteAuthor={newQuoteAuthor}
+            setNewQuoteAuthor={setNewQuoteAuthor}
+            onSaveSettings={handleSaveMotivationSettings}
+            onAddQuote={handleAddCustomQuote}
+            onDeleteQuote={handleDeleteQuote}
+            onPinQuote={handlePinCurrentQuote}
+          />
+        </Suspense>
+      )}
 
       {/* 番茄钟统计弹窗 - 增强版 */}
-      <StatsModal
-        open={showStatsModal}
-        onClose={() => setShowStatsModal(false)}
-        stats={stats}
-        statsRange={statsRange}
-        setStatsRange={setStatsRange}
-        getCumulativeStats={getCumulativeStats}
-        getTaskDistribution={getTaskDistribution}
-        weekChartOption={weekChartOption}
-      />
+      {showStatsModal && (
+        <Suspense fallback={null}>
+          <StatsModal
+            open={showStatsModal}
+            onClose={() => setShowStatsModal(false)}
+            stats={stats}
+            statsRange={statsRange}
+            setStatsRange={setStatsRange}
+            getCumulativeStats={getCumulativeStats}
+            getTaskDistribution={getTaskDistribution}
+            weekChartOption={weekChartOption}
+          />
+        </Suspense>
+      )}
+
+      <Modal
+        title="引用到笔记"
+        open={!!quoteNoteDraft}
+        width={720}
+        okText="保存到笔记"
+        cancelText="取消"
+        confirmLoading={!!quoteNoteDraft?.saving}
+        onOk={() => void saveQuoteNoteDraft()}
+        onCancel={() => {
+          if (!quoteNoteDraft?.saving) {
+            setQuoteNoteDraft(null)
+          }
+        }}
+        destroyOnHidden
+      >
+        {quoteNoteDraft && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div>
+              <div style={{ marginBottom: 6, fontSize: 12, color: 'var(--text-secondary)' }}>标题</div>
+              <Input
+                value={quoteNoteDraft.title}
+                onChange={(e) =>
+                  setQuoteNoteDraft((prev) =>
+                    prev ? { ...prev, title: e.target.value, titleEdited: true } : prev
+                  )
+                }
+                placeholder="给这条摘录起一个标题"
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontSize: 12, color: 'var(--text-secondary)' }}>标签</div>
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                tokenSeparators={[',', '，', ' ']}
+                value={quoteNoteDraft.tags}
+                onChange={(tags) =>
+                  setQuoteNoteDraft((prev) =>
+                    prev ? { ...prev, tags, tagsEdited: true } : prev
+                  )
+                }
+                placeholder="可选：添加标签"
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontSize: 12, color: 'var(--text-secondary)' }}>内容</div>
+              <TextArea
+                value={quoteNoteDraft.content}
+                onChange={(e) =>
+                  setQuoteNoteDraft((prev) =>
+                    prev ? { ...prev, content: e.target.value } : prev
+                  )
+                }
+                rows={12}
+                placeholder="确认无误后再保存到笔记"
+              />
+            </div>
+            {quoteNoteDraft.metadataLoading && (
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                正在后台建议标题和标签，不影响你先编辑内容。
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* 资料预览抽屉 */}
       <Drawer
@@ -2982,7 +3343,15 @@ export function ObsidianLayout() {
                       borderRadius: 'var(--radius-md)',
                     }}
                   >
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      skipHtml
+                      components={{
+                        a(props) {
+                          return <a {...props} target="_blank" rel="noreferrer noopener" />
+                        },
+                      }}
+                    >
                       {previewContent || '暂无预览内容'}
                     </ReactMarkdown>
                   </div>
@@ -3075,7 +3444,7 @@ export function ObsidianLayout() {
               >
                 <p><UploadOutlined style={{ fontSize: 22, color: 'var(--text-secondary)' }} /></p>
                 <p style={{ fontSize: 13, color: 'var(--text-primary)', margin: '6px 0 2px' }}>上传到当前项目</p>
-                <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
+                <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown</p>
               </Upload.Dragger>
             </div>
             <List
@@ -3145,6 +3514,199 @@ export function ObsidianLayout() {
         )}
       </Drawer>
 
+      <Modal
+        title={agentWriteDraft?.intent === 'create_note' ? '确认创建笔记' : agentWriteDraft?.intent === 'add_daily_plan_items' ? '确认加入当天计划' : '确认创建目标与任务'}
+        open={!!agentWriteDraft}
+        onCancel={() => {
+          setAgentWriteDraft(null)
+          setAgentWriteSourceText('')
+        }}
+        onOk={() => void confirmAgentWrite()}
+        confirmLoading={agentWriteExecuting}
+        okText="确认写入"
+        cancelText="取消"
+        width={680}
+      >
+        {agentWriteDraft && (
+          <div>
+            <div style={{ marginBottom: 12, color: 'var(--text-secondary)' }}>
+              {agentWriteDraft.summary || 'Agent 已生成写入草案，请确认。'}
+            </div>
+            {(agentWriteDraft.duplicate_warnings || []).length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <Space wrap>
+                  {agentWriteDraft.duplicate_warnings?.map((item) => (
+                    <Tag key={item} color={item.includes('跳过') ? 'orange' : 'blue'}>{item}</Tag>
+                  ))}
+                </Space>
+              </div>
+            )}
+            {agentWriteDraft.intent === 'create_note' ? (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <div>
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>标题</div>
+                  <Input
+                    value={agentWriteDraft.draft.title || ''}
+                    placeholder="对话笔记"
+                    onChange={event => updateAgentWriteDraft({ title: event.target.value })}
+                  />
+                </div>
+                <Space wrap>
+                  <span style={{ fontWeight: 600 }}>类型</span>
+                  <Select
+                    size="small"
+                    value={agentWriteDraft.draft.note_type || 'general'}
+                    style={{ width: 120 }}
+                    onChange={value => updateAgentWriteDraft({ note_type: value })}
+                    options={[
+                      { value: 'general', label: '普通' },
+                      { value: 'idea', label: '灵感' },
+                      { value: 'method', label: '方法' },
+                      { value: 'summary', label: '总结' },
+                      { value: 'question', label: '问题' },
+                      { value: 'resource', label: '资料' },
+                    ]}
+                  />
+                  <span style={{ fontWeight: 600 }}>标签</span>
+                  <Select
+                    mode="tags"
+                    size="small"
+                    value={(agentWriteDraft.draft.tags || []) as string[]}
+                    style={{ minWidth: 260, flex: 1 }}
+                    maxTagCount="responsive"
+                    tokenSeparators={[',', '，', ' ']}
+                    onChange={tags => updateAgentWriteDraft({ tags: tags.slice(0, 6) })}
+                    placeholder="输入标签后回车"
+                  />
+                </Space>
+                <div>
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>内容</div>
+                  <TextArea
+                    value={agentWriteDraft.draft.content || ''}
+                    autoSize={{ minRows: 5, maxRows: 10 }}
+                    onChange={event => updateAgentWriteDraft({ content: event.target.value })}
+                  />
+                </div>
+              </Space>
+            ) : agentWriteDraft.intent === 'add_daily_plan_items' ? (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space wrap>
+                  <strong>日期</strong>
+                  <DatePicker
+                    size="small"
+                    value={agentWriteDraft.draft.date ? dayjs(agentWriteDraft.draft.date) : undefined}
+                    onChange={value => updateAgentWriteDraft({ date: value ? value.format('YYYY-MM-DD') : undefined })}
+                  />
+                  {agentWriteDraft.draft.existing_plan_id && <Tag color="blue">追加到已有计划</Tag>}
+                </Space>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={(agentWriteDraft.draft.items || []) as AgentWriteTaskDraftItem[]}
+                  locale={{ emptyText: '暂无计划项' }}
+                  renderItem={(item, index) => (
+                    <List.Item actions={[<Button key="remove" size="small" type="link" danger onClick={() => removeAgentWriteListItem('items', index)}>删除</Button>]}>
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        <Input
+                          size="small"
+                          value={item.title || ''}
+                          placeholder="计划项标题"
+                          status={item.duplicate ? 'warning' : undefined}
+                          onChange={event => updateAgentWriteListItem('items', index, { title: event.target.value })}
+                        />
+                        <Space wrap>
+                          <Select
+                            size="small"
+                            value={item.task_type || 'learn'}
+                            style={{ width: 110 }}
+                            onChange={value => updateAgentWriteListItem('items', index, { task_type: value })}
+                            options={[
+                              { value: 'learn', label: '学习' },
+                              { value: 'review', label: '复习' },
+                              { value: 'practice', label: '练习' },
+                              { value: 'summarize', label: '总结' },
+                            ]}
+                          />
+                          <DatePicker
+                            size="small"
+                            value={item.planned_date ? dayjs(item.planned_date) : agentWriteDraft.draft.date ? dayjs(agentWriteDraft.draft.date) : undefined}
+                            onChange={value => updateAgentWriteListItem('items', index, { planned_date: value ? value.format('YYYY-MM-DD') : undefined })}
+                          />
+                          {item.duplicate && <Tag color="orange">疑似重复，编辑后可继续写入</Tag>}
+                        </Space>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </Space>
+            ) : (
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <div>
+                  <div style={{ marginBottom: 4, fontWeight: 600 }}>目标</div>
+                  <Input
+                    value={agentWriteDraft.draft.goal_title || ''}
+                    placeholder="学习目标"
+                    onChange={event => updateAgentWriteDraft({ goal_title: event.target.value })}
+                  />
+                  {agentWriteDraft.draft.existing_goal_id && <Tag color="blue" style={{ marginTop: 6 }}>复用已有目标</Tag>}
+                </div>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={(agentWriteDraft.draft.tasks || []) as AgentWriteTaskDraftItem[]}
+                  locale={{ emptyText: '暂无任务' }}
+                  renderItem={(item, index) => (
+                    <List.Item actions={[<Button key="remove" size="small" type="link" danger onClick={() => removeAgentWriteListItem('tasks', index)}>删除</Button>]}>
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        <Input
+                          size="small"
+                          value={item.title || ''}
+                          placeholder="任务标题"
+                          status={item.duplicate ? 'warning' : undefined}
+                          onChange={event => updateAgentWriteListItem('tasks', index, { title: event.target.value })}
+                        />
+                        <Space wrap>
+                          <Select
+                            size="small"
+                            value={item.task_type || 'learn'}
+                            style={{ width: 110 }}
+                            onChange={value => updateAgentWriteListItem('tasks', index, { task_type: value })}
+                            options={[
+                              { value: 'learn', label: '学习' },
+                              { value: 'review', label: '复习' },
+                              { value: 'practice', label: '练习' },
+                              { value: 'summarize', label: '总结' },
+                            ]}
+                          />
+                          <DatePicker
+                            size="small"
+                            value={item.planned_date ? dayjs(item.planned_date) : undefined}
+                            onChange={value => updateAgentWriteListItem('tasks', index, { planned_date: value ? value.format('YYYY-MM-DD') : undefined })}
+                          />
+                          {item.duplicate && <Tag color="orange">疑似重复，编辑后可继续写入</Tag>}
+                        </Space>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </Space>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <OnboardingModal
+        open={showOnboarding}
+        status={onboardingStatus}
+        seedLoading={demoSeedLoading}
+        onClose={closeOnboarding}
+        onSeedDemo={handleSeedDemo}
+        onNavigate={(path) => {
+          setShowOnboarding(false)
+          navigate(path)
+        }}
+        onOpenMaterials={openOnboardingMaterials}
+      />
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
       <ProjectSettingsModal
         open={projectSettingsOpen}

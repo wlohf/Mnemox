@@ -12,6 +12,7 @@ import { wrongQuestionsSyncAdapter } from './sync/adapters/wrongQuestionsSyncAda
 import { useThemeStore } from './stores/themeStore'
 import { useAuthStore } from './stores/authStore'
 import { checkSystemUpdate } from './services/systemApi'
+import { getToken } from './services/apiClient'
 
 const ObsidianLayout = lazy(() => import('./components/Layout/ObsidianLayout').then(m => ({ default: m.ObsidianLayout })))
 const PomodoroPage = lazy(() => import('./pages/PomodoroPage').then(m => ({ default: m.PomodoroPage })))
@@ -27,10 +28,9 @@ const UserProfilePage = lazy(() => import('./pages/UserProfilePage').then(m => (
 const PromptsPage = lazy(() => import('./pages/PromptsPage').then(m => ({ default: m.PromptsPage })))
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
 const EDAReportPage = lazy(() => import('./pages/EDAReportPage').then(m => ({ default: m.EDAReportPage })))
-const InterventionPage = lazy(() => import('./pages/InterventionPage').then(m => ({ default: m.InterventionPage })))
+const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
 const AnkiPage = lazy(() => import('./pages/AnkiPage').then(m => ({ default: m.AnkiPage })))
 const PlansPage = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })))
-const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
 
 const PageSpinner = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -59,7 +59,7 @@ function notifyUpdateIfPossible(latestVersion: string) {
     return
   }
   if (Notification.permission === 'granted') {
-    const notice = new Notification('Study Assistant 发现新版本', {
+    const notice = new Notification('Mnemox 发现新版本', {
       body: `v${latestVersion} 已发布，可在系统设置中更新。`,
     })
     notice.onclick = () => {
@@ -74,22 +74,19 @@ function App() {
   const autoCheckTimer = useRef<number | null>(null)
 
   useEffect(() => {
-    // Register all sync adapters once. Start sync only after login to avoid
-    // unauthenticated requests racing against auth bootstrap.
     syncEngine.registerAdapter(notesSyncAdapter)
     syncEngine.registerAdapter(goalsSyncAdapter)
     syncEngine.registerAdapter(goalTasksSyncAdapter)
     syncEngine.registerAdapter(ankiCardsSyncAdapter)
     syncEngine.registerAdapter(wrongQuestionsSyncAdapter)
-    return () => syncEngine.stop()
   }, [])
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (isAuthenticated && getToken()) {
+      syncEngine.start(true)
+    } else {
       syncEngine.stop()
-      return
     }
-    syncEngine.start()
     return () => syncEngine.stop()
   }, [isAuthenticated])
 
@@ -105,8 +102,8 @@ function App() {
     let destroyed = false
 
     const runUpdateCheck = async () => {
-      const result = await checkSystemUpdate()
-      if (destroyed || !result) {
+      const result = await checkSystemUpdate().catch(() => null)
+      if (destroyed || result === null) {
         return
       }
 
@@ -178,47 +175,47 @@ function App() {
       theme={{
         algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: isDark ? {
-          colorPrimary: '#6366f1', // Indigo 500
-          colorBgContainer: '#111827', // var(--bg-surface)
-          colorBgLayout: '#0a0e1a', // var(--bg-base)
-          colorBgElevated: '#1a2235', // var(--bg-elevated)
-          colorBorder: 'rgba(255, 255, 255, 0.08)',
-          colorBorderSecondary: 'rgba(255, 255, 255, 0.04)',
-          colorText: '#f1f5f9', // var(--text-primary)
-          colorTextSecondary: '#94a3b8', // var(--text-secondary)
-          colorTextTertiary: '#64748b', // var(--text-tertiary)
+          colorPrimary: '#5d9c8e',
+          colorBgContainer: '#111922',
+          colorBgLayout: '#0b1117',
+          colorBgElevated: '#17232d',
+          colorBorder: 'rgba(196, 222, 216, 0.12)',
+          colorBorderSecondary: 'rgba(196, 222, 216, 0.07)',
+          colorText: '#eef4f1',
+          colorTextSecondary: '#a8b9b4',
+          colorTextTertiary: '#718781',
           borderRadius: 12,
-          colorLink: '#818cf8', // Indigo 400
-          colorSuccess: '#2dd4bf', // Teal 400
-          colorError: '#fb7185', // Rose 400
-          colorWarning: '#fbbf24', // Amber 400
-          colorInfo: '#818cf8', // Indigo 400
-          fontFamily: "'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+          colorLink: '#7bb7a8',
+          colorSuccess: '#72c9ba',
+          colorError: '#d9838d',
+          colorWarning: '#d9b56a',
+          colorInfo: '#7bb7a8',
+          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
         } : {
-          colorPrimary: '#6366f1', // Indigo 500 (still use Indigo as primary)
-          colorBgContainer: '#ffffff',
-          colorBgLayout: '#f8fafc',
-          colorBgElevated: '#ffffff',
-          colorBorder: '#e2e8f0',
-          colorBorderSecondary: '#f1f5f9',
-          colorText: '#0f172a',
-          colorTextSecondary: '#475569',
-          colorTextTertiary: '#94a3b8',
+          colorPrimary: '#3f4a43',
+          colorBgContainer: '#fffaf2',
+          colorBgLayout: '#f4efe5',
+          colorBgElevated: '#fffdf8',
+          colorBorder: '#ddd3c2',
+          colorBorderSecondary: '#eadfce',
+          colorText: '#282721',
+          colorTextSecondary: '#6d685d',
+          colorTextTertiary: '#9a9284',
           borderRadius: 12,
-          colorLink: '#6366f1',
-          colorSuccess: '#0d9488',
-          colorError: '#e11d48',
-          colorWarning: '#d97706',
-          colorInfo: '#6366f1',
-          fontFamily: "'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+          colorLink: '#3f4a43',
+          colorSuccess: '#3f7d68',
+          colorError: '#b85f68',
+          colorWarning: '#a87332',
+          colorInfo: '#637267',
+          fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
         },
         components: {
           Card: {
-            colorBgContainer: isDark ? '#111827' : '#ffffff',
+            colorBgContainer: isDark ? '#111922' : '#fffaf2',
           },
           Layout: {
-            siderBg: isDark ? '#111827' : '#ffffff',
-            headerBg: isDark ? '#111827' : '#ffffff',
+            siderBg: isDark ? '#111922' : '#fffaf2',
+            headerBg: isDark ? '#111922' : '#fffaf2',
           }
         }
       }}
@@ -240,10 +237,10 @@ function App() {
             <Route path="/profile" element={<ProtectedRoute><UserProfilePage /></ProtectedRoute>} />
             <Route path="/prompts" element={<ProtectedRoute><PromptsPage /></ProtectedRoute>} />
             <Route path="/eda" element={<ProtectedRoute><EDAReportPage /></ProtectedRoute>} />
-            <Route path="/intervention" element={<ProtectedRoute><InterventionPage /></ProtectedRoute>} />
+            <Route path="/intervention" element={<ProtectedRoute><Navigate to="/eda?tab=intervention" replace /></ProtectedRoute>} />
+            <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
             <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
             <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
-            <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Suspense>

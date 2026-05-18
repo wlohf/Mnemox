@@ -1,5 +1,6 @@
 """FastAPI 应用入口"""
 import logging
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +11,9 @@ logger = logging.getLogger(__name__)
 
 from app.config import settings
 from app.database import init_db, close_db
-from app.utils.paths import get_uploads_dir, ensure_data_dirs
+from app.middleware.security import RateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
+from app.frontend_static import register_frontend_static
+from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
 
 
 @asynccontextmanager
@@ -58,20 +61,37 @@ async def lifespan(app: FastAPI):
                             total = count_result.scalar() or 0
                             if total == 0:
                                 return
-                            logger.info("后台索引：正在索引 %d 份已有资料...", total)
+                            logger.info("RAG 后台索引开始：发现 %d 份已有资料需要索引", total)
                             result = await session.execute(
                                 select(Material).where(Material.content.is_not(None))
                             )
+                            indexed = 0
+                            failed = 0
                             for mat in result.scalars().all():
-                                await rag.index_material(
-                                    material_id=mat.id,
-                                    title=mat.title,
-                                    content=mat.content,
-                                    file_type=mat.file_type,
-                                )
-                            logger.info("后台索引完成，共索引 %d 份资料", total)
+                                try:
+                                    await rag.index_material(
+                                        material_id=mat.id,
+                                        title=mat.title,
+                                        content=mat.content,
+                                        file_type=mat.file_type,
+                                        user_id=getattr(mat, "user_id", None),
+                                    )
+                                    indexed += 1
+                                except Exception as item_error:
+                                    failed += 1
+                                    logger.warning(
+                                        "RAG 后台索引跳过资料 id=%s title=%r：%s",
+                                        mat.id,
+                                        mat.title,
+                                        item_error,
+                                        exc_info=settings.DEBUG,
+                                    )
+                            if failed:
+                                logger.warning("RAG 后台索引完成：成功 %d 份，失败 %d 份", indexed, failed)
+                            else:
+                                logger.info("RAG 后台索引完成：成功索引 %d 份资料", indexed)
                     except Exception as e:
-                        logger.warning("后台索引失败: %s", e)
+                        logger.warning("RAG 后台索引任务异常（不影响主流程）: %s", e, exc_info=settings.DEBUG)
 
                 asyncio.create_task(_bg_index())
         except Exception as e:
@@ -85,8 +105,8 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="学习助手 API",
-    description="基于认知科学学习方法的智能学习助手系统",
+    title="Mnemox API",
+    description="AI 驱动的个性化学习教练 API",
     version=settings.APP_VERSION,
     lifespan=lifespan
 )
@@ -99,6 +119,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Pydantic 422 验证错误 → 用户友好的中文提示
@@ -133,7 +156,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def root():
     """根路径"""
     return {
-        "message": "学习助手 API",
+        "message": "Mnemox API",
         "version": settings.APP_VERSION,
         "docs": "/docs"
     }
@@ -169,23 +192,19 @@ app.include_router(images.router, prefix="/api/images", tags=["图片上传"])
 app.include_router(obsidian_import.router, prefix="/api/obsidian", tags=["Obsidian 导入"])
 app.include_router(motivation.router, prefix="/api/motivation", tags=["今日激励"])
 app.include_router(interventions.router, prefix="/api/interventions", tags=["主动干预"])
+app.include_router(agent.router, prefix="/api/agent", tags=["自主学习 Agent"])
 app.include_router(profile.router, prefix="/api/profile", tags=["用户画像"])
 app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt 模板"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
-app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
+
+ensure_data_dirs()
 
 
 @app.get("/api/uploads/{file_path:path}")
 async def get_uploaded_file(file_path: str, request: Request):
-    """Serve uploaded files only to authenticated users.
-
-    The old StaticFiles mount exposed every file under data/uploads publicly.
-    This route keeps existing /api/uploads/... URLs but requires a bearer token
-    from the Authorization header or a ?token=... query parameter for contexts
-    such as markdown image rendering.
-    """
+    """Serve uploaded files only to authenticated users."""
     from urllib.parse import unquote
 
     from fastapi import HTTPException, status
@@ -221,6 +240,20 @@ async def get_uploaded_file(file_path: str, request: Request):
         raise HTTPException(status_code=404, detail="文件不存在")
 
     return FileResponse(target)
+
+
+def _resolve_frontend_dist_dir():
+    configured = (settings.FRONTEND_DIST_DIR or "").strip()
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_absolute():
+            return configured_path.resolve()
+        return (get_project_root() / configured_path).resolve()
+    return (get_project_root() / "frontend" / "dist").resolve()
+
+
+if settings.SERVE_FRONTEND:
+    register_frontend_static(app, _resolve_frontend_dist_dir())
 
 
 if __name__ == "__main__":

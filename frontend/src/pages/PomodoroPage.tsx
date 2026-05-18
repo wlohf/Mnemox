@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Statistic, Segmented, Button, Modal, Input, message } from 'antd'
+import { Card, Row, Col, Statistic, Segmented, Button, Modal, Input, InputNumber, message } from 'antd'
 import { PlayCircleFilled, PauseCircleFilled, StopFilled } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { usePomodoroStore, type DateRange } from '../stores/pomodoroStore'
@@ -10,8 +10,8 @@ export function PomodoroPage() {
   const navigate = useNavigate()
   const { 
     getStats, getCumulativeStats, getTaskDistribution,
-    isRunning, isPaused, currentTask, duration, remainingTime,
-    startTimer, pauseTimer, resumeTimer, completeTimer, tick 
+    isRunning, isPaused, duration, remainingTime, timerMode, breakDuration,
+    startTimer, startBreakTimer, setBreakDuration, pauseTimer, resumeTimer, completeTimer, resetTimer, tick
   } = usePomodoroStore()
   
   const [range, setRange] = useState<DateRange>('week')
@@ -44,19 +44,24 @@ export function PomodoroPage() {
   }
 
   const handleStop = () => {
+    if (timerMode === 'break') {
+      resetTimer()
+      message.success('休息已结束')
+      return
+    }
     setStopReasonModalVisible(true)
   }
 
   const confirmStop = () => {
     // We treat stopping early as completion of elapsed time
-    completeTimer()
+    completeTimer(undefined, { startBreak: false })
     message.success('番茄钟已停止')
     setStopReasonModalVisible(false)
     setStopReason('')
   }
 
   const handleTakeBreak = () => {
-    startTimer('休息', 5)
+    startBreakTimer(breakDuration)
     message.success('开始休息')
   }
 
@@ -136,7 +141,7 @@ export function PomodoroPage() {
   const circumference = 2 * Math.PI * radius
   const strokeDashoffset = circumference - progress * circumference
 
-  const isBreak = currentTask === '休息'
+  const isBreak = timerMode === 'break'
   const primaryColor = isBreak ? 'var(--teal-400)' : 'var(--brand-500)'
   const glowColor = isBreak ? 'rgba(45, 212, 191, 0.4)' : 'rgba(99, 102, 241, 0.4)'
   const containerBg = isRunning && !isPaused ? (isBreak ? 'rgba(45, 212, 191, 0.05)' : 'rgba(99, 102, 241, 0.05)') : 'var(--bg-surface)'
@@ -199,8 +204,22 @@ export function PomodoroPage() {
                 开始专注
               </Button>
               <Button size="large" shape="round" onClick={handleTakeBreak} style={{ height: 52, padding: '0 32px' }}>
-                休息一下 (5m)
+                休息一下 ({breakDuration}m)
               </Button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)', fontSize: 13 }}>
+                <span>休息时长</span>
+                <InputNumber
+                  min={1}
+                  max={60}
+                  size="small"
+                  value={breakDuration}
+                  onChange={(value) => {
+                    if (value !== null && value >= 1) setBreakDuration(value)
+                  }}
+                  style={{ width: 76 }}
+                />
+                <span>分钟</span>
+              </div>
             </>
           ) : (
             <>

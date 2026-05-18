@@ -49,6 +49,9 @@ class RAGService:
         self._current_api_key: str = ""
         self._current_base_url: str = ""
         self._current_model: str = ""
+        self._last_error: str = ""
+        self._last_retrieval_status: Dict[str, Any] = {"ok": True, "mode": "not_run", "message": "尚未检索"}
+        self._last_retrieval_status_by_user: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # 解析配置（JSON 文件 > config.py 默认值）
@@ -64,6 +67,7 @@ class RAGService:
         chunk_overlap = file_cfg.get("chunk_overlap") or settings.RAG_CHUNK_OVERLAP
         top_k = file_cfg.get("top_k") or settings.RAG_TOP_K
         similarity_threshold = file_cfg.get("similarity_threshold") or settings.RAG_SIMILARITY_THRESHOLD
+        embedding_enabled = bool(api_key)
         return {
             "api_key": api_key,
             "base_url": base_url,
@@ -72,7 +76,19 @@ class RAGService:
             "chunk_overlap": int(chunk_overlap),
             "top_k": int(top_k),
             "similarity_threshold": float(similarity_threshold),
+            "embedding_enabled": embedding_enabled,
         }
+
+    def _set_retrieval_status(self, status: Dict[str, Any], user_id: Optional[int] = None) -> None:
+        safe_status = dict(status)
+        self._last_retrieval_status = safe_status
+        if user_id is not None:
+            self._last_retrieval_status_by_user[str(user_id)] = safe_status
+
+    def _get_retrieval_status(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        if user_id is not None:
+            return self._last_retrieval_status_by_user.get(str(user_id), {"ok": True, "mode": "not_run", "message": "尚未检索"})
+        return self._last_retrieval_status
 
     # ------------------------------------------------------------------
     # 初始化
@@ -97,7 +113,6 @@ class RAGService:
             def _init():
                 import chromadb
                 from llama_index.core.node_parser import SentenceSplitter
-                from llama_index.embeddings.openai import OpenAIEmbedding
 
                 chroma_path = str(get_chromadb_dir())
                 self._chroma_client = chromadb.PersistentClient(path=chroma_path)
@@ -106,12 +121,16 @@ class RAGService:
                     metadata={"hnsw:space": "cosine"},
                 )
 
-                api_base = cfg["base_url"] if cfg["base_url"] != "https://api.openai.com/v1" else None
-                self._embed_model = OpenAIEmbedding(
-                    model_name=cfg["model"],
-                    api_key=cfg["api_key"],
-                    api_base=api_base,
-                )
+                self._embed_model = None
+                if cfg["embedding_enabled"]:
+                    from llama_index.embeddings.openai import OpenAIEmbedding
+
+                    api_base = cfg["base_url"] if cfg["base_url"] != "https://api.openai.com/v1" else None
+                    self._embed_model = OpenAIEmbedding(
+                        model_name=cfg["model"],
+                        api_key=cfg["api_key"],
+                        api_base=api_base,
+                    )
                 self._splitter = SentenceSplitter(
                     chunk_size=cfg["chunk_size"],
                     chunk_overlap=cfg["chunk_overlap"],
@@ -125,8 +144,12 @@ class RAGService:
             self._chunk_overlap = cfg["chunk_overlap"]
             self._top_k = cfg["top_k"]
             self._similarity_threshold = cfg["similarity_threshold"]
+            self._embedding_enabled = cfg["embedding_enabled"]
             self._initialized = True
-            logger.info("RAG 服务初始化完成")
+            if self._embedding_enabled:
+                logger.info("RAG 服务初始化完成")
+            else:
+                logger.info("RAG 服务初始化完成，但未配置 embedding API Key；后台向量索引将跳过")
 
     # ------------------------------------------------------------------
     # 重新初始化（热更新配置，无需重启）
@@ -152,14 +175,16 @@ class RAGService:
         )
 
         def _reinit():
-            from llama_index.embeddings.openai import OpenAIEmbedding
+            self._embed_model = None
+            if api_key:
+                from llama_index.embeddings.openai import OpenAIEmbedding
 
-            api_base = base_url if base_url != "https://api.openai.com/v1" else None
-            self._embed_model = OpenAIEmbedding(
-                model_name=model,
-                api_key=api_key,
-                api_base=api_base,
-            )
+                api_base = base_url if base_url != "https://api.openai.com/v1" else None
+                self._embed_model = OpenAIEmbedding(
+                    model_name=model,
+                    api_key=api_key,
+                    api_base=api_base,
+                )
 
             # 确保 ChromaDB client 和 collection 存在
             if self._chroma_client is None:
@@ -189,8 +214,12 @@ class RAGService:
             similarity_threshold if similarity_threshold is not None
             else getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD)
         )
+        self._embedding_enabled = bool(api_key)
         self._initialized = True
-        logger.info("RAG 服务重新初始化完成 (model=%s)", model)
+        self._set_retrieval_status(
+            {"ok": bool(api_key), "mode": "not_run", "message": "RAG 配置已更新，尚未检索" if api_key else "未配置 embedding API Key，将使用普通资料上下文 fallback"}
+        )
+        logger.info("RAG 服务重新初始化完成 (model=%s, embedding_enabled=%s)", model, bool(api_key))
 
     # ------------------------------------------------------------------
     # 索引
@@ -203,13 +232,17 @@ class RAGService:
         content: str,
         file_type: Optional[str] = None,
         project_ids: Optional[List[int]] = None,
+        user_id: Optional[int] = None,
     ) -> int:
         """将资料内容切片并嵌入 ChromaDB，返回 chunk 数量。"""
         if not self._initialized or not content:
             return 0
+        if self._embed_model is None:
+            logger.info("RAG 索引跳过资料 id=%s：未配置 embedding API Key", material_id)
+            return 0
 
-        # 先删除旧 chunk
-        await self.remove_material(material_id)
+        # 先删除当前用户该资料的旧 chunk，避免误删其他用户同 id/历史数据
+        await self.remove_material(material_id, user_id=user_id)
 
         def _index():
             from llama_index.core import Document
@@ -232,6 +265,7 @@ class RAGService:
                         "file_type": file_type or "",
                         "chunk_index": i,
                         "project_id": str(project_id),
+                        "user_id": str(user_id or 0),
                     }
                     for i in range(len(nodes))
                 ]
@@ -244,7 +278,13 @@ class RAGService:
                 )
             return len(nodes)
 
-        count = await asyncio.to_thread(_index)
+        try:
+            count = await asyncio.to_thread(_index)
+        except Exception as exc:
+            self._last_error = str(exc)[:500]
+            logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, exc)
+            return 0
+        self._last_error = ""
         logger.info("资料 '%s' (id=%d) 索引完成，共 %d 个 chunk", title, material_id, count)
         return count
 
@@ -252,14 +292,18 @@ class RAGService:
     # 删除
     # ------------------------------------------------------------------
 
-    async def remove_material(self, material_id: int) -> None:
-        """删除指定资料的所有 chunk。"""
+    async def remove_material(self, material_id: int, user_id: Optional[int] = None) -> None:
+        """删除指定资料的 chunk；传入 user_id 时仅删除该用户的数据。"""
         if not self._initialized:
             return
 
         def _remove():
+            filters = [{"material_id": str(material_id)}]
+            if user_id is not None:
+                filters.append({"user_id": str(user_id)})
+            where_filter = {"$and": filters} if len(filters) > 1 else filters[0]
             try:
-                self._collection.delete(where={"material_id": str(material_id)})
+                self._collection.delete(where=where_filter)
             except Exception as e:
                 logger.warning("删除资料 chunk 失败 (material_id=%s): %s", material_id, e)
 
@@ -275,26 +319,42 @@ class RAGService:
         top_k: Optional[int] = None,
         material_ids: Optional[List[int]] = None,
         project_id: Optional[int] = None,
+        user_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """语义检索，返回 [{text, score, material_id, material_title}]。"""
         if not self._initialized:
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 服务未初始化，已回退到普通资料上下文"}, user_id)
             return []
 
         k = top_k or getattr(self, '_top_k', settings.RAG_TOP_K)
         threshold = getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD)
 
+        if self._embed_model is None:
+            logger.info("RAG 检索跳过：未配置 embedding API Key")
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "未配置 embedding API Key，已回退到普通资料上下文"}, user_id)
+            return []
+
         def _retrieve():
             query_embedding = self._embed_model.get_text_embedding(query)
 
-            where_filter = None
+            filters = []
+            if user_id is not None:
+                filters.append({"user_id": str(user_id)})
             if material_ids:
                 str_ids = [str(mid) for mid in material_ids]
                 if len(str_ids) == 1:
-                    where_filter = {"material_id": str_ids[0]}
+                    filters.append({"material_id": str_ids[0]})
                 else:
-                    where_filter = {"material_id": {"$in": str_ids}}
+                    filters.append({"material_id": {"$in": str_ids}})
             elif project_id is not None:
-                where_filter = {"project_id": str(project_id)}
+                filters.append({"project_id": str(project_id)})
+
+            if len(filters) > 1:
+                where_filter = {"$and": filters}
+            elif filters:
+                where_filter = filters[0]
+            else:
+                where_filter = None
 
             results = self._collection.query(
                 query_embeddings=[query_embedding],
@@ -322,29 +382,50 @@ class RAGService:
                     })
             return items
 
-        return await asyncio.to_thread(_retrieve)
+        try:
+            items = await asyncio.to_thread(_retrieve)
+            self._last_error = ""
+            if items:
+                self._set_retrieval_status({"ok": True, "mode": "rag", "message": f"RAG 检索命中 {len(items)} 个片段"}, user_id)
+            else:
+                self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 未命中相关片段，已回退到普通资料上下文"}, user_id)
+            return items
+        except Exception as exc:
+            self._last_error = str(exc)[:500]
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": f"RAG 检索失败，已回退到普通资料上下文: {self._last_error}"}, user_id)
+            logger.warning("RAG 检索失败，已返回空结果: %s", exc)
+            return []
 
     async def retrieve_for_material(
         self,
         query: str,
         material_id: int,
         top_k: int = 8,
+        user_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """针对单份资料的检索。"""
-        return await self.retrieve(query, top_k=top_k, material_ids=[material_id])
+        return await self.retrieve(query, top_k=top_k, material_ids=[material_id], user_id=user_id)
 
     # ------------------------------------------------------------------
     # 状态 / 统计
     # ------------------------------------------------------------------
 
-    async def get_status(self) -> Dict[str, Any]:
-        """返回 RAG 服务健康信息。"""
+    async def get_status(self, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """返回 RAG 服务健康信息。
+
+        user_id 仅用于读取该用户最近一次检索状态，避免多用户页面互相显示状态。
+        """
+        retrieval_status = self._get_retrieval_status(user_id)
         if not self._initialized:
             return {
                 "enabled": settings.RAG_ENABLED,
                 "initialized": False,
                 "total_chunks": 0,
-                "message": "RAG 服务未初始化",
+                "embedding_enabled": False,
+                "last_error": self._last_error,
+                "last_retrieval_status": retrieval_status,
+                "fallback_active": retrieval_status.get("mode") == "fallback",
+                "message": "RAG 服务未初始化，将使用普通资料上下文 fallback",
             }
 
         def _status():
@@ -352,6 +433,7 @@ class RAGService:
             return count
 
         total = await asyncio.to_thread(_status)
+        retrieval_status = self._get_retrieval_status(user_id)
         return {
             "enabled": settings.RAG_ENABLED,
             "initialized": True,
@@ -361,7 +443,16 @@ class RAGService:
             "chunk_overlap": getattr(self, '_chunk_overlap', settings.RAG_CHUNK_OVERLAP),
             "top_k": getattr(self, '_top_k', settings.RAG_TOP_K),
             "similarity_threshold": getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD),
-            "message": "RAG 服务运行正常",
+            "embedding_enabled": self._embed_model is not None,
+            "last_error": self._last_error,
+            "last_retrieval_status": retrieval_status,
+            "fallback_active": retrieval_status.get("mode") == "fallback" or self._embed_model is None,
+            "message": (
+                "未配置 embedding API Key，将使用普通资料上下文 fallback"
+                if self._embed_model is None
+                else "RAG 服务运行正常" if not self._last_error
+                else f"RAG embedding 最近一次调用失败: {self._last_error}"
+            ),
         }
 
     async def get_material_chunk_count(self, material_id: int) -> int:

@@ -41,7 +41,7 @@ interface ChatStore {
   // Actions - Conversations
   loadConversations: (projectId?: number | null, search?: string) => Promise<void>
   createNewConversation: (projectId?: number | null) => Promise<Conversation | null>
-  setActiveConversation: (id: number | null) => Promise<void>
+  setActiveConversation: (id: number | null) => Promise<boolean>
   deleteConversation: (id: number) => Promise<void>
   renameConversation: (id: number, title: string) => Promise<void>
   moveConversation: (id: number, projectId: number | null) => Promise<void>
@@ -161,25 +161,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   createNewConversation: async (projectId) => {
-    // 如果当前对话已经是空对话（没有消息），不重复创建
     const state = get()
+    // 已在一个空对话中，直接返回当前对话
     if (state.activeConversationId !== null && state.messages.length === 0) {
-      // 已在一个空对话中，直接返回当前对话
       const current = state.conversations.find((c) => c.id === state.activeConversationId)
       if (current) return current
-    }
-    // 检查列表中是否已存在未使用的空对话（title 为默认值且无消息记录）
-    const existingEmpty = state.conversations.find(
-      (c) =>
-        (c.title === '新对话' || c.title === 'New Conversation') &&
-        (projectId === undefined || projectId === null
-          ? c.project_id === null
-          : c.project_id === projectId)
-    )
-    if (existingEmpty && state.messages.length === 0) {
-      set({ activeConversationId: existingEmpty.id, messages: [], streamingContent: '' })
-      persistId('chat_activeConversationId', existingEmpty.id)
-      return existingEmpty
     }
     const conv = await createConversation({
       title: '新对话',
@@ -187,17 +173,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })
     if (conv) {
       await get().loadConversations()
-      set({
-        activeConversationId: conv.id,
-        messages: [],
-        streamingContent: '',
-      })
+      set({ activeConversationId: conv.id, messages: [], streamingContent: '' })
       persistId('chat_activeConversationId', conv.id)
     }
     return conv
   },
 
   setActiveConversation: async (id) => {
+    const previousId = get().activeConversationId
+    const previousMessages = get().messages
     set({ activeConversationId: id })
     persistId('chat_activeConversationId', id)
 
@@ -212,12 +196,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           })),
         })
       } else {
-        set({ messages: [] })
+        const fallbackId = previousId === id ? null : previousId
+        set({ activeConversationId: fallbackId, messages: fallbackId ? previousMessages : [] })
+        persistId('chat_activeConversationId', fallbackId)
+        set({ streamingContent: '' })
+        return false
       }
     } else {
       set({ messages: [] })
     }
     set({ streamingContent: '' })
+    return true
   },
 
   deleteConversation: async (id) => {

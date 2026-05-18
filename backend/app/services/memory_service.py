@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage, ChatConversation
 from app.models.memory import ConversationSummary, UserMemory
+from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ async def build_memory_prompt_fragment(
         for v in values:
             lines.append(f"  - {v}")
 
-    return "\n用户长期记忆（请作为个性化参考）：\n" + "\n".join(lines)
+    return wrap_untrusted_context("用户长期记忆（个性化参考）", "\n".join(lines), source="user_memory")
 
 
 async def decay_old_memories(db: AsyncSession, user_id: int = 1) -> None:
@@ -330,7 +331,12 @@ async def get_conversation_summary_text(conversation_id: int, db: AsyncSession, 
 
     if not parts:
         return ""
-    return "\n" + "\n".join(parts) + "\n"
+    return wrap_untrusted_context(
+        "对话摘要与复习提示",
+        "\n".join(parts),
+        source=f"conversation_summary:{conversation_id}",
+        max_chars=3000,
+    )
 
 
 async def upsert_conversation_summary(conversation_id: int, db: AsyncSession, user_id: int = 1) -> None:

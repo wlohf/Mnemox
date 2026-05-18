@@ -1,18 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Card, Button, Space, Select, Statistic, Row, Col, List, Tag, message, Typography, Alert } from 'antd'
-import { BarChartOutlined } from '@ant-design/icons'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Card, Button, Space, Select, Statistic, Row, Col, List, Tag, message, Typography, Alert, Tabs } from 'antd'
+import { BarChartOutlined, CopyOutlined, NotificationOutlined } from '@ant-design/icons'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeHighlight from 'rehype-highlight'
+import rehypeKatex from 'rehype-katex'
 import ReactECharts from 'echarts-for-react'
 import { PageShell } from '../components/PageShell'
 import { getEdaReport, type EDAReport } from '../services/analyticsApi'
+import {
+  getDailyIntervention,
+  generateDailyIntervention,
+  type DailyInterventionReport,
+} from '../services/interventionApi'
+import '../components/ChatMessageBubble.css'
 
 const { Paragraph, Text } = Typography
 
 export function EDAReportPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [days, setDays] = useState(30)
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<EDAReport | null>(null)
+  const [activeTab, setActiveTab] = useState(() => (
+    new URLSearchParams(location.search).get('tab') === 'intervention' ? 'intervention' : 'eda'
+  ))
+  const [interventionLoading, setInterventionLoading] = useState(false)
+  const [interventionGenerating, setInterventionGenerating] = useState(false)
+  const [interventionReport, setInterventionReport] = useState<DailyInterventionReport | null>(null)
 
   const load = async (d = days) => {
     setLoading(true)
@@ -30,11 +48,39 @@ export function EDAReportPage() {
     void load(30)
   }, [])
 
+  useEffect(() => {
+    const tab = new URLSearchParams(location.search).get('tab') === 'intervention' ? 'intervention' : 'eda'
+    setActiveTab(tab)
+  }, [location.search])
+
+  const loadIntervention = async () => {
+    setInterventionLoading(true)
+    let res = await getDailyIntervention()
+    if (!res) {
+      res = await generateDailyIntervention()
+      if (!res) {
+        message.error('加载主动干预报告失败')
+        setInterventionLoading(false)
+        return
+      }
+    }
+    setInterventionReport(res)
+    setInterventionLoading(false)
+  }
+
+  useEffect(() => {
+    if (activeTab === 'intervention' && !interventionReport) {
+      void loadIntervention()
+    }
+  }, [activeTab, interventionReport])
+
   const severityColor = (severity: string) => {
     if (severity === 'high') return 'red'
     if (severity === 'medium') return 'orange'
     return 'blue'
   }
+
+  const riskColor = interventionReport?.risk_level === 'high' ? 'red' : interventionReport?.risk_level === 'medium' ? 'orange' : 'green'
 
   const dailyTrendOption = useMemo(() => {
     const points = report?.charts?.daily_trend || report?.daily_points || []
@@ -227,27 +273,38 @@ export function EDAReportPage() {
 
   return (
     <PageShell
-      title={<><BarChartOutlined style={{ marginRight: 8 }} />学习行为 EDA 报告</>}
+      title={<><BarChartOutlined style={{ marginRight: 8 }} />学习洞察与干预</>}
       onBack={() => navigate('/')}
-      rightExtra={(
-        <Space>
-          <Select
-            value={days}
-            style={{ width: 120 }}
-            options={[
-              { label: '最近7天', value: 7 },
-              { label: '最近30天', value: 30 },
-              { label: '最近90天', value: 90 },
-            ]}
-            onChange={(val) => {
-              setDays(val)
-              void load(val)
-            }}
-          />
-          <Button loading={loading} onClick={() => void load(days)}>刷新</Button>
-        </Space>
-      )}
     >
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => {
+          setActiveTab(key)
+          navigate(key === 'intervention' ? '/eda?tab=intervention' : '/eda', { replace: true })
+        }}
+        items={[
+          {
+            key: 'eda',
+            label: 'EDA 报告',
+            children: (
+              <>
+                <Space style={{ marginBottom: 12 }}>
+                  <Select
+                    value={days}
+                    style={{ width: 120 }}
+                    options={[
+                      { label: '最近7天', value: 7 },
+                      { label: '最近30天', value: 30 },
+                      { label: '最近90天', value: 90 },
+                    ]}
+                    onChange={(val) => {
+                      setDays(val)
+                      void load(val)
+                    }}
+                  />
+                  <Button loading={loading} onClick={() => void load(days)}>刷新</Button>
+                </Space>
+
       <Row gutter={[12, 12]}>
         <Col xs={12} md={6}><Card size="small"><Statistic title="总学习时长(分钟)" value={report?.summary.total_minutes || 0} /></Card></Col>
         <Col xs={12} md={6}><Card size="small"><Statistic title="日均学习(分钟)" value={report?.summary.avg_daily_minutes || 0} /></Card></Col>
@@ -343,11 +400,100 @@ export function EDAReportPage() {
         />
       </Card>
 
-      <Card size="small" title="报告文本（可复制）" style={{ marginTop: 12 }}>
-        <Paragraph copyable={{ text: report?.markdown || '' }} style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
-          {report?.markdown || '暂无数据'}
-        </Paragraph>
+      <Card
+        size="small"
+        title="报告正文"
+        style={{ marginTop: 12 }}
+        extra={(
+          <Button
+            size="small"
+            icon={<CopyOutlined />}
+            disabled={!report?.markdown}
+            onClick={() => {
+              void navigator.clipboard?.writeText(report?.markdown || '')
+              message.success('报告文本已复制')
+            }}
+          >
+            复制
+          </Button>
+        )}
+      >
+        <div className="chat-markdown" style={{ fontSize: 15 }}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeHighlight, rehypeKatex]}
+            skipHtml
+            components={{
+              a(props) {
+                return <a {...props} target="_blank" rel="noreferrer noopener" />
+              },
+            }}
+          >
+            {report?.markdown || '暂无数据'}
+          </ReactMarkdown>
+        </div>
       </Card>
+              </>
+            ),
+          },
+          {
+            key: 'intervention',
+            label: 'AI 干预',
+            icon: <NotificationOutlined />,
+            children: (
+              <>
+                <Space style={{ marginBottom: 12 }}>
+                  <Button loading={interventionLoading} onClick={() => void loadIntervention()}>刷新</Button>
+                  <Button
+                    type="primary"
+                    loading={interventionGenerating}
+                    onClick={async () => {
+                      setInterventionGenerating(true)
+                      const generated = await generateDailyIntervention()
+                      if (!generated) {
+                        message.error('生成 AI 干预报告失败')
+                        setInterventionGenerating(false)
+                        return
+                      }
+                      setInterventionReport(generated)
+                      setInterventionGenerating(false)
+                      message.success('已生成今日 AI 主动干预报告')
+                    }}
+                  >
+                    生成今日报告
+                  </Button>
+                </Space>
+
+                <Card size="small" loading={interventionLoading}>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space>
+                      <Tag color={riskColor}>风险等级：{interventionReport?.risk_level || '-'}</Tag>
+                      {interventionReport?.should_push ? <Tag color="gold">建议推送</Tag> : <Tag>无需推送</Tag>}
+                    </Space>
+                    <Paragraph style={{ marginBottom: 0 }}><strong>{interventionReport?.push_title || '暂无标题'}</strong></Paragraph>
+                    <Paragraph style={{ marginBottom: 0 }}>{interventionReport?.push_body || '暂无正文'}</Paragraph>
+                    <Paragraph type="secondary" style={{ marginBottom: 0 }}>{interventionReport?.summary || '暂无总结'}</Paragraph>
+                  </Space>
+                </Card>
+
+                <Card size="small" title="关键数据" style={{ marginTop: 12 }}>
+                  <List
+                    dataSource={interventionReport?.highlights || []}
+                    renderItem={(item) => <List.Item>• {item}</List.Item>}
+                  />
+                </Card>
+
+                <Card size="small" title="建议动作" style={{ marginTop: 12 }}>
+                  <List
+                    dataSource={interventionReport?.suggestions || []}
+                    renderItem={(item) => <List.Item>• {item}</List.Item>}
+                  />
+                </Card>
+              </>
+            ),
+          },
+        ]}
+      />
     </PageShell>
   )
 }

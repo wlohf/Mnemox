@@ -1,18 +1,14 @@
-import type { ReactNode } from 'react'
-import { Layout, Tooltip } from 'antd'
+import { useState, type ReactNode } from 'react'
+import { Layout, Menu, Popover, Tooltip } from 'antd'
+import type { MenuProps } from 'antd'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  DashboardOutlined,
-  BookOutlined,
-  CheckSquareOutlined,
-  QuestionCircleOutlined,
-  FileTextOutlined,
-  CreditCardOutlined,
-  CalendarOutlined,
+  ClockCircleOutlined,
   SettingOutlined,
   ArrowLeftOutlined,
-  MessageOutlined
 } from '@ant-design/icons'
+import { GLOBAL_NAV_GROUPS, isGlobalNavGroupActive, isGlobalNavPathActive } from './Layout/GlobalNavRail'
+import { SettingsModal } from './SettingsModal'
 
 const { Sider, Content } = Layout
 
@@ -27,22 +23,13 @@ interface PageShellProps {
 export function PageShell({ title, onBack, rightExtra, maxWidth = 1200, children }: PageShellProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  
-  const navItems = [
-    { key: '/', icon: <MessageOutlined />, label: '学习助手' },
-    { key: '/dashboard', icon: <DashboardOutlined />, label: '今日概览' },
-    { key: '/review', icon: <BookOutlined />, label: '复习' },
-    { key: '/goals', icon: <CheckSquareOutlined />, label: '任务目标' },
-    { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本' },
-    { key: '/notes', icon: <FileTextOutlined />, label: '笔记' },
-    { key: '/anki', icon: <CreditCardOutlined />, label: 'Anki卡片' },
-    { key: '/plans', icon: <CalendarOutlined />, label: '学习计划' },
-  ]
+  const [showSettings, setShowSettings] = useState(false)
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       {/* 64px Left Icon Sidebar */}
       <Sider
+        className="mnemox-global-nav-rail"
         width={64}
         style={{
           background: 'var(--bg-surface)',
@@ -58,61 +45,72 @@ export function PageShell({ title, onBack, rightExtra, maxWidth = 1200, children
           zIndex: 100,
         }}
       >
-        <div style={{ 
-          width: 40, height: 40, borderRadius: '12px', 
-          background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 32,
-          boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)'
-        }}>
-          S
+        <div className="mnemox-global-nav-logo">
+          M
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, width: '100%', alignItems: 'center' }}>
-          {navItems.map(item => {
-            const isActive = location.pathname === item.key || (item.key !== '/' && location.pathname.startsWith(item.key))
+        <div className="mnemox-global-nav-stack">
+          {GLOBAL_NAV_GROUPS.map(group => {
+            const isActive = isGlobalNavGroupActive(location.pathname, group)
+            const menuItems: MenuProps['items'] = group.children.map((item) => ({
+              key: item.key,
+              icon: item.icon,
+              label: item.label,
+            }))
+            const selectedKeys = group.children
+              .filter((item) => isGlobalNavPathActive(location.pathname, item.key))
+              .map((item) => item.key)
             return (
-              <Tooltip key={item.key} title={item.label} placement="right">
-                <div
-                  onClick={() => navigate(item.key)}
-                  style={{
-                    width: 44, height: 44, borderRadius: '12px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: 'pointer', fontSize: 20,
-                    color: isActive ? 'var(--brand-400)' : 'var(--text-secondary)',
-                    background: isActive ? 'var(--primary-100)' : 'transparent',
-                    transition: 'all 0.2s',
-                    position: 'relative',
-                  }}
+              <Popover
+                key={group.key}
+                placement="rightTop"
+                trigger="click"
+                arrow={false}
+                overlayClassName="mnemox-nav-popover"
+                content={(
+                  <Menu
+                    className="mnemox-nav-popover-menu"
+                    items={menuItems}
+                    selectable
+                    selectedKeys={selectedKeys}
+                    onClick={({ key }) => navigate(String(key))}
+                  />
+                )}
+              >
+                <button
+                  type="button"
+                  className={`mnemox-nav-item${isActive ? ' is-active' : ''}`}
+                  aria-label={group.label}
+                  title={group.label}
                 >
-                  {isActive && (
-                    <div style={{
-                      position: 'absolute', left: -10, top: 12, bottom: 12, width: 4, 
-                      background: 'var(--brand-500)', borderRadius: '0 4px 4px 0'
-                    }} />
-                  )}
-                  {item.icon}
-                </div>
-              </Tooltip>
+                  {group.icon}
+                </button>
+              </Popover>
             )
           })}
         </div>
         
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
+        <div className="mnemox-global-nav-utility">
           <Tooltip title="专注番茄钟" placement="right">
-            <div 
+            <button
+              type="button"
               onClick={() => navigate('/pomodoro')}
-              style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--brand-400)', fontSize: 20, background: 'rgba(99, 102, 241, 0.1)', borderRadius: '12px', transition: 'all 0.2s' }}
-              onMouseOver={(e) => e.currentTarget.style.background = 'rgba(99, 102, 241, 0.2)'}
-              onMouseOut={(e) => e.currentTarget.style.background = 'rgba(99, 102, 241, 0.1)'}
+              className="mnemox-nav-item mnemox-utility-item"
+              aria-label="专注番茄钟"
+              style={{ color: 'var(--brand-400)', background: 'rgba(99, 102, 241, 0.1)' }}
             >
-              ⏱
-            </div>
+              <ClockCircleOutlined />
+            </button>
           </Tooltip>
           <Tooltip title="设置" placement="right">
-            <div style={{ width: 44, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: 20 }}>
+            <button
+              type="button"
+              className="mnemox-nav-item mnemox-utility-item"
+              aria-label="设置"
+              onClick={() => setShowSettings(true)}
+            >
               <SettingOutlined />
-            </div>
+            </button>
           </Tooltip>
         </div>
       </Sider>
@@ -139,7 +137,7 @@ export function PageShell({ title, onBack, rightExtra, maxWidth = 1200, children
                 >
                   <ArrowLeftOutlined />
                 </div>
-                <span style={{ fontSize: 24, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>{title}</span>
+                <span style={{ fontSize: 24, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: 0 }}>{title}</span>
               </div>
               {rightExtra}
             </div>
@@ -151,6 +149,7 @@ export function PageShell({ title, onBack, rightExtra, maxWidth = 1200, children
           </div>
         </Content>
       </Layout>
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
     </Layout>
   )
 }

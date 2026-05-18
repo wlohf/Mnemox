@@ -2,6 +2,65 @@ import { message } from 'antd'
 
 const TOKEN_KEY = 'study_assistant_token'
 
+export class ApiRequestError extends Error {
+  status?: number
+  code?: string
+  detail?: unknown
+  body?: string
+
+  constructor(message: string, init: { status?: number; code?: string; detail?: unknown; body?: string } = {}) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = init.status
+    this.code = init.code
+    this.detail = init.detail
+    this.body = init.body
+  }
+}
+
+function parseErrorBody(errorText: string): { message?: string; code?: string; detail?: unknown } {
+  if (!errorText) return {}
+
+  try {
+    const parsed = JSON.parse(errorText)
+    const detail = parsed?.detail
+    if (typeof detail === 'string') {
+      return { message: detail, detail }
+    }
+    if (detail && typeof detail === 'object') {
+      return {
+        message: typeof detail.message === 'string' ? detail.message : undefined,
+        code: typeof detail.code === 'string' ? detail.code : undefined,
+        detail,
+      }
+    }
+    if (typeof parsed?.message === 'string') {
+      return { message: parsed.message, detail: parsed }
+    }
+    if (typeof parsed?.error === 'string') {
+      return { message: parsed.error, detail: parsed }
+    }
+    return { detail: parsed }
+  } catch {
+    return { message: errorText }
+  }
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiRequestError) {
+    return error.message || fallback
+  }
+  if (error instanceof Error) {
+    const parsed = parseErrorBody(error.message)
+    return parsed.message || error.message || fallback
+  }
+  if (typeof error === 'string') {
+    const parsed = parseErrorBody(error)
+    return parsed.message || error || fallback
+  }
+  return fallback
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -84,14 +143,20 @@ export async function apiFetch<T = any>(
       // Reset after a short delay so future real 401s still work
       setTimeout(() => { _redirecting = false }, 2000)
     }
-  } else if (!res.ok && res.status >= 500) {
-    message.error(`服务器错误 (${res.status})`)
   }
 
   if (!res.ok) {
     const errorText = await res.text()
-    const error = new Error(errorText || `HTTP ${res.status}`) as Error & { status?: number }
-    error.status = res.status
+    const parsed = parseErrorBody(errorText)
+    const error = new ApiRequestError(parsed.message || `HTTP ${res.status}`, {
+      status: res.status,
+      code: parsed.code,
+      detail: parsed.detail,
+      body: errorText,
+    })
+    if (res.status >= 500) {
+      message.error(`${error.message || '服务器错误'} (${res.status})`)
+    }
     throw error
   }
 

@@ -52,6 +52,7 @@ async def _run_lightweight_migrations(conn):
         "questions", "wrong_questions", "review_schedule",
         "ai_provider_settings", "ai_routing_settings",
         "user_memories", "conversation_summaries", "daily_plans",
+        "agent_jobs", "agent_execution_logs",
     ]
 
     for table in user_id_tables:
@@ -93,6 +94,13 @@ async def _run_lightweight_migrations(conn):
         ("wrong_questions", "mastery_score", "REAL DEFAULT 0.0"),
         ("tasks", "parent_task_id", "INTEGER"),
         ("pomodoros", "task_id", "INTEGER"),
+        ("agent_jobs", "payload", "JSON"),
+        ("agent_jobs", "result", "JSON"),
+        ("agent_jobs", "summary", "TEXT"),
+        ("agent_jobs", "updated_at", "DATETIME"),
+        ("agent_execution_logs", "metadata", "JSON"),
+        ("ai_provider_settings", "available_models", "TEXT DEFAULT '[]'"),
+        ("ai_routing_settings", "model", "VARCHAR(100)"),
     ]
 
     for table, column, col_type in other_migrations:

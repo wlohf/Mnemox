@@ -48,8 +48,7 @@ class PomodoroResponse(BaseModel):
     note: Optional[str]
     created_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class PomodoroStats(BaseModel):

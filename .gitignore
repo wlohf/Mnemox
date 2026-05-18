@@ -41,6 +41,10 @@ dist-ssr/
 # IDEs
 .vscode/
 .idea/
+.agents/
+.claude/
+.codex/
+.trellis/
 *.swp
 *.swo
 *~
@@ -65,7 +69,13 @@ uploads/
 .env.*.local
 .ace-tool/
 .aionrs/
+.pytest_cache/
 nul
 *.db-journal
 backend/venv/
 backend/.venv/
+# Secrets and runtime data
+*.db-shm
+*.db-wal
+chromadb/
+rag_settings.json

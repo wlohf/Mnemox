@@ -31,6 +31,7 @@ from app.services.memory_service import (
 from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
+from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
 
@@ -188,15 +189,13 @@ BASE_SYSTEM_PROMPT = (
 )
 
 COACH_SYSTEM_PROMPT = (
-    "【教练模式 / Socratic Method】\n"
-    "你是一位苏格拉底式学习教练。你必须严格遵守以下规则：\n"
-    "1. **绝不直接给出答案**。用引导式提问帮助用户自己思考和发现答案。\n"
-    "2. 当用户提问时，先反问：'你目前对这个概念的理解是什么？'或类似的引导问题。\n"
-    "3. 当用户尝试解释时，用 1-5 分评估其理解程度，并指出哪里正确、哪里需要改进。\n"
-    "4. 使用费曼技巧：要求用户'用自己的话解释给一个初学者听'。\n"
-    "5. 提供渐进式提示（Progressive Hints）：从抽象到具体，逐步引导。\n"
-    "6. 如果用户多次答错，可以给出部分线索，但仍要让用户完成最后一步推理。\n"
-    "7. 每次回复结尾附上一个思考问题，保持对话推进。\n"
+    "【内嵌学习教练策略】\n"
+    "你是一位学习教练，但不要把苏格拉底式提问或费曼学习法做成孤立模式。\n"
+    "1. 普通事实性问题：先给清晰简洁的答案，再视情况给 1 个启发问题。\n"
+    "2. 概念理解、推理、知识关联或用户明显困惑时：用苏格拉底式追问帮助用户说出自己的理解。\n"
+    "3. 每日复盘、总结、学习结束时：使用费曼技巧，引导用户用自己的话讲给初学者听。\n"
+    "4. 用户卡住时先给渐进式提示，不要直接替用户完成全部思考。\n"
+    "5. 每次最多追问 1-2 个关键问题，避免打断学习节奏。\n"
 )
 
 WARM_COACH_PERSONALITY = (
@@ -271,11 +270,13 @@ async def _detect_materials_from_message(message: str, db: AsyncSession, user_id
     return matched
 
 
-async def _load_materials(ids: List[int], db: AsyncSession) -> List[dict]:
-    """根据 ID 列表加载资料内容，返回 [{"title": str, "content": str}, ...]"""
+async def _load_materials(ids: List[int], db: AsyncSession, user_id: int) -> List[dict]:
+    """根据 ID 列表加载当前用户的资料内容，返回 [{"title": str, "content": str}, ...]"""
     if not ids:
         return []
-    result = await db.execute(select(Material).where(Material.id.in_(ids)))
+    result = await db.execute(
+        select(Material).where(Material.id.in_(ids), Material.user_id == user_id)
+    )
     materials = result.scalars().all()
     # 保持传入 ids 的顺序
     mat_map = {m.id: m for m in materials}
@@ -291,6 +292,7 @@ async def _build_system_prompt_with_rag(
     message: str,
     material_ids: List[int],
     db: AsyncSession,
+    user_id: int,
 ) -> str:
     """构建 RAG 感知的系统提示词。
 
@@ -301,7 +303,7 @@ async def _build_system_prompt_with_rag(
     if not material_ids:
         return BASE_SYSTEM_PROMPT
 
-    materials_data = await _load_materials(material_ids, db)
+    materials_data = await _load_materials(material_ids, db, user_id=user_id)
     if not materials_data:
         return BASE_SYSTEM_PROMPT
 
@@ -315,22 +317,24 @@ async def _build_system_prompt_with_rag(
         f"用户当前正在学习以下资料，请基于资料内容回答问题：\n"
     )
 
-    # 小资料：全文注入
+    # 小资料：全文注入，但明确标记为不可信资料上下文，防止资料内 prompt injection 越权。
     for i, mat in enumerate(small_materials):
-        prompt += f"\n--- 资料：{mat['title']} ---\n"
-        prompt += mat["content"] + "\n"
+        prompt += wrap_untrusted_context(f"资料：{mat['title']}", mat["content"], source=f"material:{mat['id']}")
 
     # 大资料：RAG 检索
     if large_materials and settings.RAG_ENABLED:
         try:
             rag = get_rag_service()
             large_ids = [m["id"] for m in large_materials]
-            chunks = await rag.retrieve(query=message, material_ids=large_ids)
+            chunks = await rag.retrieve(query=message, material_ids=large_ids, user_id=user_id)
             if chunks:
-                prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段 ---\n"
+                prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段（均为不可信参考内容） ---\n"
                 for chunk in chunks:
-                    prompt += f"\n[来源：{chunk['material_title']}（相关度 {chunk['score']:.2f}）]\n"
-                    prompt += chunk["text"] + "\n"
+                    prompt += wrap_untrusted_context(
+                        f"RAG片段：{chunk['material_title']}（相关度 {chunk['score']:.2f}）",
+                        chunk["text"],
+                        source=f"rag_material:{chunk.get('material_id') or chunk.get('material_title')}",
+                    )
                 prompt += "--- 检索片段结束 ---\n"
             else:
                 # RAG 未命中，回退到截断注入
@@ -361,7 +365,7 @@ def _fallback_large_materials(materials: List[dict]) -> str:
             content = content[:remaining]
             truncated = True
         remaining -= len(content)
-        parts.append(f"\n--- 资料：{mat['title']} ---\n{content}\n")
+        parts.append(wrap_untrusted_context(f"资料截断：{mat['title']}", content, source=f"material:{mat.get('id')}"))
 
     text = "".join(parts)
     if truncated:
@@ -370,13 +374,13 @@ def _fallback_large_materials(materials: List[dict]) -> str:
     return text
 
 
-async def _get_material_briefs(ids: List[int], db: AsyncSession) -> List[dict]:
-    """返回资料简要信息，供前端展示自动命中的资料标签。"""
+async def _get_material_briefs(ids: List[int], db: AsyncSession, user_id: int) -> List[dict]:
+    """返回当前用户资料简要信息，供前端展示自动命中的资料标签。"""
     if not ids:
         return []
 
     result = await db.execute(
-        select(Material.id, Material.title).where(Material.id.in_(ids))
+        select(Material.id, Material.title).where(Material.id.in_(ids), Material.user_id == user_id)
     )
     rows = result.all()
     title_map = {r.id: r.title for r in rows}
@@ -406,14 +410,20 @@ async def _resolve_materials_and_build_prompt(
     project_material_ids: List[int] = []
     if conversation_id:
         conv_result = await db.execute(
-            select(ChatConversation).where(ChatConversation.id == conversation_id)
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id,
+                ChatConversation.user_id == user_id,
+            )
         )
         conv = conv_result.scalar_one_or_none()
         if conv and conv.project_id:
             project_id = conv.project_id
             assoc_result = await db.execute(
-                select(ChatProjectMaterial.material_id).where(
-                    ChatProjectMaterial.project_id == conv.project_id
+                select(ChatProjectMaterial.material_id)
+                .join(Material, ChatProjectMaterial.material_id == Material.id)
+                .where(
+                    ChatProjectMaterial.project_id == conv.project_id,
+                    Material.user_id == user_id,
                 )
             )
             project_material_ids = [row[0] for row in assoc_result.all()]
@@ -440,7 +450,7 @@ async def _resolve_materials_and_build_prompt(
             if pid not in all_ids:
                 all_ids.append(pid)
         if project_material_ids:
-            auto_selected.extend(await _get_material_briefs(project_material_ids, db))
+            auto_selected.extend(await _get_material_briefs(project_material_ids, db, user_id=user_id))
 
     # 自动注入：读取资料库意图
     if not all_ids and _looks_like_read_materials_intent(message):
@@ -449,10 +459,10 @@ async def _resolve_materials_and_build_prompt(
             if rid not in all_ids:
                 all_ids.append(rid)
         if recent_ids:
-            auto_selected.extend(await _get_material_briefs(recent_ids, db))
+            auto_selected.extend(await _get_material_briefs(recent_ids, db, user_id=user_id))
 
     # 构建 RAG 感知的系统提示
-    system_prompt = await _build_system_prompt_with_rag(message, all_ids, db)
+    system_prompt = await _build_system_prompt_with_rag(message, all_ids, db, user_id=user_id)
 
     # 根据 chat_mode 注入对应的用户自定义或默认 prompt
     try:
@@ -491,16 +501,27 @@ async def _resolve_materials_and_build_prompt(
     # 项目默认指令
     if conversation_id:
         conv_result = await db.execute(
-            select(ChatConversation).where(ChatConversation.id == conversation_id)
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id,
+                ChatConversation.user_id == user_id,
+            )
         )
         conv = conv_result.scalar_one_or_none()
         if conv and conv.project_id:
             proj_result = await db.execute(
-                select(ChatProject).where(ChatProject.id == conv.project_id)
+                select(ChatProject).where(
+                    ChatProject.id == conv.project_id,
+                    ChatProject.user_id == user_id,
+                )
             )
             proj = proj_result.scalar_one_or_none()
             if proj and proj.default_instructions:
-                system_prompt += f"\n\n项目指令：{proj.default_instructions}"
+                system_prompt += "\n\n" + wrap_untrusted_context(
+                    "项目自定义指令",
+                    str(proj.default_instructions),
+                    source=f"project:{proj.id}",
+                    max_chars=2000,
+                )
 
     # 注入用户学习画像（个性化建议上下文）
     try:
@@ -512,21 +533,37 @@ async def _resolve_materials_and_build_prompt(
     except Exception as _pe:
         logger.warning("用户画像注入失败: %s", _pe)
 
+    # 注入自主 Agent 简报：让对话具备主动规划、风险提醒和下一步建议意识
+    try:
+        from app.services.agent_service import build_agent_brief, build_agent_prompt_snippet
+        _agent_brief = await build_agent_brief(db, user_id)
+        _agent_snippet = build_agent_prompt_snippet(_agent_brief)
+        if _agent_snippet:
+            system_prompt += "\n\n" + _agent_snippet
+    except Exception as _ae:
+        logger.warning("自主 Agent 简报注入失败: %s", _ae)
+
     return system_prompt, detected, auto_selected
 
 
-async def _get_project_material_ids(conversation_id: int, db: AsyncSession) -> List[int]:
+async def _get_project_material_ids(conversation_id: int, db: AsyncSession, user_id: int) -> List[int]:
     """获取对话所属项目绑定的资料 ID 列表。"""
     conv_result = await db.execute(
-        select(ChatConversation).where(ChatConversation.id == conversation_id)
+        select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.user_id == user_id,
+        )
     )
     conv = conv_result.scalar_one_or_none()
     if not conv or not conv.project_id:
         return []
 
     assoc_result = await db.execute(
-        select(ChatProjectMaterial.material_id).where(
-            ChatProjectMaterial.project_id == conv.project_id
+        select(ChatProjectMaterial.material_id)
+        .join(Material, ChatProjectMaterial.material_id == Material.id)
+        .where(
+            ChatProjectMaterial.project_id == conv.project_id,
+            Material.user_id == user_id,
         )
     )
     return [row[0] for row in assoc_result.all()]
@@ -571,7 +608,165 @@ class ChatRequest(BaseModel):
     study_session_id: Optional[int] = None
     image_data: Optional[List[str]] = None
     chat_mode: Optional[str] = "normal"  # "normal" | "coach"
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
 
+
+async def _persist_streamed_chat_turn(
+    *,
+    body: ChatRequest,
+    full_reply: str,
+    user_id: int,
+    sessionmaker=None,
+) -> None:
+    """Persist the recoverable part of a streamed chat turn before SSE success."""
+    if not full_reply or not (body.conversation_id or body.study_session_id):
+        return
+
+    if sessionmaker is None:
+        from app.database import async_session_maker
+        sessionmaker = async_session_maker
+
+    async with sessionmaker() as save_db:
+        try:
+            if body.conversation_id:
+                save_db.add(
+                    ChatMessageModel(
+                        conversation_id=body.conversation_id,
+                        role="user",
+                        content=body.message,
+                        image_data=json.dumps(body.image_data, ensure_ascii=False) if body.image_data else None,
+                    )
+                )
+                save_db.add(
+                    ChatMessageModel(
+                        conversation_id=body.conversation_id,
+                        role="assistant",
+                        content=full_reply,
+                    )
+                )
+
+                conv_result = await save_db.execute(
+                    select(ChatConversation).where(
+                        ChatConversation.id == body.conversation_id,
+                        ChatConversation.user_id == user_id,
+                    )
+                )
+                conv = conv_result.scalar_one_or_none()
+                if conv and conv.title == "新对话":
+                    conv.title = body.message[:50]
+
+            if body.study_session_id:
+                sess_result = await save_db.execute(
+                    select(StudySession).where(
+                        StudySession.id == body.study_session_id,
+                        StudySession.user_id == user_id,
+                    )
+                )
+                sess = sess_result.scalar_one_or_none()
+                if sess:
+                    save_db.add(
+                        StudyConversation(
+                            session_id=sess.id,
+                            role="user",
+                            content=body.message,
+                            message_type="chat",
+                        )
+                    )
+                    save_db.add(
+                        StudyConversation(
+                            session_id=sess.id,
+                            role="assistant",
+                            content=full_reply,
+                            message_type="chat",
+                        )
+                    )
+
+            await save_db.commit()
+        except Exception:
+            await save_db.rollback()
+            logger.exception(
+                "流式对话核心消息保存失败: conversation_id=%s study_session_id=%s user_id=%s",
+                body.conversation_id,
+                body.study_session_id,
+                user_id,
+            )
+            raise
+
+    if not body.conversation_id:
+        return
+
+    async with sessionmaker() as enrich_db:
+        try:
+            await upsert_conversation_summary(body.conversation_id, enrich_db, user_id=user_id)
+            await upsert_user_memories_from_turn(
+                body.conversation_id,
+                body.message,
+                full_reply,
+                enrich_db,
+                user_id=user_id,
+            )
+
+            try:
+                from app.services.memory_service import run_conversation_reflection
+                await run_conversation_reflection(body.conversation_id, enrich_db, user_id=user_id)
+            except Exception as e:
+                logger.warning("对话反思失败: %s", e)
+
+            try:
+                await _detect_and_create_wrong_questions(
+                    body.message,
+                    full_reply,
+                    body.conversation_id,
+                    enrich_db,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                logger.warning("错题自动检测失败: %s", e)
+
+            try:
+                from app.services.event_tracker import EventTracker as _ET
+                from app.models.learning_event import EventType as _EVT
+                _tracker = _ET(enrich_db, user_id=cast(int, cast(object, user_id)))
+                await _tracker.track(
+                    event_type=_EVT.AI_QUESTION_ASKED,
+                    event_data={
+                        "conversation_id": body.conversation_id,
+                        "message_len": len(body.message),
+                        "reply_len": len(full_reply),
+                        "chat_mode": body.chat_mode or "normal",
+                    },
+                    session_id=str(body.conversation_id),
+                )
+            except Exception as e:
+                logger.warning("学习事件追踪失败: %s", e)
+
+            await enrich_db.commit()
+        except Exception:
+            await enrich_db.rollback()
+            logger.warning(
+                "流式对话后处理失败，但核心消息已保存: conversation_id=%s user_id=%s",
+                body.conversation_id,
+                user_id,
+                exc_info=True,
+            )
+
+
+
+
+def _is_ai_configuration_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "API Key 未配置" in text or "不支持的 AI 提供商" in text
+
+
+def _ai_configuration_error(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "AI_PROVIDER_NOT_CONFIGURED",
+            "message": f"AI 提供商未配置或不可用：{str(exc)}。请先在设置中配置并启用 API Key。",
+        },
+    )
 
 # ---- SSE streaming endpoint ----
 
@@ -635,11 +830,19 @@ async def chat_send(
 
     # 获取当前激活的 AI 提供商
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="chat_main", user_id=current_user.id)
+        provider = await AIProviderFactory.create_provider(
+            provider_name=body.provider_name,
+            model=body.model,
+            db=db,
+            scenario="chat_main",
+            user_id=current_user.id,
+        )
     except Exception as e:
+        if _is_ai_configuration_error(e):
+            raise _ai_configuration_error(e)
         raise HTTPException(
-            status_code=503,
-            detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
+            status_code=500,
+            detail=f"无法创建 AI 提供商：{str(e)}",
         )
 
     # 用于收集完整回复以便保存
@@ -682,7 +885,7 @@ async def chat_send(
                 data = json.dumps({"content": chunk}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
 
-            # Detect progress feedback before sending [DONE]
+            # Detect progress feedback before persistence and final success.
             full_reply = "".join(collected_reply)
             try:
                 from app.services.memory_service import detect_progress_feedback
@@ -696,111 +899,29 @@ async def chat_send(
             except Exception:
                 pass
 
-            # 发送结束标记
+            try:
+                await _persist_streamed_chat_turn(
+                    body=body,
+                    full_reply=full_reply,
+                    user_id=user_id,
+                )
+            except Exception:
+                error_data = json.dumps(
+                    {"error": "AI 回复已生成，但消息保存失败。请重试，本次回复未确认持久化。"},
+                    ensure_ascii=False,
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # 保存成功后再发送结束标记，避免前端误判为可恢复成功。
             yield "data: [DONE]\n\n"
         except Exception as e:
+            logger.exception("流式 AI 回复失败: conversation_id=%s user_id=%s", body.conversation_id, user_id)
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
-
-        # 流结束后保存消息到数据库
-        # 使用独立 session 避免依赖注入 session 生命周期不匹配
-        full_reply = "".join(collected_reply)
-        if (body.conversation_id or body.study_session_id) and full_reply:
-            from app.database import async_session_maker
-            async with async_session_maker() as save_db:
-                try:
-                    if body.conversation_id:
-                        # 保存用户消息
-                        user_msg = ChatMessageModel(
-                            conversation_id=body.conversation_id,
-                            role="user",
-                            content=body.message,
-                            image_data=json.dumps(body.image_data, ensure_ascii=False) if body.image_data else None,
-                        )
-                        save_db.add(user_msg)
-
-                        # 保存 AI 回复
-                        ai_msg = ChatMessageModel(
-                            conversation_id=body.conversation_id,
-                            role="assistant",
-                            content=full_reply,
-                        )
-                        save_db.add(ai_msg)
-
-                        # 自动设置标题
-                        conv_result2 = await save_db.execute(
-                            select(ChatConversation).where(ChatConversation.id == body.conversation_id)
-                        )
-                        conv2 = conv_result2.scalar_one_or_none()
-                        if conv2 and conv2.title == "新对话":
-                            conv2.title = body.message[:50]
-
-                        # 记忆沉淀
-                        await upsert_conversation_summary(body.conversation_id, save_db, user_id=user_id)
-                        await upsert_user_memories_from_turn(body.conversation_id, body.message, full_reply, save_db, user_id=user_id)
-
-                        # Conversation Reflection (gated: every ~5 user turns)
-                        try:
-                            from app.services.memory_service import run_conversation_reflection
-                            await run_conversation_reflection(body.conversation_id, save_db, user_id=user_id)
-                        except Exception as e:
-                            logger.warning("对话反思失败: %s", e)
-
-                        # Auto-detect wrong questions from chat
-                        try:
-                            await _detect_and_create_wrong_questions(
-                                body.message, full_reply, body.conversation_id, save_db,
-                                user_id=user_id,
-                            )
-                        except Exception:
-                            pass  # Non-blocking
-
-                        # 记录学习事件：AI 对话轮次
-                        try:
-                            from app.services.event_tracker import EventTracker as _ET
-                            from app.models.learning_event import EventType as _EVT
-                            _tracker = _ET(save_db, user_id=cast(int, cast(object, user_id)))
-                            await _tracker.track(
-                                event_type=_EVT.AI_QUESTION_ASKED,
-                                event_data={
-                                    "conversation_id": body.conversation_id,
-                                    "message_len": len(body.message),
-                                    "reply_len": len(full_reply),
-                                    "chat_mode": body.chat_mode or "normal",
-                                },
-                                session_id=str(body.conversation_id) if body.conversation_id else None,
-                            )
-                        except Exception as _e:
-                            logger.warning("学习事件追踪失败: %s", _e)
-
-                    # 同步写入学习会话对话（用于 Task-Session 闭环）
-                    if body.study_session_id:
-                        sess_result = await save_db.execute(
-                            select(StudySession).where(StudySession.id == body.study_session_id)
-                        )
-                        sess = sess_result.scalar_one_or_none()
-                        if sess:
-                            save_db.add(
-                                StudyConversation(
-                                    session_id=sess.id,
-                                    role="user",
-                                    content=body.message,
-                                    message_type="chat",
-                                )
-                            )
-                            save_db.add(
-                                StudyConversation(
-                                    session_id=sess.id,
-                                    role="assistant",
-                                    content=full_reply,
-                                    message_type="chat",
-                                )
-                            )
-
-                    await save_db.commit()
-                except Exception:
-                    await save_db.rollback()
+            return
 
     return StreamingResponse(
         event_stream(),
@@ -863,14 +984,18 @@ async def chat_send_sync(
 
     try:
         provider = await AIProviderFactory.create_provider(
+            provider_name=body.provider_name,
+            model=body.model,
             db=db,
             scenario="chat_main",
             user_id=current_user.id,
         )
     except Exception as e:
+        if _is_ai_configuration_error(e):
+            raise _ai_configuration_error(e)
         raise HTTPException(
-            status_code=503,
-            detail=f"无法创建 AI 提供商：{str(e)}。请在设置中配置 API Key。",
+            status_code=500,
+            detail=f"无法创建 AI 提供商：{str(e)}",
         )
 
     try:

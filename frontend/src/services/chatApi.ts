@@ -42,6 +42,8 @@ export async function sendMessageStream(
   chatMode?: string,
   onMemoryIndicators?: (memories: MemoryIndicator[]) => void,
   onProgressFeedback?: (feedback: ProgressFeedback) => void,
+  providerName?: string,
+  model?: string,
 ): Promise<void> {
   try {
     const payload: any = {
@@ -63,6 +65,12 @@ export async function sendMessageStream(
     if (chatMode && chatMode !== 'normal') {
       payload.chat_mode = chatMode
     }
+    if (providerName) {
+      payload.provider_name = providerName
+    }
+    if (model) {
+      payload.model = model
+    }
     const token = getToken()
     const res = await fetch('/api/chat/send', {
       method: 'POST',
@@ -76,7 +84,8 @@ export async function sendMessageStream(
 
     if (!res.ok) {
       const err = await res.json().catch(() => null)
-      onError(err?.detail || `请求失败 (${res.status})`)
+      const detail = err?.detail
+      onError(typeof detail === 'string' ? detail : detail?.message || `请求失败 (${res.status})`)
       return
     }
 

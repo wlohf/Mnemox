@@ -1,51 +1,79 @@
-"""Review planning agent."""
+"""Review agent: organize due Anki cards and wrong-question review schedules."""
 from __future__ import annotations
 
 from datetime import datetime
 
 from sqlalchemy import select
 
-from app.agents.base import BaseAgent
-from app.models.question import WrongQuestion
+from app.agents.base import AgentRunContext, AgentResult, BaseAgent
+from app.models.anki import AnkiCard
+from app.models.question import ReviewSchedule, WrongQuestion
 
 
 class ReviewAgent(BaseAgent):
     name = "review"
-    description = "根据到期错题与掌握度生成复习建议"
+    display_name = "ReviewAgent"
+    description = "基于简化遗忘曲线调度 Anki 卡片和错题复习"
 
-    async def run(self, payload: dict) -> dict:
-        limit = int(payload.get("limit") or 8)
+    async def run(self, ctx: AgentRunContext) -> AgentResult:
         now = datetime.now()
-        result = await self.context.db.execute(
+        db = ctx.db
+        anki_result = await db.execute(
+            select(AnkiCard)
+            .where(AnkiCard.user_id == ctx.user_id, AnkiCard.due_at <= now)
+            .order_by(AnkiCard.due_at.asc(), AnkiCard.id.asc())
+            .limit(20)
+        )
+        due_anki = list(anki_result.scalars().all())
+        wrong_result = await db.execute(
             select(WrongQuestion)
             .where(
-                WrongQuestion.user_id == self.context.user.id,
-                WrongQuestion.next_review_at.isnot(None),
+                WrongQuestion.user_id == ctx.user_id,
+                WrongQuestion.next_review_at.is_not(None),
                 WrongQuestion.next_review_at <= now,
             )
-            .order_by(WrongQuestion.next_review_at.asc())
-            .limit(max(1, min(limit, 20)))
+            .order_by(WrongQuestion.next_review_at.asc(), WrongQuestion.id.asc())
+            .limit(50)
         )
-        due = result.scalars().all()
-        items = [
-            {
-                "wrong_question_id": item.id,
-                "knowledge_point": item.knowledge_point,
-                "mastery_status": item.mastery_status,
-                "mastery_score": item.mastery_score,
-                "next_review_at": item.next_review_at.isoformat() if item.next_review_at else None,
-            }
-            for item in due
-        ]
-        if not items:
-            return {
-                "summary": "当前没有到期错题。建议用 10 分钟回顾最近笔记，并补一道主动回忆题。",
-                "items": [],
-                "actions": ["回顾今日笔记", "补充一道自测题", "整理一个易错知识点"],
-            }
-        actions = ["先复习 mastery_score 最低的错题", "答完后立即标记回忆难度", "把仍然卡住的题转成笔记或 Anki 卡片"]
-        return {
-            "summary": f"当前有 {len(items)} 道到期错题，建议按掌握度从低到高复习。",
-            "items": items,
-            "actions": actions,
-        }
+        due_wrong = list(wrong_result.scalars().all())
+        created_schedules = 0
+        for item in due_wrong:
+            existing = await db.scalar(
+                select(ReviewSchedule.id).where(
+                    ReviewSchedule.user_id == ctx.user_id,
+                    ReviewSchedule.item_type == "question",
+                    ReviewSchedule.item_id == item.id,
+                    ReviewSchedule.status == "pending",
+                    ReviewSchedule.is_archived.is_(False),
+                )
+            )
+            if existing:
+                continue
+            db.add(ReviewSchedule(
+                user_id=ctx.user_id,
+                item_type="question",
+                item_id=item.id,
+                scheduled_date=item.next_review_at or now,
+                interval_days=1,
+                ease_factor=250,
+                repetitions=item.review_count or 0,
+                status="pending",
+            ))
+            created_schedules += 1
+        if created_schedules:
+            await db.flush()
+        actions = []
+        if due_wrong:
+            actions.append({"type": "navigate", "route": "/review", "title": f"复习 {len(due_wrong)} 条到期错题"})
+        if due_anki:
+            actions.append({"type": "navigate", "route": "/anki", "title": f"复习 {len(due_anki)} 张 Anki 卡片"})
+        if not actions:
+            actions.append({"type": "navigate", "route": "/anki", "title": "暂无积压，创建或生成新卡片"})
+        return AgentResult(
+            agent=self.name,
+            task=ctx.task,
+            status="completed",
+            summary=f"发现 {len(due_anki)} 张到期 Anki 卡片、{len(due_wrong)} 条到期错题，补齐 {created_schedules} 条复习计划。",
+            actions=actions,
+            data={"due_anki_count": len(due_anki), "due_wrong_question_count": len(due_wrong), "created_review_schedules": created_schedules},
+        )

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Button, List, Progress, Space, Tag, Row, Col } from 'antd'
+import { Layout, Card, Button, List, Progress, Space, Tag, Row, Col, message } from 'antd'
 import { ArrowLeftOutlined, HeatMapOutlined } from '@ant-design/icons'
 import { getMasteryMap, type MasteryMapData } from '../services/learningApi'
+import { getApiErrorMessage } from '../services/apiClient'
 
 const { Header, Content } = Layout
 
@@ -11,8 +12,12 @@ export function MasteryMapPage() {
   const [data, setData] = useState<MasteryMapData | null>(null)
 
   const load = async () => {
-    const d = await getMasteryMap()
-    setData(d)
+    try {
+      const d = await getMasteryMap()
+      setData(d)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载掌握度地图失败'))
+    }
   }
 
   useEffect(() => {

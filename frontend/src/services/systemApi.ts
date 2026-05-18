@@ -17,18 +17,35 @@ export interface SystemUpdateInfo {
   checked_at: string
 }
 
-export async function getSystemVersion(): Promise<SystemVersionInfo | null> {
-  try {
-    return await apiFetch<SystemVersionInfo>('/api/system/version')
-  } catch {
-    return null
-  }
+export interface OnboardingStatus {
+  has_content: boolean
+  demo_seeded: boolean
+  counts: Record<string, number>
+  suggested_next_steps: string[]
+  stage?: string
+  stage_label?: string
+  completed_steps?: string[]
 }
 
-export async function checkSystemUpdate(): Promise<SystemUpdateInfo | null> {
-  try {
-    return await apiFetch<SystemUpdateInfo>('/api/system/update-check')
-  } catch {
-    return null
-  }
+export interface DemoSeedResult {
+  ok: boolean
+  already_seeded: boolean
+  message: string
+  created: Record<string, number>
+}
+
+export async function getSystemVersion(): Promise<SystemVersionInfo> {
+  return await apiFetch<SystemVersionInfo>('/api/system/version')
+}
+
+export async function checkSystemUpdate(): Promise<SystemUpdateInfo> {
+  return await apiFetch<SystemUpdateInfo>('/api/system/update-check')
+}
+
+export async function getOnboardingStatus(): Promise<OnboardingStatus> {
+  return await apiFetch<OnboardingStatus>('/api/system/onboarding-status')
+}
+
+export async function seedDemoWorkspace(): Promise<DemoSeedResult> {
+  return await apiFetch<DemoSeedResult>('/api/system/demo-seed', { method: 'POST' })
 }

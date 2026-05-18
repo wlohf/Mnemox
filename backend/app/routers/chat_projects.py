@@ -16,6 +16,26 @@ from app.models.user import User
 router = APIRouter()
 
 
+async def _ensure_user_material(db: AsyncSession, material_id: int, user_id: int) -> None:
+    result = await db.execute(
+        select(Material.id).where(Material.id == material_id, Material.user_id == user_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="资料不存在")
+
+
+async def _ensure_user_materials(db: AsyncSession, material_ids: List[int], user_id: int) -> None:
+    unique_ids = {mid for mid in material_ids if mid is not None}
+    if not unique_ids:
+        return
+    result = await db.execute(
+        select(Material.id).where(Material.id.in_(unique_ids), Material.user_id == user_id)
+    )
+    found_ids = {row[0] for row in result.all()}
+    if found_ids != unique_ids:
+        raise HTTPException(status_code=404, detail="资料不存在")
+
+
 async def _reindex_material_for_projects(db: AsyncSession, material_id: int, user_id: int) -> None:
     if not settings.RAG_ENABLED:
         return
@@ -41,6 +61,7 @@ async def _reindex_material_for_projects(db: AsyncSession, material_id: int, use
         content=material.content,
         file_type=material.file_type,
         project_ids=project_ids,
+        user_id=user_id,
     )
 
 
@@ -354,11 +375,7 @@ async def add_material(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    material_result = await db.execute(
-        select(Material).where(Material.id == body.material_id, Material.user_id == current_user.id)
-    )
-    if not material_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="资料不存在")
+    await _ensure_user_material(db, body.material_id, current_user.id)
 
     # 检查是否已关联
     existing = await db.execute(
@@ -385,12 +402,13 @@ async def remove_material(
     current_user: User = Depends(get_current_user),
 ):
     """移除项目的资料关联"""
-    # Verify project belongs to user
+    # Verify project and material belong to current user
     proj_result = await db.execute(
         select(ChatProject).where(ChatProject.id == project_id, ChatProject.user_id == current_user.id)
     )
     if not proj_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
+    await _ensure_user_material(db, material_id, current_user.id)
 
     material_result = await db.execute(
         select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
@@ -432,21 +450,11 @@ async def batch_update_materials(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    requested_ids = set(body.remove_material_ids + body.add_material_ids)
-    valid_ids: set[int] = set()
-    if requested_ids:
-        valid_result = await db.execute(
-            select(Material.id).where(
-                Material.user_id == current_user.id,
-                Material.id.in_(requested_ids),
-            )
-        )
-        valid_ids = {row[0] for row in valid_result.all()}
-        if valid_ids != requested_ids:
-            raise HTTPException(status_code=404, detail="部分资料不存在")
-
-    removed = 0
-    added = 0
+    await _ensure_user_materials(
+        db,
+        body.add_material_ids + body.remove_material_ids,
+        current_user.id,
+    )
 
     # 移除关联
     if body.remove_material_ids:

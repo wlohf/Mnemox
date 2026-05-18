@@ -1,13 +1,18 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Card, List, Button, Modal, Input, Tag, Empty, Segmented, message, DatePicker, Timeline, Calendar } from 'antd'
-import { CalendarOutlined, PlusOutlined, EditOutlined, UnorderedListOutlined, ClockCircleOutlined, ArrowLeftOutlined } from '@ant-design/icons'
+import { Alert, Card, List, Button, Modal, Input, Tag, Empty, Segmented, message, DatePicker, Timeline, Calendar, Space, Typography } from 'antd'
+import { CalendarOutlined, PlusOutlined, EditOutlined, UnorderedListOutlined, ClockCircleOutlined, QuestionCircleOutlined, BulbOutlined } from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { apiFetch } from '../services/apiClient'
 import { generateDailyPlan } from '../services/learningApi'
+import { getApiErrorMessage } from '../services/apiClient'
+import { generateFeynmanProbe, type FeynmanProbeResult } from '../services/feynmanProbeApi'
 import { useNavigate } from 'react-router-dom'
+import { PageShell } from '../components/PageShell'
 
 dayjs.extend(isoWeek)
+
+const { Text, Paragraph } = Typography
 
 interface Plan {
   date: string
@@ -42,6 +47,8 @@ export function PlansPage() {
   const [editContent, setEditContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [probing, setProbing] = useState(false)
+  const [probeResult, setProbeResult] = useState<FeynmanProbeResult | null>(null)
   const [filter, setFilter] = useState<'all' | 'has_tasks' | 'incomplete'>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [quickRange, setQuickRange] = useState<QuickRange>('this_week')
@@ -68,13 +75,22 @@ export function PlansPage() {
     if (!editingPlan) return
     setSaving(true)
     try {
-      await apiFetch(`/api/plans/${editingPlan.date}`, {
+      const saved = await apiFetch<Plan>(`/api/plans/${editingPlan.date}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent }),
       })
-      setPlans(prev => prev.map(p => p.date === editingPlan.date ? { ...p, content: editContent } : p))
+      const nextPlan = saved || { ...editingPlan, content: editContent }
+      setPlans(prev => {
+        const exists = prev.some(p => p.date === nextPlan.date)
+        const next = exists
+          ? prev.map(p => p.date === nextPlan.date ? nextPlan : p)
+          : [nextPlan, ...prev]
+        return next.sort((a, b) => b.date.localeCompare(a.date))
+      })
+      await loadPlans()
       setEditingPlan(null)
+      setProbeResult(null)
       message.success('已保存')
     } finally {
       setSaving(false)
@@ -85,13 +101,54 @@ export function PlansPage() {
     setGenerating(true)
     try {
       const result = await generateDailyPlan(date)
-      if (result) {
-        message.success(`已生成计划，共 ${result.item_count} 项`)
-        await loadPlans()
-      }
+      message.success(`已生成计划，共 ${result.item_count} 项`)
+      await loadPlans()
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '生成计划失败'))
     } finally {
       setGenerating(false)
     }
+  }
+
+  const handleFeynmanProbe = async () => {
+    if (!editingPlan) return
+    if (editContent.trim().length < 12) {
+      message.warning('请先写一段今日复盘或总结，再生成明镜追问')
+      return
+    }
+    setProbing(true)
+    try {
+      const result = await generateFeynmanProbe(editingPlan.date, editContent, 4)
+      if (!result) {
+        message.error('明镜追问生成失败，请稍后重试')
+        return
+      }
+      setProbeResult(result)
+      message.success(result.fallback ? '已生成基础追问（AI 未配置时的兜底结果）' : '已生成明镜追问')
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  const appendProbeToPlan = () => {
+    if (!probeResult) return
+    const block = [
+      '',
+      '---',
+      '',
+      `## ${probeResult.name}`,
+      `> ${probeResult.tagline}`,
+      '',
+      `**讲得比较清楚的地方：** ${probeResult.strongest_part}`,
+      '',
+      '**小白会追问：**',
+      ...probeResult.questions.map((q, idx) => `${idx + 1}. **${q.type}**：${q.question}\n   - 为什么问：${q.why}`),
+      '',
+      `**下一步最小补缺口：** ${probeResult.next_focus}`,
+      '',
+    ].join('\n')
+    setEditContent(prev => `${prev.trimEnd()}\n${block}`)
+    message.success('已追加到今日计划')
   }
 
   const handleNewPlan = async () => {
@@ -100,9 +157,11 @@ export function PlansPage() {
     if (existing) {
       setEditingPlan(existing)
       setEditContent(existing.content)
+      setProbeResult(null)
     } else {
       setEditingPlan({ date: today, content: '' })
       setEditContent('')
+      setProbeResult(null)
     }
   }
 
@@ -127,7 +186,7 @@ export function PlansPage() {
     )
   }, [plans])
 
-  const openEdit = (plan: Plan) => { setEditingPlan(plan); setEditContent(plan.content) }
+  const openEdit = (plan: Plan) => { setEditingPlan(plan); setEditContent(plan.content); setProbeResult(null) }
 
   const planCard = (plan: Plan, compact = false) => {
     const { total, completed } = getStats(plan.content)
@@ -165,27 +224,24 @@ export function PlansPage() {
   }
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '24px 16px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Button
-            size="small"
-            icon={<ArrowLeftOutlined />}
-            onClick={() => navigate('/')}
-          >
-            返回主页
-          </Button>
+    <PageShell
+      title={(
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <CalendarOutlined style={{ fontSize: 18, color: 'var(--accent-600)' }} />
-          <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>学习计划</span>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+          <span>学习计划</span>
+        </span>
+      )}
+      onBack={() => navigate('/')}
+      rightExtra={(
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Button icon={<PlusOutlined />} size="small" loading={generating} onClick={() => handleGenerate(dayjs().format('YYYY-MM-DD'))}>
             AI 生成今日计划
           </Button>
           <Button icon={<EditOutlined />} size="small" onClick={handleNewPlan}>手动新建</Button>
         </div>
-      </div>
+      )}
+      maxWidth={760}
+    >
 
       <Card size="small" title="计划日历" style={{ marginBottom: 16 }}>
         <Calendar
@@ -198,9 +254,11 @@ export function PlansPage() {
             if (existing) {
               setEditingPlan(existing)
               setEditContent(existing.content)
+              setProbeResult(null)
             } else {
               setEditingPlan({ date: selectedDate, content: '' })
               setEditContent('')
+              setProbeResult(null)
             }
           }}
           dateCellRender={(current) => {
@@ -297,26 +355,70 @@ export function PlansPage() {
         open={!!editingPlan}
         title={editingPlan ? `${editingPlan.date} 的计划` : ''}
         onOk={handleSave}
-        onCancel={() => setEditingPlan(null)}
+        onCancel={() => { setEditingPlan(null); setProbeResult(null) }}
         confirmLoading={saving}
         width={600}
         okText="保存"
       >
-        <div style={{ marginBottom: 8, display: 'flex', gap: 8 }}>
+        <div style={{ marginBottom: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button size="small" loading={generating} onClick={() => editingPlan && handleGenerate(editingPlan.date)}>
             ✨ AI 重新生成
           </Button>
+          <Button size="small" icon={<QuestionCircleOutlined />} loading={probing} onClick={handleFeynmanProbe}>
+            明镜追问
+          </Button>
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: '24px' }}>
-            使用 <code>- [ ]</code> 创建可勾选任务
+            写完复盘后，让 AI 站在“小白听众”角度追问你
           </span>
         </div>
         <Input.TextArea
           value={editContent}
           onChange={e => setEditContent(e.target.value)}
           autoSize={{ minRows: 10, maxRows: 20 }}
-          placeholder={`输入今日计划...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题`}
+          placeholder={`输入今日计划...\n例如：\n- [ ] 复习第一章\n\n## 晚间费曼复盘\n今天我真正理解的是...\n如果讲给一个没学过的人，我会这样说...`}
         />
+
+        {probeResult && (
+          <Card
+            size="small"
+            title={(
+              <Space>
+                <BulbOutlined style={{ color: 'var(--accent-600)' }} />
+                <span>{probeResult.name}</span>
+                {probeResult.fallback && <Tag color="orange">基础追问</Tag>}
+              </Space>
+            )}
+            extra={<Button size="small" onClick={appendProbeToPlan}>追加到计划</Button>}
+            style={{ marginTop: 12, background: 'var(--bg-secondary)' }}
+          >
+            <Alert type="info" showIcon message={probeResult.tagline} style={{ marginBottom: 12 }} />
+            <Paragraph style={{ marginBottom: 8 }}>
+              <Text strong>讲得比较清楚：</Text>{probeResult.strongest_part}
+            </Paragraph>
+            <List
+              size="small"
+              dataSource={probeResult.questions}
+              renderItem={(q, idx) => (
+                <List.Item style={{ display: 'block', paddingLeft: 0, paddingRight: 0 }}>
+                  <Space size={6} wrap style={{ marginBottom: 4 }}>
+                    <Tag color="purple">{idx + 1}</Tag>
+                    <Tag>{q.type}</Tag>
+                  </Space>
+                  <Paragraph style={{ marginBottom: 4 }}>{q.question}</Paragraph>
+                  <Text type="secondary" style={{ fontSize: 12 }}>为什么问：{q.why}</Text>
+                </List.Item>
+              )}
+            />
+            <Alert
+              type="success"
+              showIcon
+              message="下一步最小补缺口"
+              description={probeResult.next_focus}
+              style={{ marginTop: 8 }}
+            />
+          </Card>
+        )}
       </Modal>
-    </div>
+    </PageShell>
   )
 }

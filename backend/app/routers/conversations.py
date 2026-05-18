@@ -1,5 +1,6 @@
 """对话管理路由"""
 import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, func
@@ -27,6 +28,17 @@ class ConversationUpdate(BaseModel):
     is_pinned: Optional[bool] = None
 
 
+class ConversationFork(BaseModel):
+    title: Optional[str] = None
+    up_to_index: Optional[int] = None
+
+
+class ConversationMessageCreate(BaseModel):
+    role: str
+    content: str
+    image_data: Optional[List[str]] = None
+
+
 class MessageOut(BaseModel):
     id: int
     role: str
@@ -34,8 +46,7 @@ class MessageOut(BaseModel):
     image_data: Optional[List[str]] = None
     created_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ConversationOut(BaseModel):
@@ -47,8 +58,7 @@ class ConversationOut(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ConversationDetail(ConversationOut):
@@ -213,6 +223,56 @@ async def get_conversation(
     }
 
 
+@router.post("/{conversation_id}/messages")
+async def append_conversation_messages(
+    conversation_id: int,
+    body: List[ConversationMessageCreate],
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """追加已经在前端完成的对话消息，例如 Agent 确认写入结果。"""
+    result = await db.execute(
+        select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.user_id == current_user.id,
+        )
+    )
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    created = []
+    for item in body[:20]:
+        role = (item.role or "").strip()
+        content = (item.content or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            raise HTTPException(status_code=400, detail="消息角色或内容无效")
+        msg = ChatMessage(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            image_data=json.dumps(item.image_data, ensure_ascii=False) if item.image_data else None,
+        )
+        db.add(msg)
+        await db.flush()
+        await db.refresh(msg)
+        created.append(
+            {
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "image_data": item.image_data,
+                "created_at": str(msg.created_at or ""),
+            }
+        )
+        if conv.title == "新对话" and role == "user":
+            conv.title = content[:50]
+        conv.updated_at = datetime.now()
+
+    await db.flush()
+    return {"messages": created}
+
+
 @router.put("/{conversation_id}")
 async def update_conversation(
     conversation_id: int,
@@ -249,6 +309,66 @@ async def update_conversation(
         "is_pinned": conv.is_pinned,
         "created_at": str(conv.created_at or ""),
         "updated_at": str(conv.updated_at or ""),
+    }
+
+
+@router.post("/{conversation_id}/fork")
+async def fork_conversation(
+    conversation_id: int,
+    body: ConversationFork,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """复制当前对话到指定消息位置，用于编辑历史消息和创建分支。"""
+    result = await db.execute(
+        select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.user_id == current_user.id,
+        )
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    msg_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.id)
+    )
+    source_messages = msg_result.scalars().all()
+    if body.up_to_index is None:
+        messages_to_copy = source_messages
+    else:
+        copy_count = max(0, min(len(source_messages), body.up_to_index + 1))
+        messages_to_copy = source_messages[:copy_count]
+
+    fork = ChatConversation(
+        user_id=current_user.id,
+        title=body.title or f"{source.title or '新对话'} 的分支",
+        project_id=source.project_id,
+        summary=source.summary if body.up_to_index is None else None,
+    )
+    db.add(fork)
+    await db.flush()
+
+    for msg in messages_to_copy:
+        db.add(ChatMessage(
+            conversation_id=fork.id,
+            role=msg.role,
+            content=msg.content,
+            image_data=msg.image_data,
+        ))
+
+    await db.flush()
+    await db.refresh(fork)
+    return {
+        "id": fork.id,
+        "title": fork.title,
+        "project_id": fork.project_id,
+        "is_pinned": fork.is_pinned,
+        "summary": fork.summary,
+        "created_at": str(fork.created_at or ""),
+        "updated_at": str(fork.updated_at or ""),
     }
 
 

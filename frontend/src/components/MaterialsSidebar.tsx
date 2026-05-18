@@ -47,6 +47,9 @@ interface MaterialsSidebarProps {
     enabled: boolean
     rag_online: boolean
     total_chunks: number
+    embedding_enabled?: boolean
+    fallback_active?: boolean
+    last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
   } | null
   weeklyPlans: DailyPlan[]
   wrongQuestions?: WrongQuestionPreview[]
@@ -137,13 +140,18 @@ export function MaterialsSidebar({
         </div>
         {ragStatus && (
           <div style={{ marginBottom: 8 }}>
-            <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : 'default'}>
-              RAG 知识库: {ragStatus.rag_online ? '在线' : '离线'}
+            <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : ragStatus.fallback_active || !ragStatus.embedding_enabled ? 'orange' : 'default'}>
+              RAG 知识库: {ragStatus.rag_online ? '在线' : 'Fallback'}
             </Tag>
             {ragStatus.rag_online && (
               <Tag color="blue">
                 {ragStatus.total_chunks} chunks
               </Tag>
+            )}
+            {ragStatus.last_retrieval_status?.message && (
+              <div style={{ marginTop: 4, fontSize: 12, color: ragStatus.fallback_active ? '#fa8c16' : '#666' }}>
+                {ragStatus.last_retrieval_status.message}
+              </div>
             )}
           </div>
         )}
@@ -155,7 +163,7 @@ export function MaterialsSidebar({
         >
           <p><UploadOutlined style={{ fontSize: 24 }} /></p>
           <p style={{ fontSize: 13, margin: '8px 0 4px' }}>点击或拖拽文件到此处上传</p>
-          <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
+          <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown</p>
         </Upload.Dragger>
       </div>
 
