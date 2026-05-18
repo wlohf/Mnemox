@@ -17,6 +17,7 @@ from ..models.chat import ChatProjectMaterial, ChatProject
 from ..utils.paths import ensure_data_dirs, get_uploads_dir, to_repo_relative
 from ..auth import get_current_user
 from ..models.user import User
+from ..utils.ownership import get_owned_row
 
 
 router = APIRouter()
@@ -43,8 +44,7 @@ class MaterialResponse(BaseModel):
     updated_at: str
     project_ids: Optional[List[int]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class MaterialUploadResponse(MaterialResponse):
@@ -435,13 +435,13 @@ async def get_material(
     - **material_id**: 资料ID
     """
     from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
+    material = await get_owned_row(
+        db,
+        Material,
+        material_id,
+        int(current_user.id),
+        not_found_detail="资料不存在",
     )
-    material = result.scalar_one_or_none()
-
-    if not material:
-        raise HTTPException(status_code=404, detail="资料不存在")
 
     proj_result = await db.execute(
         sa_select(ChatProjectMaterial.project_id)
@@ -465,12 +465,7 @@ async def delete_material(
     """删除资料（数据库记录 + 本地上传文件）。"""
     # Verify ownership before deleting
     from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    material = result.scalar_one_or_none()
-    if not material:
-        raise HTTPException(status_code=404, detail="资料不存在")
+    await get_owned_row(db, Material, material_id, int(current_user.id), not_found_detail="资料不存在")
 
     material_service = get_material_service(db)
     deleted = await material_service.delete_material(material_id, user_id=current_user.id)
@@ -492,11 +487,7 @@ async def analyze_material(
     """
     # Verify ownership
     from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="资料不存在")
+    await get_owned_row(db, Material, material_id, int(current_user.id), not_found_detail="资料不存在")
 
     material_service = get_material_service(db)
     try:
@@ -528,11 +519,7 @@ async def ask_question(
     """
     # Verify ownership
     from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="资料不存在")
+    await get_owned_row(db, Material, material_id, int(current_user.id), not_found_detail="资料不存在")
 
     material_service = get_material_service(db)
     try:
@@ -566,11 +553,7 @@ async def generate_outline(
     """
     # Verify ownership
     from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(Material).where(Material.id == material_id, Material.user_id == current_user.id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="资料不存在")
+    await get_owned_row(db, Material, material_id, int(current_user.id), not_found_detail="资料不存在")
 
     material_service = get_material_service(db)
     try:

@@ -1,12 +1,12 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Layout, Card, Row, Col, Button, Tag, Space, Modal, Input,
+  Card, Row, Col, Button, Tag, Space, Modal, Input,
   DatePicker, Select, message, Segmented, Tree, Tooltip, Progress,
 } from 'antd'
 import type { DataNode } from 'antd/es/tree'
 import {
-  ArrowLeftOutlined, PlusOutlined, CalendarOutlined,
+  PlusOutlined, CalendarOutlined,
   FlagOutlined, CheckSquareOutlined, ApartmentOutlined, DeleteOutlined,
 } from '@ant-design/icons'
 import { useOfflineGoals, type OfflineGoalItem } from '../hooks/useOfflineGoals'
@@ -15,10 +15,10 @@ import {
   startStudySession, completeStudySession, listActiveStudySessions, type StudySessionItem,
 } from '../services/studySessionApi'
 import { evaluateTaskOutput, type OutputEvalResult } from '../services/learningApi'
+import { getApiErrorMessage } from '../services/apiClient'
 import { GoalPlanModal } from '../components/GoalPlanModal'
 import { apiFetch } from '../services/apiClient'
-
-const { Header, Content } = Layout
+import { PageShell } from '../components/PageShell'
 
 type GoalFilter = 'all' | 'active' | 'completed' | 'paused'
 
@@ -29,24 +29,46 @@ const STATUS_LABEL: Record<string, string> = {
   pending: '待办', in_progress: '进行中', completed: '已完成',
 }
 
-// Build tree nodes from flat task list
-function buildTree(tasks: OfflineGoalTaskItem[]): DataNode[] {
+interface TaskTreeNode extends DataNode {
+  task: OfflineGoalTaskItem
+  children?: TaskTreeNode[]
+}
+
+// Build tree nodes from flat task list. Parent links come from server ids, so
+// locally-created unsynced tasks must not recurse through the root bucket.
+function buildTree(tasks: OfflineGoalTaskItem[]): TaskTreeNode[] {
   const byParent = new Map<number | null, OfflineGoalTaskItem[]>()
+  const serverIds = new Set(
+    tasks
+      .map(t => t._serverId)
+      .filter((id): id is number => id != null),
+  )
+
   for (const t of tasks) {
-    const key = t.parent_task_id ?? null
+    const key = (
+      t.parent_task_id != null
+      && serverIds.has(t.parent_task_id)
+      && t.parent_task_id !== t._serverId
+    ) ? t.parent_task_id : null
     if (!byParent.has(key)) byParent.set(key, [])
     byParent.get(key)!.push(t)
   }
 
-  const makeNodes = (parentId: number | null): DataNode[] => {
+  const makeNodes = (parentId: number | null, ancestors = new Set<number>()): TaskTreeNode[] => {
     const children = byParent.get(parentId) || []
     children.sort((a, b) => (a.updated_at > b.updated_at ? -1 : 1))
     return children.map(t => {
       const isMilestone = t.task_type === 'milestone'
-      const subs = makeNodes(t._serverId ?? null)
+      let subs: TaskTreeNode[] = []
+      if (t._serverId != null && !ancestors.has(t._serverId)) {
+        const nextAncestors = new Set(ancestors)
+        nextAncestors.add(t._serverId)
+        subs = makeNodes(t._serverId, nextAncestors)
+      }
       return {
         key: t._localId,
-        title: t as unknown as DataNode['title'],
+        title: t.title,
+        task: t,
         icon: isMilestone ? <FlagOutlined style={{ color: 'var(--accent-600)' }} /> : <CheckSquareOutlined style={{ color: 'var(--text-tertiary)' }} />,
         children: subs.length > 0 ? subs : undefined,
         isLeaf: subs.length === 0,
@@ -142,7 +164,7 @@ export function GoalsTasksPage() {
       title: taskTitle.trim(),
       task_type: taskType,
       planned_date: taskPlannedDate,
-      parent_task_id: taskParentId,
+      parent_task_id: taskType === 'milestone' ? null : taskParentId,
     })
     message.success('任务已创建')
     setTaskModalOpen(false)
@@ -180,15 +202,19 @@ export function GoalsTasksPage() {
     if (!evalTask?._serverId) { message.warning('任务尚未同步'); return }
     if (!evalOutput.trim()) { message.warning('请输入产出内容'); return }
     setEvalLoading(true)
-    const res = await evaluateTaskOutput({
-      task_id: evalTask._serverId, output_text: evalOutput,
-      rubric: evalRubric, mark_task_completed: true,
-    })
-    setEvalLoading(false)
-    if (!res) { message.error('评估失败'); return }
-    setEvalResult(res)
-    message.success(`评估完成：${res.score} 分`)
-    await updateGoalTask(evalTask._localId, { status: res.score >= 80 ? 'completed' : 'in_progress' })
+    try {
+      const res = await evaluateTaskOutput({
+        task_id: evalTask._serverId, output_text: evalOutput,
+        rubric: evalRubric, mark_task_completed: true,
+      })
+      setEvalResult(res)
+      message.success(`评估完成：${res.score} 分`)
+      await updateGoalTask(evalTask._localId, { status: res.score >= 80 ? 'completed' : 'in_progress' })
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '评估失败'))
+    } finally {
+      setEvalLoading(false)
+    }
   }
 
   const handleGenerateNextWeek = async () => {
@@ -205,8 +231,14 @@ export function GoalsTasksPage() {
     }
   }
 
-  // Milestone tasks (for parent selector)
-  const milestones = goalTasks.filter(t => t.task_type === 'milestone' && t._serverId)
+  // Synced tasks can be selected as a parent. Unsynced tasks do not have the
+  // server id required by the API yet.
+  const parentTaskOptions = goalTasks
+    .filter(t => t._serverId)
+    .map(t => ({
+      label: `${t.task_type === 'milestone' ? '里程碑' : '任务'} · ${t.title}`,
+      value: t._serverId!,
+    }))
 
   const renderTaskNode = (t: OfflineGoalTaskItem) => {
     const isMilestone = t.task_type === 'milestone'
@@ -228,7 +260,11 @@ export function GoalsTasksPage() {
             : <Button size="small" style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => startLearning(t)}>学习</Button>
           }
           <Button size="small" style={{ fontSize: 11, padding: '0 6px', height: 20 }} onClick={() => {
-            setTaskParentId(t._serverId ?? null)
+            if (!t._serverId) {
+              message.warning('任务同步后才能添加子任务，请稍后再试')
+              return
+            }
+            setTaskParentId(t._serverId)
             setTaskType('learn')
             setTaskModalOpen(true)
           }}>+子任务</Button>
@@ -252,31 +288,28 @@ export function GoalsTasksPage() {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
-      <Header style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', paddingInline: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', height: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
-            <ApartmentOutlined style={{ fontSize: 16, color: 'var(--accent-600)' }} />
-            <span style={{ fontSize: 16, fontWeight: 600 }}>目标与任务</span>
-            <Segmented
-              value={filter}
-              onChange={v => setFilter(v as GoalFilter)}
-              options={[
-                { label: '全部', value: 'all' },
-                { label: '进行中', value: 'active' },
-                { label: '已完成', value: 'completed' },
-                { label: '暂停', value: 'paused' },
-              ]}
-              size="small"
-            />
-          </Space>
-          <Button icon={<PlusOutlined />} onClick={() => setGoalModalOpen(true)}>新建大目标</Button>
-        </div>
-      </Header>
-
-      <Content style={{ padding: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <PageShell
+      title={(
+        <Space wrap>
+          <ApartmentOutlined style={{ fontSize: 16, color: 'var(--accent-600)' }} />
+          <span>目标与任务</span>
+          <Segmented
+            value={filter}
+            onChange={v => setFilter(v as GoalFilter)}
+            options={[
+              { label: '全部', value: 'all' },
+              { label: '进行中', value: 'active' },
+              { label: '已完成', value: 'completed' },
+              { label: '暂停', value: 'paused' },
+            ]}
+            size="small"
+          />
+        </Space>
+      )}
+      onBack={() => navigate('/')}
+      rightExtra={<Button icon={<PlusOutlined />} onClick={() => setGoalModalOpen(true)}>新建大目标</Button>}
+      maxWidth={1200}
+    >
           <Row gutter={[16, 16]}>
             {/* Goals list */}
             <Col xs={24} lg={7}>
@@ -362,7 +395,7 @@ export function GoalsTasksPage() {
                         </Button>
                       </Tooltip>
                       <Tooltip title="添加每日任务">
-                        <Button size="small" icon={<PlusOutlined />} type="primary" onClick={() => { setTaskType('learn'); setTaskModalOpen(true) }}>
+                        <Button size="small" icon={<PlusOutlined />} type="primary" onClick={() => { setTaskType('learn'); setTaskParentId(null); setTaskModalOpen(true) }}>
                           添加任务
                         </Button>
                       </Tooltip>
@@ -391,7 +424,7 @@ export function GoalsTasksPage() {
                       expandedKeys={expandedKeys}
                       onExpand={keys => setExpandedKeys(keys)}
                       treeData={treeData}
-                      titleRender={node => renderTaskNode(node.title as unknown as OfflineGoalTaskItem)}
+                      titleRender={node => renderTaskNode((node as TaskTreeNode).task)}
                       style={{ background: 'transparent' }}
                     />
                   )}
@@ -399,8 +432,6 @@ export function GoalsTasksPage() {
               )}
             </Col>
           </Row>
-        </div>
-      </Content>
 
       {/* New Goal Modal */}
       <Modal title="新建大目标" open={goalModalOpen} onOk={handleCreateGoal} onCancel={() => setGoalModalOpen(false)} okText="创建">
@@ -449,13 +480,13 @@ export function GoalsTasksPage() {
         </div>
         {taskType !== 'milestone' && (
           <div style={{ marginBottom: 10 }}>
-            <div style={{ marginBottom: 4 }}>所属里程碑（可选）</div>
+            <div style={{ marginBottom: 4 }}>父任务（可选）</div>
             <Select
               allowClear placeholder="不选则直接挂在目标下"
               value={taskParentId ?? undefined}
               onChange={v => setTaskParentId(v ? Number(v) : null)}
               style={{ width: '100%' }}
-              options={milestones.map(t => ({ label: t.title, value: t._serverId! }))}
+              options={parentTaskOptions}
             />
           </div>
         )}
@@ -499,6 +530,6 @@ export function GoalsTasksPage() {
         onClose={() => setPlanModalOpen(false)}
         onSuccess={() => window.location.reload()}
       />
-    </Layout>
+    </PageShell>
   )
 }

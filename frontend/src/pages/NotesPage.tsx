@@ -5,17 +5,17 @@ import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import { useNavigate } from 'react-router-dom'
-import { Layout, Card, Row, Col, Input, List, Button, Space, Tag, Modal, message, Select, Upload, Typography, Tabs } from 'antd'
-import { ArrowLeftOutlined, PlusOutlined, SaveOutlined, DeleteOutlined, PictureOutlined, ImportOutlined, RobotOutlined, CopyOutlined } from '@ant-design/icons'
+import { Card, Row, Col, Input, List, Button, Space, Tag, Modal, message, Select, Upload, Typography, Tabs } from 'antd'
+import { PlusOutlined, SaveOutlined, DeleteOutlined, PictureOutlined, ImportOutlined, RobotOutlined, CopyOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useOfflineNotes, type OfflineNoteItem } from '../hooks/useOfflineNotes'
 import { uploadImage } from '../services/imageApi'
 import { importObsidianNote } from '../services/obsidianImportApi'
 import { assistNoteWithAI, type NoteAIAssistAction } from '../services/noteApi'
 import { MarkdownLiveEditor, type MarkdownLiveEditorHandle, type MarkdownLiveEditorImageResult } from '../components/MarkdownLiveEditor'
+import { PageShell } from '../components/PageShell'
 import '../components/ChatMessageBubble.css'
 
-const { Header, Content } = Layout
 const { Text } = Typography
 
 const NOTE_AI_ACTIONS: Array<{ key: NoteAIAssistAction; label: string; description: string }> = [
@@ -52,7 +52,7 @@ export function NotesPage() {
 
   // Obsidian import modal state
   const [importOpen, setImportOpen] = useState(false)
-  const [importMdFile, setImportMdFile] = useState<File | null>(null)
+  const [importMdFiles, setImportMdFiles] = useState<File[]>([])
   const [importAttachments, setImportAttachments] = useState<File[]>([])
   const [importing, setImporting] = useState(false)
 
@@ -128,32 +128,47 @@ export function NotesPage() {
 
   // Obsidian import handler (still uses online API for the import itself)
   const handleObsidianImport = async () => {
-    if (!importMdFile) {
-      message.warning('请选择 Markdown 文件')
+    if (importMdFiles.length === 0) {
+      message.warning('请选择 Markdown 文件，可一次选择多个')
       return
     }
     setImporting(true)
-    const result = await importObsidianNote(importMdFile, importAttachments)
-    setImporting(false)
-    if (!result) {
+    let successCount = 0
+    let warningCount = 0
+    let lastCreated: OfflineNoteItem | null = null
+    try {
+      for (const mdFile of importMdFiles) {
+        const result = await importObsidianNote(mdFile, importAttachments)
+        if (!result) {
+          continue
+        }
+        warningCount += result.warnings.length
+        const created = await createNote({
+          title: result.title,
+          content: result.content,
+          note_type: 'general',
+          tags: [],
+        })
+        lastCreated = created
+        successCount += 1
+      }
+    } finally {
+      setImporting(false)
+    }
+
+    if (successCount === 0) {
       message.error('导入失败')
       return
     }
-    if (result.warnings.length > 0) {
-      message.warning(`导入完成，但有 ${result.warnings.length} 个警告`)
+
+    if (warningCount > 0) {
+      message.warning(`导入完成，但有 ${warningCount} 个警告`)
     }
-    // Create via offline hook
-    const created = await createNote({
-      title: result.title,
-      content: result.content,
-      note_type: 'general',
-      tags: [],
-    })
-    message.success(`已导入笔记，上传了 ${result.images_uploaded} 张图片`)
+    message.success(`已导入 ${successCount} 篇笔记`)
     setImportOpen(false)
-    setImportMdFile(null)
+    setImportMdFiles([])
     setImportAttachments([])
-    openNote(created)
+    if (lastCreated) openNote(lastCreated)
   }
 
   const handleCreate = async () => {
@@ -295,24 +310,20 @@ export function NotesPage() {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
-      <Header style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-light)', paddingInline: 16 }}>
-        <div style={{ maxWidth: 1280, margin: '0 auto', height: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回学习页</Button>
-            <span style={{ fontSize: 16, fontWeight: 600 }}>笔记系统</span>
-          </Space>
-          <Space>
-            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入 Obsidian</Button>
-            <Button icon={<PlusOutlined />} onClick={handleCreate}>新建笔记</Button>
-            <Button icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
-            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存</Button>
-            <Button danger icon={<DeleteOutlined />} onClick={handleDelete} disabled={!active}>删除</Button>
-          </Space>
-        </div>
-      </Header>
-      <Content style={{ padding: 16 }}>
-        <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+    <PageShell
+      title="笔记系统"
+      onBack={() => navigate('/')}
+      rightExtra={(
+        <Space wrap>
+          <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入 Obsidian</Button>
+          <Button icon={<PlusOutlined />} onClick={handleCreate}>新建笔记</Button>
+          <Button icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存</Button>
+          <Button danger icon={<DeleteOutlined />} onClick={handleDelete} disabled={!active}>删除</Button>
+        </Space>
+      )}
+      maxWidth={1280}
+    >
           <Row gutter={[16, 16]}>
             <Col xs={24} lg={8}>
               <Card
@@ -412,8 +423,6 @@ export function NotesPage() {
               </Card>
             </Col>
           </Row>
-        </div>
-      </Content>
 
       {/* AI Assist Modal */}
       <Modal
@@ -508,7 +517,7 @@ export function NotesPage() {
       <Modal
         title="导入 Obsidian 笔记"
         open={importOpen}
-        onCancel={() => { setImportOpen(false); setImportMdFile(null); setImportAttachments([]) }}
+        onCancel={() => { setImportOpen(false); setImportMdFiles([]); setImportAttachments([]) }}
         onOk={handleObsidianImport}
         confirmLoading={importing}
         okText="导入"
@@ -519,16 +528,31 @@ export function NotesPage() {
             <div style={{ marginBottom: 6, fontWeight: 500 }}>Markdown 文件</div>
             <Upload
               accept=".md,.markdown"
-              maxCount={1}
-              beforeUpload={(file) => {
-                setImportMdFile(file)
+              multiple
+              beforeUpload={(_file, fileList) => {
+                setImportMdFiles((prev) => {
+                  const next = [...prev]
+                  for (const item of fileList) {
+                    if (!next.some((p) => p.name === item.name && p.size === item.size)) {
+                      next.push(item)
+                    }
+                  }
+                  return next
+                })
                 return false
               }}
-              onRemove={() => setImportMdFile(null)}
-              fileList={importMdFile ? [{ uid: '-1', name: importMdFile.name, status: 'done' as const }] : []}
+              onRemove={(file) => {
+                setImportMdFiles((prev) => prev.filter((f) => f.name !== file.name || f.size !== file.size))
+              }}
+              fileList={importMdFiles.map((f, i) => ({ uid: `md-${i}`, name: f.name, status: 'done' as const }))}
             >
-              <Button>选择 .md 文件</Button>
+              <Button>选择 .md 文件（可多选）</Button>
             </Upload>
+            {importMdFiles.length > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                已选择 {importMdFiles.length} 个 Markdown 文件
+              </div>
+            )}
           </div>
           <div>
             <div style={{ marginBottom: 6, fontWeight: 500 }}>附件图片（可选）</div>
@@ -552,6 +576,6 @@ export function NotesPage() {
           </div>
         </Space>
       </Modal>
-    </Layout>
+    </PageShell>
   )
 }

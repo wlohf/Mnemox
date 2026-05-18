@@ -69,6 +69,7 @@ export function AgentPage() {
   const [executeLoading, setExecuteLoading] = useState(false)
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
   const [agentLoading, setAgentLoading] = useState<string | null>(null)
+  const [showDebug, setShowDebug] = useState(false)
 
   const loadRuntime = async () => {
     const data = await getAgentStatus()
@@ -221,7 +222,7 @@ export function AgentPage() {
       onBack={() => navigate('/')}
       rightExtra={(
         <Space>
-          <Text type="secondary">LLM Planner</Text>
+          <Text type="secondary">高级规划</Text>
           <Switch
             checked={useLlm}
             onChange={(checked) => {
@@ -229,6 +230,9 @@ export function AgentPage() {
               void load(checked)
             }}
           />
+          <Button onClick={() => setShowDebug((v) => !v)}>
+            {showDebug ? '隐藏调试' : '显示调试'}
+          </Button>
           <Button loading={loading} onClick={() => void load()}>刷新感知</Button>
         </Space>
       )}
@@ -459,78 +463,82 @@ export function AgentPage() {
           />
         </Card>
 
-        <Card size="small" title="Agent 感知上下文" loading={loading}>
-          <Row gutter={[12, 12]}>
-            <Col xs={12} md={6}><Tag>今日任务：{String(tasks.today_task_count ?? 0)}</Tag></Col>
-            <Col xs={12} md={6}><Tag>过期任务：{String(tasks.overdue_task_count ?? 0)}</Tag></Col>
-            <Col xs={12} md={6}><Tag>到期复习：{String(review.due_review_count ?? 0)}</Tag></Col>
-            <Col xs={12} md={6}><Tag>今日学习：{String(learning.today_minutes ?? 0)} 分钟</Tag></Col>
-            <Col xs={12} md={6}><Tag>长期记忆：{String(memory.active_memory_count ?? 0)}</Tag></Col>
-            <Col xs={12} md={6}><Tag>走神率：{Math.round(Number(learning.recent_distracted_rate ?? 0) * 100)}%</Tag></Col>
-          </Row>
-        </Card>
+        {showDebug && (
+          <>
+            <Card size="small" title="Agent 感知上下文" loading={loading}>
+              <Row gutter={[12, 12]}>
+                <Col xs={12} md={6}><Tag>今日任务：{String(tasks.today_task_count ?? 0)}</Tag></Col>
+                <Col xs={12} md={6}><Tag>过期任务：{String(tasks.overdue_task_count ?? 0)}</Tag></Col>
+                <Col xs={12} md={6}><Tag>到期复习：{String(review.due_review_count ?? 0)}</Tag></Col>
+                <Col xs={12} md={6}><Tag>今日学习：{String(learning.today_minutes ?? 0)} 分钟</Tag></Col>
+                <Col xs={12} md={6}><Tag>长期记忆：{String(memory.active_memory_count ?? 0)}</Tag></Col>
+                <Col xs={12} md={6}><Tag>走神率：{Math.round(Number(learning.recent_distracted_rate ?? 0) * 100)}%</Tag></Col>
+              </Row>
+            </Card>
 
-        <Card size="small" title="Agent Runtime" loading={loading}>
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Space wrap>
-              <Tag color={runtime?.status === 'running' ? 'processing' : 'default'}>状态：{runtime?.status || 'idle'}</Tag>
-              {(runtime?.agents || []).map((agent) => (
-                <Button
-                  key={agent.name}
-                  size="small"
-                  loading={agentLoading === agent.name}
-                  onClick={() => void runAgent(agent.name as 'study_plan' | 'review' | 'chat')}
-                >
-                  触发 {agent.display_name}
-                </Button>
-              ))}
-            </Space>
-            <Row gutter={[12, 12]}>
-              <Col xs={24} md={12}>
-                <List
-                  size="small"
-                  header="任务队列"
-                  bordered
-                  dataSource={runtime?.task_queue || []}
-                  locale={{ emptyText: '暂无任务' }}
-                  renderItem={(job) => (
-                    <List.Item>
-                      <Space direction="vertical" size={2}>
-                        <Space wrap>
-                          <Tag>{String(job.agent || '-')}</Tag>
-                          <Tag color={job.status === 'failed' ? 'red' : job.status === 'completed' ? 'green' : 'blue'}>{String(job.status || '-')}</Tag>
-                          <Text type="secondary">{String(job.task || '')}</Text>
-                        </Space>
-                        {Boolean(job.summary) && <Text>{String(job.summary)}</Text>}
-                      </Space>
-                    </List.Item>
-                  )}
-                />
-              </Col>
-              <Col xs={24} md={12}>
-                <List
-                  size="small"
-                  header="执行日志"
-                  bordered
-                  dataSource={runtime?.execution_logs || []}
-                  locale={{ emptyText: '暂无日志' }}
-                  renderItem={(log) => (
-                    <List.Item>
-                      <Space direction="vertical" size={2}>
-                        <Space wrap>
-                          <Tag>{String(log.agent || '-')}</Tag>
-                          <Tag color={log.status === 'failed' ? 'red' : log.status === 'completed' ? 'green' : 'blue'}>{String(log.status || '-')}</Tag>
-                          <Text type="secondary">{String(log.created_at || '')}</Text>
-                        </Space>
-                        <Text>{String(log.message || '')}</Text>
-                      </Space>
-                    </List.Item>
-                  )}
-                />
-              </Col>
-            </Row>
-          </Space>
-        </Card>
+            <Card size="small" title="Agent Runtime" loading={loading}>
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Space wrap>
+                  <Tag color={runtime?.status === 'running' ? 'processing' : 'default'}>状态：{runtime?.status || 'idle'}</Tag>
+                  {(runtime?.agents || []).map((agent) => (
+                    <Button
+                      key={agent.name}
+                      size="small"
+                      loading={agentLoading === agent.name}
+                      onClick={() => void runAgent(agent.name as 'study_plan' | 'review' | 'chat')}
+                    >
+                      触发 {agent.display_name}
+                    </Button>
+                  ))}
+                </Space>
+                <Row gutter={[12, 12]}>
+                  <Col xs={24} md={12}>
+                    <List
+                      size="small"
+                      header="任务队列"
+                      bordered
+                      dataSource={runtime?.task_queue || []}
+                      locale={{ emptyText: '暂无任务' }}
+                      renderItem={(job) => (
+                        <List.Item>
+                          <Space direction="vertical" size={2}>
+                            <Space wrap>
+                              <Tag>{String(job.agent || '-')}</Tag>
+                              <Tag color={job.status === 'failed' ? 'red' : job.status === 'completed' ? 'green' : 'blue'}>{String(job.status || '-')}</Tag>
+                              <Text type="secondary">{String(job.task || '')}</Text>
+                            </Space>
+                            {Boolean(job.summary) && <Text>{String(job.summary)}</Text>}
+                          </Space>
+                        </List.Item>
+                      )}
+                    />
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <List
+                      size="small"
+                      header="执行日志"
+                      bordered
+                      dataSource={runtime?.execution_logs || []}
+                      locale={{ emptyText: '暂无日志' }}
+                      renderItem={(log) => (
+                        <List.Item>
+                          <Space direction="vertical" size={2}>
+                            <Space wrap>
+                              <Tag>{String(log.agent || '-')}</Tag>
+                              <Tag color={log.status === 'failed' ? 'red' : log.status === 'completed' ? 'green' : 'blue'}>{String(log.status || '-')}</Tag>
+                              <Text type="secondary">{String(log.created_at || '')}</Text>
+                            </Space>
+                            <Text>{String(log.message || '')}</Text>
+                          </Space>
+                        </List.Item>
+                      )}
+                    />
+                  </Col>
+                </Row>
+              </Space>
+            </Card>
+          </>
+        )}
 
         <Modal
           title="确认 Agent 行动草案"

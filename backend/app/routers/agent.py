@@ -175,7 +175,6 @@ async def get_agent_brief(
     return await build_agent_brief(db, int(current_user.id), use_llm=use_llm)
 
 
-
 @router.post("/write/draft")
 async def draft_agent_write(
     body: AgentWriteDraftRequest,
@@ -183,6 +182,8 @@ async def draft_agent_write(
     current_user: User = Depends(get_current_user),
 ):
     """根据自然语言生成写入草案；只预览，不直接写入。"""
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="消息不能为空")
     return await build_agent_write_draft(db, int(current_user.id), body.message)
 
 

@@ -14,6 +14,15 @@ export interface DashboardData {
   due_review_count: number
   today_pomodoro_count: number
   today_study_minutes: number
+  today_mission?: {
+    kind: 'review' | 'task' | 'focus' | 'reflection' | 'setup' | string
+    title: string
+    reason: string
+    cta: string
+    route: string
+    estimated_minutes: number
+    active_recall_prompt: string
+  }
   recommended_actions: DashboardAction[]
   today_tasks: Array<{ id: number; title: string; task_type?: string; status: string }>
 }
@@ -80,26 +89,18 @@ export interface OutputEvalResult {
   verdict: string
 }
 
-export async function getDashboard(): Promise<DashboardData | null> {
-  try {
-    return await apiFetch<DashboardData>('/api/learning/dashboard')
-  } catch {
-    return null
-  }
+export async function getDashboard(): Promise<DashboardData> {
+  return await apiFetch<DashboardData>('/api/learning/dashboard')
 }
 
-export async function getMasteryMap(): Promise<MasteryMapData | null> {
-  try {
-    return await apiFetch<MasteryMapData>('/api/learning/mastery-map')
-  } catch {
-    return null
-  }
+export async function getMasteryMap(): Promise<MasteryMapData> {
+  return await apiFetch<MasteryMapData>('/api/learning/mastery-map')
 }
 
 export async function getProgressEngine(
   includeNonTextbook = false,
   weights?: { chapter: number; quiz: number; wrong: number; output: number }
-): Promise<ProgressEngineData | null> {
+): Promise<ProgressEngineData> {
   const query = new URLSearchParams()
   query.set('include_non_textbook', includeNonTextbook ? 'true' : 'false')
   if (weights) {
@@ -108,11 +109,7 @@ export async function getProgressEngine(
     query.set('w_wrong', String(weights.wrong))
     query.set('w_output', String(weights.output))
   }
-  try {
-    return await apiFetch<ProgressEngineData>(`/api/learning/progress-engine?${query.toString()}`)
-  } catch {
-    return null
-  }
+  return await apiFetch<ProgressEngineData>(`/api/learning/progress-engine?${query.toString()}`)
 }
 
 export async function analyzeMaterialForProgress(materialId: number): Promise<{
@@ -121,25 +118,17 @@ export async function analyzeMaterialForProgress(materialId: number): Promise<{
   confidence: number
   created_chapters: number
   chapter_count: number
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/materials/${materialId}/analyze`, { method: 'POST' })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/materials/${materialId}/analyze`, { method: 'POST' })
 }
 
 export async function setMaterialClassification(materialId: number, isTextbook: boolean): Promise<boolean> {
-  try {
-    await apiFetch(`/api/learning/materials/${materialId}/classification`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ is_textbook: isTextbook }),
-    })
-    return true
-  } catch {
-    return false
-  }
+  await apiFetch(`/api/learning/materials/${materialId}/classification`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_textbook: isTextbook }),
+  })
+  return true
 }
 
 export async function getMaterialLearningPlan(materialId: number): Promise<{
@@ -161,28 +150,20 @@ export async function getMaterialLearningPlan(materialId: number): Promise<{
     difficulty: string
     suggest_count: number
   }>
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/plan`)
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/plan`)
 }
 
 export async function generateTrainingTasks(materialId: number, questionTypes?: string[]): Promise<{
   material_id: number
   goal_id: number
   created_task_count: number
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/generate-training-tasks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ material_id: materialId, question_types: questionTypes || [] }),
-    })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/generate-training-tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ material_id: materialId, question_types: questionTypes || [] }),
+  })
 }
 
 export async function generate7DayPlan(materialId: number, days = 7): Promise<{
@@ -190,14 +171,10 @@ export async function generate7DayPlan(materialId: number, days = 7): Promise<{
   goal_id: number
   created_task_count: number
   days: number
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/generate-7day-plan?days=${days}`, {
-      method: 'POST',
-    })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/generate-7day-plan?days=${days}`, {
+    method: 'POST',
+  })
 }
 
 export async function adaptiveReplan(materialId: number, params?: {
@@ -210,19 +187,15 @@ export async function adaptiveReplan(materialId: number, params?: {
   rescheduled: number
   days: number
   preview: Array<{ task_id: number; title: string; task_type?: string; planned_date?: string | null; priority: number }>
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/adaptive-replan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        days: params?.days ?? 7,
-        focus_mode: params?.focus_mode ?? 'balanced',
-      }),
-    })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/progress-engine/materials/${materialId}/adaptive-replan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      days: params?.days ?? 7,
+      focus_mode: params?.focus_mode ?? 'balanced',
+    }),
+  })
 }
 
 export async function evaluateTaskOutput(data: {
@@ -230,16 +203,12 @@ export async function evaluateTaskOutput(data: {
   output_text: string
   rubric?: string
   mark_task_completed?: boolean
-}): Promise<OutputEvalResult | null> {
-  try {
-    return await apiFetch<OutputEvalResult>('/api/learning/evaluate-output', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
-  } catch {
-    return null
-  }
+}): Promise<OutputEvalResult> {
+  return await apiFetch<OutputEvalResult>('/api/learning/evaluate-output', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
 }
 
 export async function startLearningPipeline(materialId: number): Promise<{
@@ -251,12 +220,8 @@ export async function startLearningPipeline(materialId: number): Promise<{
   goal_id: number | null
   auto_created_tasks: number
   tasks: Array<{ id: number; title: string; task_type?: string; status: string; planned_date?: string | null }>
-} | null> {
-  try {
-    return await apiFetch(`/api/learning/materials/${materialId}/start-learning`, { method: 'POST' })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/learning/materials/${materialId}/start-learning`, { method: 'POST' })
 }
 
 export interface BatchLearningResult {
@@ -271,16 +236,12 @@ export interface BatchLearningResult {
 export async function startBatchLearningPipeline(materialIds: number[]): Promise<{
   results: BatchLearningResult[]
   total_tasks: number
-} | null> {
-  try {
-    return await apiFetch('/api/learning/materials/batch-start-learning', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ material_ids: materialIds }),
-    })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch('/api/learning/materials/batch-start-learning', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ material_ids: materialIds }),
+  })
 }
 
 export async function generateDailyPlan(date: string): Promise<{
@@ -288,10 +249,6 @@ export async function generateDailyPlan(date: string): Promise<{
   content: string
   item_count: number
   items: Array<{ type: string; emoji: string; label: string; priority: number; id: number }>
-} | null> {
-  try {
-    return await apiFetch(`/api/plans/generate/${date}`, { method: 'POST' })
-  } catch {
-    return null
-  }
+}> {
+  return await apiFetch(`/api/plans/generate/${date}`, { method: 'POST' })
 }

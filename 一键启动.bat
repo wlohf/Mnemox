@@ -10,6 +10,7 @@ set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=5173"
 set "FRONTEND_URL=http://localhost:%FRONTEND_PORT%"
 set "BACKEND_URL=http://localhost:%BACKEND_PORT%"
+set "BACKEND_HEALTH_URL=http://127.0.0.1:%BACKEND_PORT%"
 set "VENV_DIR=%BACKEND_DIR%\venv"
 set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
 set "PY_LAUNCHER="
@@ -91,7 +92,7 @@ if not exist "%BACKEND_DIR%\.env" (
         echo ENVIRONMENT=development
         echo HOST=0.0.0.0
         echo PORT=%BACKEND_PORT%
-        echo CORS_ORIGINS=[\"http://localhost:%FRONTEND_PORT%\", \"http://localhost:3000\"]
+        echo CORS_ORIGINS=["http://localhost:%FRONTEND_PORT%", "http://localhost:3000"]
         echo RAG_ENABLED=False
         echo MATERIAL_UPLOAD_MAX_MB=50
     )
@@ -140,11 +141,18 @@ call :kill_port %FRONTEND_PORT%
 echo [INFO] 正在启动后端窗口...
 start "%APP_NAME%-Backend" cmd /k "cd /d ""%BACKEND_DIR%"" && call venv\Scripts\activate && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port %BACKEND_PORT%"
 
+echo [INFO] 正在启动前端窗口...
+start "%APP_NAME%-Frontend" cmd /k "cd /d ""%FRONTEND_DIR%"" && npm run dev -- --host 0.0.0.0 --port %FRONTEND_PORT%"
+
+echo [INFO] 等待前端显示入口...
+timeout /t 6 /nobreak >nul
+start "" "%FRONTEND_URL%"
+
 echo [INFO] 等待后端健康检查...
 set "BACKEND_READY=0"
 for /L %%i in (1,1,45) do (
     if "!BACKEND_READY!"=="0" (
-        powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -Uri '%BACKEND_URL%/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -Uri '%BACKEND_HEALTH_URL%/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop; if ($r.StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
         if !errorlevel! EQU 0 (
             set "BACKEND_READY=1"
             echo [OK] 后端已就绪: %BACKEND_URL%
@@ -158,13 +166,6 @@ for /L %%i in (1,1,45) do (
 if "%BACKEND_READY%"=="0" (
     echo [WARN] 后端 45 秒内未通过健康检查。请查看 %APP_NAME%-Backend 窗口错误。
 )
-
-echo [INFO] 正在启动前端窗口...
-start "%APP_NAME%-Frontend" cmd /k "cd /d ""%FRONTEND_DIR%"" && npm run dev -- --host 0.0.0.0 --port %FRONTEND_PORT%"
-
-echo [INFO] 等待前端启动...
-timeout /t 6 /nobreak >nul
-start "" "%FRONTEND_URL%"
 
 echo.
 echo ====================================

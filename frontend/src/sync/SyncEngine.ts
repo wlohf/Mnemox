@@ -23,6 +23,12 @@ export type SyncStatusValue = 'idle' | 'syncing' | 'offline' | 'error'
 export interface SyncState {
   status: SyncStatusValue
   online: boolean
+  failedCount: number
+  lastError?: string
+}
+
+interface SyncOptions {
+  retryFailed?: boolean
 }
 
 type Listener = () => void
@@ -32,7 +38,7 @@ type Listener = () => void
 class SyncEngine {
   private adapters = new Map<ModuleName, ModuleSyncAdapter>()
   private listeners = new Set<Listener>()
-  private state: SyncState = { status: 'idle', online: navigator.onLine }
+  private state: SyncState = { status: 'idle', online: navigator.onLine, failedCount: 0 }
   private intervalId: ReturnType<typeof setInterval> | null = null
   private processing = false
   private authenticated = false
@@ -79,10 +85,10 @@ class SyncEngine {
 
   // ── Public API ──
 
-  async syncAll() {
+  async syncAll(options: SyncOptions = {}) {
     if (this.processing) return
     if (!this.authenticated || !getToken()) {
-      this.setState({ status: 'idle', online: navigator.onLine })
+      this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, lastError: undefined })
       return
     }
     if (!isNetworkOnline()) {
@@ -94,7 +100,7 @@ class SyncEngine {
     this.setState({ status: 'syncing', online: true })
 
     try {
-      await this.processQueue()
+      const failedCount = await this.processQueue(options)
       // Pull latest from server — each adapter is isolated so one failure won't block others
       for (const adapter of this.adapters.values()) {
         try {
@@ -103,12 +109,30 @@ class SyncEngine {
           console.warn(`[SyncEngine] pullAll failed for module=${adapter.module}`, e)
         }
       }
-      this.setState({ status: 'idle', online: true })
-    } catch {
-      this.setState({ status: 'error', online: this.state.online })
+      if (failedCount > 0) {
+        this.setState({
+          status: 'error',
+          online: true,
+          failedCount,
+          lastError: `${failedCount} 个本地改动同步失败，点击重试`,
+        })
+      } else {
+        this.setState({ status: 'idle', online: true, failedCount: 0, lastError: undefined })
+      }
+    } catch (e) {
+      const message = this.formatError(e)
+      if (!isNetworkOnline()) {
+        this.setState({ status: 'offline', online: false, lastError: message })
+      } else {
+        this.setState({ status: 'error', online: this.state.online, lastError: message })
+      }
     } finally {
       this.processing = false
     }
+  }
+
+  async retryFailed() {
+    await this.syncAll({ retryFailed: true })
   }
 
   getSnapshot = (): SyncState => this.state
@@ -120,23 +144,29 @@ class SyncEngine {
 
   // ── Queue processing ──
 
-  private async processQueue() {
+  private async processQueue(options: SyncOptions = {}): Promise<number> {
     const ops = await db.opQueue.orderBy('id').toArray()
     const MAX_RETRIES = 5
     let retryDelay = 1000
     const MAX_DELAY = 60_000
+    let failedCount = options.retryFailed ? 0 : ops.filter((op) => op.failedAt).length
 
     for (const op of ops) {
+      if (op.failedAt && !options.retryFailed) {
+        continue
+      }
+
       const adapter = this.adapters.get(op.module)
       if (!adapter) {
-        // No adapter registered for this module, skip
-        await db.opQueue.delete(op.id!)
+        await this.markOperationFailed(op, `未注册同步适配器: ${op.module}`, 0)
+        failedCount++
         continue
       }
 
       let success = false
       let attempts = 0
-      while (!success && attempts < 5) {
+      let lastError = op.lastError || ''
+      while (!success && attempts < MAX_RETRIES) {
         try {
           // 冲突检测：对 update 操作检查服务端是否已被修改
           if (op.opType === 'update' && adapter.checkConflict) {
@@ -151,6 +181,8 @@ class SyncEngine {
                   _conflictAt: new Date().toISOString(),
                   _conflictServerData: JSON.stringify(conflictResult.serverData),
                   _syncStatus: 'pending_update', // 保持 pending 状态等待用户解决
+                  _syncError: null,
+                  _syncFailedAt: null,
                 })
               }
               await db.opQueue.delete(op.id!)
@@ -170,13 +202,15 @@ class SyncEngine {
               break
           }
           success = true
+          await this.clearOperationFailure(op)
           await db.opQueue.delete(op.id!)
           retryDelay = 1000 // reset on success
-        } catch {
+        } catch (e) {
           attempts++
+          lastError = this.formatError(e)
           if (!isNetworkOnline()) {
             this.setState({ status: 'offline', online: false })
-            return // stop processing, will resume when online
+            throw e // stop processing, will resume when online
           }
           // Exponential backoff
           await new Promise((r) => setTimeout(r, retryDelay))
@@ -185,11 +219,61 @@ class SyncEngine {
       }
 
       if (!success) {
-        // 永久失败：从队列中移除，避免无限重试
-        console.error(`[SyncEngine] Permanently failed op ${op.id} (module=${op.module}, type=${op.opType}) after ${MAX_RETRIES} attempts, removing from queue`)
-        await db.opQueue.delete(op.id!)
+        console.error(`[SyncEngine] Permanently failed op ${op.id} (module=${op.module}, type=${op.opType}) after ${MAX_RETRIES} attempts`, lastError)
+        await this.markOperationFailed(op, lastError || '同步失败', attempts)
+        failedCount++
       }
     }
+
+    return failedCount
+  }
+
+  private async markOperationFailed(op: QueuedOperation, message: string, attempts: number) {
+    const failedAt = new Date().toISOString()
+    await db.opQueue.update(op.id!, {
+      attempts: (op.attempts || 0) + attempts,
+      lastError: message,
+      failedAt,
+    })
+
+    if (op.opType === 'delete') return
+
+    try {
+      const table = db.table(op.module)
+      const record = await table.get(op.localId)
+      if (record) {
+        await table.update(op.localId, {
+          _syncStatus: 'sync_failed',
+          _syncError: message,
+          _syncFailedAt: failedAt,
+        })
+      }
+    } catch (e) {
+      console.warn(`[SyncEngine] Failed to mark local record sync_failed for op ${op.id}`, e)
+    }
+  }
+
+  private async clearOperationFailure(op: QueuedOperation) {
+    if (op.opType === 'delete') return
+
+    try {
+      const table = db.table(op.module)
+      const record = await table.get(op.localId)
+      if (record) {
+        await table.update(op.localId, {
+          _syncError: null,
+          _syncFailedAt: null,
+        })
+      }
+    } catch (e) {
+      console.warn(`[SyncEngine] Failed to clear local sync failure for op ${op.id}`, e)
+    }
+  }
+
+  private formatError(error: unknown): string {
+    if (error instanceof Error) return error.message
+    if (typeof error === 'string') return error
+    return '同步失败'
   }
 
   // ── Internal ──
@@ -208,7 +292,12 @@ class SyncEngine {
   private setState(next: Partial<SyncState>) {
     const prev = this.state
     this.state = { ...prev, ...next }
-    if (prev.status !== this.state.status || prev.online !== this.state.online) {
+    if (
+      prev.status !== this.state.status ||
+      prev.online !== this.state.online ||
+      prev.failedCount !== this.state.failedCount ||
+      prev.lastError !== this.state.lastError
+    ) {
       this.listeners.forEach((l) => l())
     }
   }

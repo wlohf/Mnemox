@@ -46,8 +46,7 @@ class MessageOut(BaseModel):
     image_data: Optional[List[str]] = None
     created_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ConversationOut(BaseModel):
@@ -59,8 +58,7 @@ class ConversationOut(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class ConversationDetail(ConversationOut):

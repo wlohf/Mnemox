@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Layout,
   Card,
   Button,
   Tag,
@@ -14,7 +13,7 @@ import {
   message,
   Segmented,
 } from 'antd'
-import { ArrowLeftOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
   listWrongQuestions,
@@ -24,8 +23,8 @@ import {
   reviewWrongQuestion,
   type WrongQuestionItem,
 } from '../services/wrongQuestionApi'
+import { PageShell } from '../components/PageShell'
 
-const { Header, Content } = Layout
 const { TextArea } = Input
 
 type FilterType = 'all' | 'not_mastered' | 'partial' | 'mastered'
@@ -146,19 +145,12 @@ export function WrongQuestionsPage() {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
-      <Header style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-light)', paddingInline: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', height: '100%', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回学习页</Button>
-            <span style={{ fontSize: 16, fontWeight: 600 }}>错题本</span>
-          </Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新增错题</Button>
-        </div>
-      </Header>
-
-      <Content style={{ padding: 16 }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <PageShell
+      title="错题本"
+      onBack={() => navigate('/')}
+      rightExtra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新增错题</Button>}
+      maxWidth={1200}
+    >
           <Card size="small" style={{ marginBottom: 12 }}>
             <Space size={16} wrap>
               <Tag color="blue">总数 {stats.total}</Tag>
@@ -213,8 +205,6 @@ export function WrongQuestionsPage() {
               )}
             />
           </Card>
-        </div>
-      </Content>
 
       <Modal
         title="新增错题"
@@ -296,6 +286,6 @@ export function WrongQuestionsPage() {
           </Space>
         )}
       </Modal>
-    </Layout>
+    </PageShell>
   )
 }

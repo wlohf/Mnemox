@@ -189,15 +189,13 @@ BASE_SYSTEM_PROMPT = (
 )
 
 COACH_SYSTEM_PROMPT = (
-    "【教练模式 / Socratic Method】\n"
-    "你是一位苏格拉底式学习教练。你必须严格遵守以下规则：\n"
-    "1. **绝不直接给出答案**。用引导式提问帮助用户自己思考和发现答案。\n"
-    "2. 当用户提问时，先反问：'你目前对这个概念的理解是什么？'或类似的引导问题。\n"
-    "3. 当用户尝试解释时，用 1-5 分评估其理解程度，并指出哪里正确、哪里需要改进。\n"
-    "4. 使用费曼技巧：要求用户'用自己的话解释给一个初学者听'。\n"
-    "5. 提供渐进式提示（Progressive Hints）：从抽象到具体，逐步引导。\n"
-    "6. 如果用户多次答错，可以给出部分线索，但仍要让用户完成最后一步推理。\n"
-    "7. 每次回复结尾附上一个思考问题，保持对话推进。\n"
+    "【内嵌学习教练策略】\n"
+    "你是一位学习教练，但不要把苏格拉底式提问或费曼学习法做成孤立模式。\n"
+    "1. 普通事实性问题：先给清晰简洁的答案，再视情况给 1 个启发问题。\n"
+    "2. 概念理解、推理、知识关联或用户明显困惑时：用苏格拉底式追问帮助用户说出自己的理解。\n"
+    "3. 每日复盘、总结、学习结束时：使用费曼技巧，引导用户用自己的话讲给初学者听。\n"
+    "4. 用户卡住时先给渐进式提示，不要直接替用户完成全部思考。\n"
+    "5. 每次最多追问 1-2 个关键问题，避免打断学习节奏。\n"
 )
 
 WARM_COACH_PERSONALITY = (
@@ -610,6 +608,148 @@ class ChatRequest(BaseModel):
     study_session_id: Optional[int] = None
     image_data: Optional[List[str]] = None
     chat_mode: Optional[str] = "normal"  # "normal" | "coach"
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
+
+
+async def _persist_streamed_chat_turn(
+    *,
+    body: ChatRequest,
+    full_reply: str,
+    user_id: int,
+    sessionmaker=None,
+) -> None:
+    """Persist the recoverable part of a streamed chat turn before SSE success."""
+    if not full_reply or not (body.conversation_id or body.study_session_id):
+        return
+
+    if sessionmaker is None:
+        from app.database import async_session_maker
+        sessionmaker = async_session_maker
+
+    async with sessionmaker() as save_db:
+        try:
+            if body.conversation_id:
+                save_db.add(
+                    ChatMessageModel(
+                        conversation_id=body.conversation_id,
+                        role="user",
+                        content=body.message,
+                        image_data=json.dumps(body.image_data, ensure_ascii=False) if body.image_data else None,
+                    )
+                )
+                save_db.add(
+                    ChatMessageModel(
+                        conversation_id=body.conversation_id,
+                        role="assistant",
+                        content=full_reply,
+                    )
+                )
+
+                conv_result = await save_db.execute(
+                    select(ChatConversation).where(
+                        ChatConversation.id == body.conversation_id,
+                        ChatConversation.user_id == user_id,
+                    )
+                )
+                conv = conv_result.scalar_one_or_none()
+                if conv and conv.title == "新对话":
+                    conv.title = body.message[:50]
+
+            if body.study_session_id:
+                sess_result = await save_db.execute(
+                    select(StudySession).where(
+                        StudySession.id == body.study_session_id,
+                        StudySession.user_id == user_id,
+                    )
+                )
+                sess = sess_result.scalar_one_or_none()
+                if sess:
+                    save_db.add(
+                        StudyConversation(
+                            session_id=sess.id,
+                            role="user",
+                            content=body.message,
+                            message_type="chat",
+                        )
+                    )
+                    save_db.add(
+                        StudyConversation(
+                            session_id=sess.id,
+                            role="assistant",
+                            content=full_reply,
+                            message_type="chat",
+                        )
+                    )
+
+            await save_db.commit()
+        except Exception:
+            await save_db.rollback()
+            logger.exception(
+                "流式对话核心消息保存失败: conversation_id=%s study_session_id=%s user_id=%s",
+                body.conversation_id,
+                body.study_session_id,
+                user_id,
+            )
+            raise
+
+    if not body.conversation_id:
+        return
+
+    async with sessionmaker() as enrich_db:
+        try:
+            await upsert_conversation_summary(body.conversation_id, enrich_db, user_id=user_id)
+            await upsert_user_memories_from_turn(
+                body.conversation_id,
+                body.message,
+                full_reply,
+                enrich_db,
+                user_id=user_id,
+            )
+
+            try:
+                from app.services.memory_service import run_conversation_reflection
+                await run_conversation_reflection(body.conversation_id, enrich_db, user_id=user_id)
+            except Exception as e:
+                logger.warning("对话反思失败: %s", e)
+
+            try:
+                await _detect_and_create_wrong_questions(
+                    body.message,
+                    full_reply,
+                    body.conversation_id,
+                    enrich_db,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                logger.warning("错题自动检测失败: %s", e)
+
+            try:
+                from app.services.event_tracker import EventTracker as _ET
+                from app.models.learning_event import EventType as _EVT
+                _tracker = _ET(enrich_db, user_id=cast(int, cast(object, user_id)))
+                await _tracker.track(
+                    event_type=_EVT.AI_QUESTION_ASKED,
+                    event_data={
+                        "conversation_id": body.conversation_id,
+                        "message_len": len(body.message),
+                        "reply_len": len(full_reply),
+                        "chat_mode": body.chat_mode or "normal",
+                    },
+                    session_id=str(body.conversation_id),
+                )
+            except Exception as e:
+                logger.warning("学习事件追踪失败: %s", e)
+
+            await enrich_db.commit()
+        except Exception:
+            await enrich_db.rollback()
+            logger.warning(
+                "流式对话后处理失败，但核心消息已保存: conversation_id=%s user_id=%s",
+                body.conversation_id,
+                user_id,
+                exc_info=True,
+            )
 
 
 
@@ -690,7 +830,13 @@ async def chat_send(
 
     # 获取当前激活的 AI 提供商
     try:
-        provider = await AIProviderFactory.create_provider(db=db, scenario="chat_main", user_id=current_user.id)
+        provider = await AIProviderFactory.create_provider(
+            provider_name=body.provider_name,
+            model=body.model,
+            db=db,
+            scenario="chat_main",
+            user_id=current_user.id,
+        )
     except Exception as e:
         if _is_ai_configuration_error(e):
             raise _ai_configuration_error(e)
@@ -739,7 +885,7 @@ async def chat_send(
                 data = json.dumps({"content": chunk}, ensure_ascii=False)
                 yield f"data: {data}\n\n"
 
-            # Detect progress feedback before sending [DONE]
+            # Detect progress feedback before persistence and final success.
             full_reply = "".join(collected_reply)
             try:
                 from app.services.memory_service import detect_progress_feedback
@@ -753,111 +899,29 @@ async def chat_send(
             except Exception:
                 pass
 
-            # 发送结束标记
+            try:
+                await _persist_streamed_chat_turn(
+                    body=body,
+                    full_reply=full_reply,
+                    user_id=user_id,
+                )
+            except Exception:
+                error_data = json.dumps(
+                    {"error": "AI 回复已生成，但消息保存失败。请重试，本次回复未确认持久化。"},
+                    ensure_ascii=False,
+                )
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # 保存成功后再发送结束标记，避免前端误判为可恢复成功。
             yield "data: [DONE]\n\n"
         except Exception as e:
+            logger.exception("流式 AI 回复失败: conversation_id=%s user_id=%s", body.conversation_id, user_id)
             error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
-
-        # 流结束后保存消息到数据库
-        # 使用独立 session 避免依赖注入 session 生命周期不匹配
-        full_reply = "".join(collected_reply)
-        if (body.conversation_id or body.study_session_id) and full_reply:
-            from app.database import async_session_maker
-            async with async_session_maker() as save_db:
-                try:
-                    if body.conversation_id:
-                        # 保存用户消息
-                        user_msg = ChatMessageModel(
-                            conversation_id=body.conversation_id,
-                            role="user",
-                            content=body.message,
-                            image_data=json.dumps(body.image_data, ensure_ascii=False) if body.image_data else None,
-                        )
-                        save_db.add(user_msg)
-
-                        # 保存 AI 回复
-                        ai_msg = ChatMessageModel(
-                            conversation_id=body.conversation_id,
-                            role="assistant",
-                            content=full_reply,
-                        )
-                        save_db.add(ai_msg)
-
-                        # 自动设置标题
-                        conv_result2 = await save_db.execute(
-                            select(ChatConversation).where(ChatConversation.id == body.conversation_id)
-                        )
-                        conv2 = conv_result2.scalar_one_or_none()
-                        if conv2 and conv2.title == "新对话":
-                            conv2.title = body.message[:50]
-
-                        # 记忆沉淀
-                        await upsert_conversation_summary(body.conversation_id, save_db, user_id=user_id)
-                        await upsert_user_memories_from_turn(body.conversation_id, body.message, full_reply, save_db, user_id=user_id)
-
-                        # Conversation Reflection (gated: every ~5 user turns)
-                        try:
-                            from app.services.memory_service import run_conversation_reflection
-                            await run_conversation_reflection(body.conversation_id, save_db, user_id=user_id)
-                        except Exception as e:
-                            logger.warning("对话反思失败: %s", e)
-
-                        # Auto-detect wrong questions from chat
-                        try:
-                            await _detect_and_create_wrong_questions(
-                                body.message, full_reply, body.conversation_id, save_db,
-                                user_id=user_id,
-                            )
-                        except Exception:
-                            pass  # Non-blocking
-
-                        # 记录学习事件：AI 对话轮次
-                        try:
-                            from app.services.event_tracker import EventTracker as _ET
-                            from app.models.learning_event import EventType as _EVT
-                            _tracker = _ET(save_db, user_id=cast(int, cast(object, user_id)))
-                            await _tracker.track(
-                                event_type=_EVT.AI_QUESTION_ASKED,
-                                event_data={
-                                    "conversation_id": body.conversation_id,
-                                    "message_len": len(body.message),
-                                    "reply_len": len(full_reply),
-                                    "chat_mode": body.chat_mode or "normal",
-                                },
-                                session_id=str(body.conversation_id) if body.conversation_id else None,
-                            )
-                        except Exception as _e:
-                            logger.warning("学习事件追踪失败: %s", _e)
-
-                    # 同步写入学习会话对话（用于 Task-Session 闭环）
-                    if body.study_session_id:
-                        sess_result = await save_db.execute(
-                            select(StudySession).where(StudySession.id == body.study_session_id)
-                        )
-                        sess = sess_result.scalar_one_or_none()
-                        if sess:
-                            save_db.add(
-                                StudyConversation(
-                                    session_id=sess.id,
-                                    role="user",
-                                    content=body.message,
-                                    message_type="chat",
-                                )
-                            )
-                            save_db.add(
-                                StudyConversation(
-                                    session_id=sess.id,
-                                    role="assistant",
-                                    content=full_reply,
-                                    message_type="chat",
-                                )
-                            )
-
-                    await save_db.commit()
-                except Exception:
-                    await save_db.rollback()
+            return
 
     return StreamingResponse(
         event_stream(),
@@ -920,6 +984,8 @@ async def chat_send_sync(
 
     try:
         provider = await AIProviderFactory.create_provider(
+            provider_name=body.provider_name,
+            model=body.model,
             db=db,
             scenario="chat_main",
             user_id=current_user.id,

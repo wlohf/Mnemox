@@ -13,6 +13,7 @@ import {
   type ProgressEngineData,
   type ProgressMaterialItem,
 } from '../services/learningApi'
+import { getApiErrorMessage } from '../services/apiClient'
 
 const { Header, Content } = Layout
 
@@ -29,8 +30,12 @@ export function ProgressEnginePage() {
   const [showReplanModal, setShowReplanModal] = useState(false)
 
   const load = async (include = includeNonTextbook) => {
-    const d = await getProgressEngine(include, weights)
-    setData(d)
+    try {
+      const d = await getProgressEngine(include, weights)
+      setData(d)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载进度引擎失败'))
+    }
   }
 
   useEffect(() => {
@@ -39,64 +44,66 @@ export function ProgressEnginePage() {
 
   const runAnalyze = async (materialId: number) => {
     setLoadingId(materialId)
-    const res = await analyzeMaterialForProgress(materialId)
-    setLoadingId(null)
-    if (!res) {
-      message.error('AI 分析失败')
-      return
+    try {
+      const res = await analyzeMaterialForProgress(materialId)
+      message.success(`分析完成：${res.is_textbook ? '教材型' : '非教材型'}（置信度 ${Math.round(res.confidence * 100)}%）`)
+      await load()
+    } catch (error) {
+      message.error(getApiErrorMessage(error, 'AI 分析失败'))
+    } finally {
+      setLoadingId(null)
     }
-    message.success(`分析完成：${res.is_textbook ? '教材型' : '非教材型'}（置信度 ${Math.round(res.confidence * 100)}%）`)
-    await load()
   }
 
   const toggleTextbook = async (m: ProgressMaterialItem, next: boolean) => {
-    const ok = await setMaterialClassification(m.material_id, next)
-    if (!ok) {
-      message.error('更新分类失败')
-      return
+    try {
+      await setMaterialClassification(m.material_id, next)
+      message.success(next ? '已标记为教材' : '已标记为非教材')
+      await load()
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '更新分类失败'))
     }
-    message.success(next ? '已标记为教材' : '已标记为非教材')
-    await load()
   }
 
   const loadPlan = async (m: ProgressMaterialItem) => {
     setPlanLoadingId(m.material_id)
-    const plan = await getMaterialLearningPlan(m.material_id)
-    setPlanLoadingId(null)
-    if (!plan) {
-      message.error('加载学习路径失败')
-      return
+    try {
+      const plan = await getMaterialLearningPlan(m.material_id)
+      setMaterialPlans((prev) => ({ ...prev, [m.material_id]: { chapter_path: plan.chapter_path, training_pack: plan.training_pack } }))
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载学习路径失败'))
+    } finally {
+      setPlanLoadingId(null)
     }
-    setMaterialPlans((prev) => ({ ...prev, [m.material_id]: { chapter_path: plan.chapter_path, training_pack: plan.training_pack } }))
   }
 
   const makeTrainingTasks = async (m: ProgressMaterialItem) => {
-    const created = await generateTrainingTasks(m.material_id)
-    if (!created) {
-      message.error('生成训练任务失败')
-      return
+    try {
+      const created = await generateTrainingTasks(m.material_id)
+      message.success(`已生成 ${created.created_task_count} 个训练任务（目标ID ${created.goal_id}）`)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '生成训练任务失败'))
     }
-    message.success(`已生成 ${created.created_task_count} 个训练任务（目标ID ${created.goal_id}）`)
   }
 
   const make7DayPlan = async (m: ProgressMaterialItem) => {
-    const created = await generate7DayPlan(m.material_id, 7)
-    if (!created) {
-      message.error('生成 7 天计划失败')
-      return
+    try {
+      const created = await generate7DayPlan(m.material_id, 7)
+      message.success(`已生成 ${created.created_task_count} 个计划任务（目标ID ${created.goal_id}）`)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '生成 7 天计划失败'))
     }
-    message.success(`已生成 ${created.created_task_count} 个计划任务（目标ID ${created.goal_id}）`)
   }
 
   const runAdaptiveReplan = async (m: ProgressMaterialItem) => {
-    const res = await adaptiveReplan(m.material_id, { days: 7, focus_mode: replanMode })
-    if (!res) {
-      message.error('动态重排失败')
-      return
+    try {
+      const res = await adaptiveReplan(m.material_id, { days: 7, focus_mode: replanMode })
+      setReplanPreview(res.preview || [])
+      setShowReplanModal(true)
+      message.success(`已重排 ${res.rescheduled} 个任务`)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '动态重排失败'))
     }
-    setReplanPreview(res.preview || [])
-    setShowReplanModal(true)
-    message.success(`已重排 ${res.rescheduled} 个任务`)
   }
 
   const normalizeWeights = () => {

@@ -331,7 +331,12 @@ async def get_conversation_summary_text(conversation_id: int, db: AsyncSession, 
 
     if not parts:
         return ""
-    return "\n" + "\n".join(parts) + "\n"
+    return wrap_untrusted_context(
+        "对话摘要与复习提示",
+        "\n".join(parts),
+        source=f"conversation_summary:{conversation_id}",
+        max_chars=3000,
+    )
 
 
 async def upsert_conversation_summary(conversation_id: int, db: AsyncSession, user_id: int = 1) -> None:

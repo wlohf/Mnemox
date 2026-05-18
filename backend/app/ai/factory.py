@@ -3,10 +3,8 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.ai.base import AIProvider
-from app.ai.openai_provider import OpenAIProvider
-from app.ai.claude_provider import ClaudeProvider
-from app.ai.gemini_provider import GeminiProvider
 from app.config import settings
+from app.utils.secret_crypto import decrypt_secret
 
 
 class AIProviderFactory:
@@ -53,23 +51,27 @@ class AIProviderFactory:
         kind = AIProviderFactory._resolve_provider_kind(provider_name, base_url, model)
 
         if kind == "openai":
+            from app.ai.openai_provider import OpenAIProvider
             return OpenAIProvider(
                 api_key=api_key,
                 model=model,
                 base_url=base_url or None,
             )
         elif kind == "claude":
+            from app.ai.claude_provider import ClaudeProvider
             return ClaudeProvider(
                 api_key=api_key,
                 model=model,
                 base_url=base_url or None,
             )
         elif kind == "gemini":
+            from app.ai.gemini_provider import GeminiProvider
             return GeminiProvider(
                 api_key=api_key,
                 model=model,
             )
         else:
+            from app.ai.openai_provider import OpenAIProvider
             return OpenAIProvider(
                 api_key=api_key,
                 model=model,
@@ -79,6 +81,7 @@ class AIProviderFactory:
     @staticmethod
     async def create_provider(
         provider_name: Optional[str] = None,
+        model: Optional[str] = None,
         scenario: Optional[str] = None,
         db: Optional[AsyncSession] = None,
         user_id: Optional[int] = None,
@@ -113,6 +116,8 @@ class AIProviderFactory:
                 route_row = route_result.scalar_one_or_none()
                 if route_row and route_row.provider_name:
                     resolved_provider_name = route_row.provider_name
+                if route_row and route_row.model and not model:
+                    model = route_row.model
 
             if resolved_provider_name:
                 provider_query = select(AIProviderSetting).where(
@@ -132,12 +137,13 @@ class AIProviderFactory:
             if row:
                 if not row.enabled:
                     raise ValueError(f"{row.display_name or row.provider_name} 已禁用")
-                if not row.api_key:
+                api_key = decrypt_secret(row.api_key)
+                if not api_key:
                     raise ValueError(f"{row.display_name or row.provider_name} API Key 未配置")
                 return AIProviderFactory.create_provider_from_settings(
                     provider_name=row.provider_name,
-                    api_key=row.api_key,
-                    model=row.model,
+                    api_key=api_key,
+                    model=model or row.model,
                     base_url=row.base_url,
                 )
 
@@ -150,44 +156,49 @@ class AIProviderFactory:
         if provider_name == "openai":
             if not settings.OPENAI_API_KEY:
                 raise ValueError("OpenAI API Key 未配置")
+            from app.ai.openai_provider import OpenAIProvider
             return OpenAIProvider(
                 api_key=settings.OPENAI_API_KEY,
-                model=settings.OPENAI_MODEL,
+                model=model or settings.OPENAI_MODEL,
                 base_url=settings.OPENAI_BASE_URL if settings.OPENAI_BASE_URL != "https://api.openai.com/v1" else None
             )
 
         elif provider_name == "claude":
             if not settings.CLAUDE_API_KEY:
                 raise ValueError("Claude API Key 未配置")
+            from app.ai.claude_provider import ClaudeProvider
             return ClaudeProvider(
                 api_key=settings.CLAUDE_API_KEY,
-                model=settings.CLAUDE_MODEL,
+                model=model or settings.CLAUDE_MODEL,
                 base_url=settings.CLAUDE_BASE_URL if hasattr(settings, 'CLAUDE_BASE_URL') else None
             )
 
         elif provider_name == "gemini":
             if not settings.GEMINI_API_KEY:
                 raise ValueError("Gemini API Key 未配置")
+            from app.ai.gemini_provider import GeminiProvider
             return GeminiProvider(
                 api_key=settings.GEMINI_API_KEY,
-                model=settings.GEMINI_MODEL
+                model=model or settings.GEMINI_MODEL
             )
 
         elif provider_name == "deepseek":
             if not settings.DEEPSEEK_API_KEY:
                 raise ValueError("DeepSeek API Key 未配置")
+            from app.ai.openai_provider import OpenAIProvider
             return OpenAIProvider(
                 api_key=settings.DEEPSEEK_API_KEY,
-                model=settings.DEEPSEEK_MODEL,
+                model=model or settings.DEEPSEEK_MODEL,
                 base_url=settings.DEEPSEEK_BASE_URL,
             )
 
         elif provider_name == "qwen":
             if not settings.QWEN_API_KEY:
                 raise ValueError("Qwen API Key 未配置")
+            from app.ai.openai_provider import OpenAIProvider
             return OpenAIProvider(
                 api_key=settings.QWEN_API_KEY,
-                model=settings.QWEN_MODEL,
+                model=model or settings.QWEN_MODEL,
                 base_url=settings.QWEN_BASE_URL,
             )
 

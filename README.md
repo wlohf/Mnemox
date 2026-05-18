@@ -8,7 +8,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://typescriptlang.org)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue)](LICENSE.md)
 
 [快速开始](#快速开始) · [系统架构](#系统架构) · [核心功能](#核心功能) · [体验亮点](#体验亮点) · [安全与部署提示](#安全与部署提示) · [技术栈](#技术栈)
 
@@ -237,7 +237,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - `CORS_ORIGINS` 只配置你的真实前端域名，不要使用 `*`。
 - 不提交 `.env`、数据库文件、上传目录、ChromaDB 数据、日志或真实 API Key。
 - 上传文件当前有扩展名、大小和 Content-Type 白名单校验，后端使用 UUID 文件名保存；公开服务仍建议增加反病毒扫描、速率限制和对象存储隔离。
-- `MATERIAL_UPLOAD_MAX_MB` 默认 50MB，可按部署资源调整。
+- `MATERIAL_UPLOAD_MAX_MB` 默认 200MB，可按部署资源调整。
 - Markdown 展示默认跳过原始 HTML，并对外链使用 `noopener`；如果后续引入新的 Markdown 渲染组件，也要保持同等安全策略。
 - AI Provider Key 可以通过环境变量或设置页配置；多人部署时应评估 Key 的隔离、额度限制和审计需求。
 
@@ -254,7 +254,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **Agent Planner 稳定性**：LLM Planner 增加默认 12 秒超时，超时或异常时返回规则 Planner 结果，并在 `planner.error` 中暴露原因。
 - **Agent 只读工具扩展**：新增查询长期记忆、用户画像、Agent 学习画像、今日任务、近期反馈等工具。
 - **Agent 学习风格沉淀**：`agent_learning_profile` 新增 `traits`、`trait_items`、`do_more`、`avoid`、`trait_controls`、`locked_trait_values`。
-- **上传安全限制**：资料上传默认限制 50MB，校验扩展名和 Content-Type，后端生成 UUID 文件名，超限返回 413。
+- **上传安全限制**：资料上传默认限制 200MB，校验扩展名和 Content-Type，后端生成 UUID 文件名，超限返回 413。
 - **生产配置保护**：生产环境弱 `SECRET_KEY` 会拒绝启动；`.gitignore` 补充数据库、Chroma、上传目录、env 和运行产物忽略规则。
 - **验证覆盖**：已通过核心文件 `py_compile`、RAG fallback / Agent tools / traits smoke、Planner timeout 定向验证、上传限制与关键词 fallback smoke。
 
@@ -411,7 +411,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEBUG=True
 ENVIRONMENT=development
 CORS_ORIGINS=["http://localhost:5173", "http://localhost:3000"]
-MATERIAL_UPLOAD_MAX_MB=50
+MATERIAL_UPLOAD_MAX_MB=200
 ```
 
 **3. 启动后端**
@@ -493,7 +493,7 @@ docker compose logs -f backend
 ## 项目结构
 
 ```
-StudyAssistant/
+Mnemox/
 ├── backend/
 │   ├── app/
 │   │   ├── ai/                # Multi-LLM Router + RAG 服务
@@ -566,4 +566,8 @@ StudyAssistant/
 
 ## License
 
-MIT © 2025
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE.md)，仅允许非商业用途。
+
+你可以将本项目用于个人学习、研究、测试、教学和其他非商业用途。任何商业使用、商业部署、付费产品集成、SaaS 托管或以盈利为目的的再分发，都需要获得作者的单独书面授权。
+
+Copyright © 2026 xyleisure and contributors.

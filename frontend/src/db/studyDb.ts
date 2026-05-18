@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 
 // ── Sync metadata mixin ──
-export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete'
+export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete' | 'sync_failed'
 
 export interface SyncMeta {
   _localId: string        // client-generated UUID, primary key
@@ -11,6 +11,8 @@ export interface SyncMeta {
   _lastSyncedAt: string | null // ISO datetime of last successful push/pull
   _conflictAt: string | null   // ISO datetime when conflict was detected
   _conflictServerData: string | null // JSON snapshot of server version at conflict time
+  _syncError?: string | null    // latest permanent sync failure, if any
+  _syncFailedAt?: string | null // ISO datetime when permanent sync failure was recorded
 }
 
 // ── Local table types ──
@@ -95,6 +97,9 @@ export interface QueuedOperation {
   localId: string         // the _localId of the affected record
   payload: string         // JSON serialised data for create/update
   createdAt: string       // ISO datetime
+  attempts?: number
+  lastError?: string | null
+  failedAt?: string | null
 }
 
 // ── Database class ──

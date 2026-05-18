@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Spin } from 'antd'
+import { Button, Spin, Tag, message } from 'antd'
 import { getDashboard, type DashboardData } from '../services/learningApi'
+import { getApiErrorMessage } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
 export function DashboardPage() {
@@ -12,16 +13,24 @@ export function DashboardPage() {
 
   const load = async () => {
     setLoading(true)
-    const d = await getDashboard()
-    setData(d)
-    setLoading(false)
+    try {
+      const d = await getDashboard()
+      setData(d)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载今日概览失败'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { void load() }, [])
 
+  const mission = data?.today_mission
   const allItems = [
-    ...(data?.recommended_actions || []).map(a => ({ ...a, _kind: a.type === 'review' ? 'review' : 'task' as 'review' | 'task' })),
-    ...(data?.today_tasks || []).filter(t => t.status !== 'completed').map(t => ({ type: t.task_type || 'task', title: t.title, item_id: t.id, _kind: 'task' as 'task' })),
+    ...(data?.recommended_actions || []).map(a => ({ ...a, _kind: a.type === 'review' ? 'review' as const : 'task' as const })),
+    ...(data?.today_tasks || [])
+      .filter(t => t.status !== 'completed')
+      .map(t => ({ type: t.task_type || 'task', title: t.title, item_id: t.id, _kind: 'task' as const })),
   ]
   const filtered = filter === 'all' ? allItems : allItems.filter(i => i._kind === filter)
 
@@ -34,6 +43,48 @@ export function DashboardPage() {
       </div>
 
       <Spin spinning={loading}>
+        {mission && (
+          <div style={{
+            background: 'var(--bg-surface)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '24px 28px',
+            marginBottom: 24,
+            boxShadow: 'var(--shadow-sm)',
+            border: '1px solid var(--border-light)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+                  <Tag color="blue" style={{ margin: 0 }}>今日唯一任务</Tag>
+                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>预计 {mission.estimated_minutes} 分钟</span>
+                </div>
+                <div style={{ fontSize: 24, lineHeight: 1.25, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
+                  {mission.title}
+                </div>
+                <div style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--text-secondary)', maxWidth: 620 }}>
+                  {mission.reason}
+                </div>
+              </div>
+              <Button type="primary" size="large" onClick={() => navigate(mission.route)} style={{ flexShrink: 0 }}>
+                {mission.cta}
+              </Button>
+            </div>
+            <div style={{
+              marginTop: 16,
+              padding: '12px 14px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-light)',
+              color: 'var(--text-secondary)',
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}>
+              <strong style={{ color: 'var(--text-primary)' }}>先主动回忆：</strong>
+              {mission.active_recall_prompt}
+            </div>
+          </div>
+        )}
+
         {/* Stats row */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 32 }}>
           {[

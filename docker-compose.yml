@@ -20,12 +20,19 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/study_assistant
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      AI_KEY_ENCRYPTION_SECRET: ${AI_KEY_ENCRYPTION_SECRET:-}
       DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       CORS_ORIGINS: '["http://localhost"]'
       DEBUG: "false"
+      ENVIRONMENT: "production"
+      MATERIAL_UPLOAD_MAX_MB: ${MATERIAL_UPLOAD_MAX_MB:-200}
+      MAX_REQUEST_BODY_MB: ${MAX_REQUEST_BODY_MB:-20}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-10}
     volumes:
       - uploads:/app/data/uploads
       - chromadb:/app/data/chromadb

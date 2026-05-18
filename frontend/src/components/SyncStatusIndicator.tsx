@@ -9,10 +9,10 @@ import { useSyncStatus } from '../sync/useSyncStatus'
 import { syncEngine } from '../sync/SyncEngine'
 
 export function SyncStatusIndicator() {
-  const { status, online } = useSyncStatus()
+  const { status, online, failedCount, lastError } = useSyncStatus()
 
   const handleClick = () => {
-    void syncEngine.syncAll()
+    void (status === 'error' ? syncEngine.retryFailed() : syncEngine.syncAll())
   }
 
   let icon: React.ReactNode
@@ -38,7 +38,7 @@ export function SyncStatusIndicator() {
     case 'error':
       icon = <WarningOutlined />
       color = '#d4644a'
-      tip = '同步出错，点击重试'
+      tip = lastError || '同步出错，点击重试'
       break
   }
 
@@ -62,7 +62,7 @@ export function SyncStatusIndicator() {
         }}
       >
         {icon}
-        <span style={{ fontSize: 11 }}>{tip}</span>
+        <span style={{ fontSize: 11 }}>{failedCount > 0 ? `同步失败 ${failedCount}` : tip}</span>
       </span>
     </Tooltip>
   )

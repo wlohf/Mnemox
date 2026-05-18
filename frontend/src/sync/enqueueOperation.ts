@@ -24,12 +24,20 @@ export async function enqueueOperation(
   existing.sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
 
   const last = existing.length > 0 ? existing[existing.length - 1] : null
+  const nextSyncStatus =
+    opType === 'delete' ? 'pending_delete' : last?.opType === 'create' || opType === 'create' ? 'pending_create' : 'pending_update'
+
+  await db.table(module).update(localId, {
+    _syncStatus: nextSyncStatus,
+    _syncError: null,
+    _syncFailedAt: null,
+  })
 
   if (last) {
     if (last.opType === 'create' && opType === 'update') {
       // Merge update payload into the create payload
       const merged = { ...JSON.parse(last.payload), ...payload }
-      await db.opQueue.update(last.id!, { payload: JSON.stringify(merged) })
+      await db.opQueue.update(last.id!, { payload: JSON.stringify(merged), failedAt: null, lastError: null })
       return
     }
 
@@ -43,7 +51,7 @@ export async function enqueueOperation(
     if (last.opType === 'update' && opType === 'update') {
       // Merge updates
       const merged = { ...JSON.parse(last.payload), ...payload }
-      await db.opQueue.update(last.id!, { payload: JSON.stringify(merged) })
+      await db.opQueue.update(last.id!, { payload: JSON.stringify(merged), failedAt: null, lastError: null })
       return
     }
 

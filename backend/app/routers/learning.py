@@ -259,6 +259,68 @@ def _fallback_eval(output_text: str) -> dict:
     }
 
 
+def _build_today_mission(
+    *,
+    due_reviews: list[ReviewSchedule],
+    pending_today: list[Task],
+    today_pomodoros: list[Pomodoro],
+    today_minutes: int,
+    completed_today_count: int,
+) -> dict[str, Any]:
+    """Pick one concrete next action so weak learners do not have to triage modules."""
+    if due_reviews:
+        count = min(len(due_reviews), 3)
+        return {
+            "kind": "review",
+            "title": f"先清理 {count} 条到期复习",
+            "reason": "到期复习会快速贬值，先做主动回忆，比继续刷新页面更有效。",
+            "cta": "开始复习",
+            "route": "/review",
+            "estimated_minutes": 10 if count == 1 else 15,
+            "active_recall_prompt": "先别看答案，用 30 秒说出你还记得什么；说不出来也算有效暴露薄弱点。",
+        }
+    if pending_today:
+        task = pending_today[0]
+        return {
+            "kind": "task",
+            "title": task.title,
+            "reason": "今天只先推进一个任务，完成后再决定要不要继续。",
+            "cta": "开始任务",
+            "route": "/goals",
+            "estimated_minutes": 25,
+            "active_recall_prompt": "开始前先写一句：这个任务完成后，我应该能讲清楚什么？",
+        }
+    if not today_pomodoros:
+        return {
+            "kind": "focus",
+            "title": "先做 10 分钟启动专注",
+            "reason": "没有任务也先启动，弱自控场景下，开始比规划更重要。",
+            "cta": "打开番茄钟",
+            "route": "/pomodoro",
+            "estimated_minutes": 10,
+            "active_recall_prompt": "只选一个最小动作：读一页、整理一道错题，或复述一个概念。",
+        }
+    if completed_today_count > 0 or today_minutes > 0:
+        return {
+            "kind": "reflection",
+            "title": "用 5 分钟写今天的费曼复盘",
+            "reason": "今天已经有学习行为了，收尾时把知识讲成自己的话，明天才接得上。",
+            "cta": "写复盘",
+            "route": "/plans",
+            "estimated_minutes": 5,
+            "active_recall_prompt": "用 3 句话回答：我今天懂了什么？哪里还讲不顺？明天补哪一个缺口？",
+        }
+    return {
+        "kind": "setup",
+        "title": "先导入一份资料或 Demo",
+        "reason": "还没有可执行的学习对象，先给系统一个材料，它才能生成任务和复习闭环。",
+        "cta": "回到学习助手",
+        "route": "/",
+        "estimated_minutes": 3,
+        "active_recall_prompt": "选择一份真正要学的资料，不要先配置系统。",
+    }
+
+
 @router.get("/dashboard")
 async def get_learning_dashboard(
     db: AsyncSession = Depends(get_db),
@@ -310,6 +372,14 @@ async def get_learning_dashboard(
     for t in pending_today[:3]:
         actions.append({"type": "task", "title": t.title, "item_id": t.id})
 
+    today_mission = _build_today_mission(
+        due_reviews=due_reviews,
+        pending_today=pending_today,
+        today_pomodoros=today_pomodoros,
+        today_minutes=today_minutes,
+        completed_today_count=len(completed_today),
+    )
+
     return {
         "today": str(today),
         "today_task_count": len(today_tasks),
@@ -318,6 +388,7 @@ async def get_learning_dashboard(
         "due_review_count": len(due_reviews),
         "today_pomodoro_count": len(today_pomodoros),
         "today_study_minutes": today_minutes,
+        "today_mission": today_mission,
         "recommended_actions": actions,
         "today_tasks": [
             {

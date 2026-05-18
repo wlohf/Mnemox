@@ -7,7 +7,7 @@ from unittest.mock import patch
 from fastapi import HTTPException, UploadFile
 
 from app.routers.images import _save_image
-from app.routers.materials import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS
+from app.routers.materials import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -57,6 +57,9 @@ class UploadSecurityTests(unittest.TestCase):
     def test_material_content_type_mapping_rejects_common_mismatch(self):
         self.assertNotIn("text/html", ALLOWED_CONTENT_TYPES[".pdf"])
         self.assertNotIn("application/x-msdownload", ALLOWED_CONTENT_TYPES[".txt"])
+
+    def test_material_default_upload_limit_is_200mb(self):
+        self.assertEqual(MAX_FILE_SIZE, 200 * 1024 * 1024)
 
 
 if __name__ == "__main__":

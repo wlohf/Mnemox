@@ -163,7 +163,7 @@ export function MaterialsSidebar({
         >
           <p><UploadOutlined style={{ fontSize: 24 }} /></p>
           <p style={{ fontSize: 13, margin: '8px 0 4px' }}>点击或拖拽文件到此处上传</p>
-          <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown、EPUB</p>
+          <p style={{ fontSize: 11, color: '#999' }}>支持 PDF、Word、TXT、Markdown</p>
         </Upload.Dragger>
       </div>
 

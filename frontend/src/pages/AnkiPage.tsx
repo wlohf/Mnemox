@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Col, Input, InputNumber, List, Row, Segmented, Space, Tag, message } from 'antd'
-import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import {
   aiGenerateAnkiCards,
@@ -12,6 +11,7 @@ import {
   reviewAnkiCard,
   type AnkiCardItem,
 } from '../services/ankiApi'
+import { PageShell } from '../components/PageShell'
 
 // 翻转状态：记录哪些卡片已翻转
 type FlippedMap = Record<number, boolean>
@@ -152,11 +152,7 @@ export function AnkiPage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-primary)', padding: 16 }}>
-      <div style={{ marginBottom: 12 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回首页</Button>
-      </div>
-
+    <PageShell title="Anki卡片" onBack={() => navigate('/')} maxWidth={1280}>
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={10}>
           <Card title="手动新增卡片" size="small" style={{ marginBottom: 12 }}>
@@ -265,6 +261,6 @@ export function AnkiPage() {
           </Card>
         </Col>
       </Row>
-    </div>
+    </PageShell>
   )
 }

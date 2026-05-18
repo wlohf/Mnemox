@@ -99,6 +99,8 @@ async def _run_lightweight_migrations(conn):
         ("agent_jobs", "summary", "TEXT"),
         ("agent_jobs", "updated_at", "DATETIME"),
         ("agent_execution_logs", "metadata", "JSON"),
+        ("ai_provider_settings", "available_models", "TEXT DEFAULT '[]'"),
+        ("ai_routing_settings", "model", "VARCHAR(100)"),
     ]
 
     for table, column, col_type in other_migrations:

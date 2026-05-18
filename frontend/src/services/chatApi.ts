@@ -42,6 +42,8 @@ export async function sendMessageStream(
   chatMode?: string,
   onMemoryIndicators?: (memories: MemoryIndicator[]) => void,
   onProgressFeedback?: (feedback: ProgressFeedback) => void,
+  providerName?: string,
+  model?: string,
 ): Promise<void> {
   try {
     const payload: any = {
@@ -62,6 +64,12 @@ export async function sendMessageStream(
     }
     if (chatMode && chatMode !== 'normal') {
       payload.chat_mode = chatMode
+    }
+    if (providerName) {
+      payload.provider_name = providerName
+    }
+    if (model) {
+      payload.model = model
     }
     const token = getToken()
     const res = await fetch('/api/chat/send', {

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -6,7 +7,7 @@ import rehypeKatex from 'rehype-katex'
 import 'highlight.js/styles/github-dark.css'
 import 'katex/dist/katex.min.css'
 import { Tooltip } from 'antd'
-import { CopyOutlined, FormOutlined, SyncOutlined, DislikeOutlined, BranchesOutlined, EditOutlined } from '@ant-design/icons'
+import { BranchesOutlined, CheckOutlined, CloseOutlined, CopyOutlined, DislikeOutlined, EditOutlined, FormOutlined, SyncOutlined } from '@ant-design/icons'
 import './ChatMessageBubble.css'
 
 interface ChatMessageBubbleProps {
@@ -20,11 +21,33 @@ interface ChatMessageBubbleProps {
   onEdit?: (content: string) => void
 }
 
-export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuoteToNote, onRegenerate, onBranch, onEdit }: ChatMessageBubbleProps) {
+export function ChatMessageBubble({
+  role,
+  content,
+  imageData,
+  isStreaming,
+  onQuoteToNote,
+  onRegenerate,
+  onBranch,
+  onEdit,
+}: ChatMessageBubbleProps) {
   const isUser = role === 'user'
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState(content)
 
   const handleCopy = () => {
     navigator.clipboard?.writeText(content)
+  }
+
+  const submitEdit = () => {
+    const next = draft.trim()
+    if (!next || next === content) {
+      setDraft(content)
+      setIsEditing(false)
+      return
+    }
+    onEdit?.(next)
+    setIsEditing(false)
   }
 
   return (
@@ -40,7 +63,7 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
     >
       {/* Assistant avatar on the left */}
       {!isUser && (
-        <div style={{ 
+        <div style={{
           width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
           background: 'linear-gradient(135deg, var(--brand-500), var(--brand-400))',
           display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 16, fontWeight: 'bold'
@@ -49,7 +72,7 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
         </div>
       )}
 
-      <div className={isUser ? 'msg-bubble-user' : 'msg-bubble-assistant'} style={{ width: isUser ? 'auto' : '100%' }}>
+      <div className={isUser ? 'msg-bubble-user' : 'msg-bubble-assistant'}>
         {/* User message images */}
         {isUser && imageData && imageData.length > 0 && (
           <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -70,7 +93,66 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
         )}
 
         {isUser ? (
-          <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 15 }}>{content}</div>
+          <>
+            {isEditing ? (
+              <div className="msg-edit-box">
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  className="msg-edit-textarea"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setDraft(content)
+                      setIsEditing(false)
+                    }
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      submitEdit()
+                    }
+                  }}
+                />
+                <div className="msg-edit-actions">
+                  <Tooltip title="取消" placement="bottom">
+                    <button
+                      type="button"
+                      className="chat-action-btn"
+                      onClick={() => {
+                        setDraft(content)
+                        setIsEditing(false)
+                      }}
+                    >
+                      <CloseOutlined />
+                    </button>
+                  </Tooltip>
+                  <Tooltip title="发送编辑后的消息" placement="bottom">
+                    <button type="button" className="chat-action-btn primary" onClick={submitEdit}>
+                      <CheckOutlined />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="msg-user-text">{content}</div>
+                {!isStreaming && onEdit && (
+                  <div className="chat-action-toolbar user-actions">
+                    <Tooltip title="编辑并从这里重新发送" placement="bottom">
+                      <button
+                        type="button"
+                        className="chat-action-btn"
+                        onClick={() => {
+                          setDraft(content)
+                          setIsEditing(true)
+                        }}
+                      >
+                        <EditOutlined />
+                      </button>
+                    </Tooltip>
+                  </div>
+                )}
+              </>
+            )}
+          </>
         ) : (
           <>
             <div className="chat-markdown">
@@ -110,7 +192,7 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
                 <span className="streaming-cursor" />
               )}
             </div>
-            
+
             {/* Action Toolbar */}
             {!isStreaming && (
               <div className="chat-action-toolbar">
@@ -128,13 +210,8 @@ export function ChatMessageBubble({ role, content, imageData, isStreaming, onQuo
                   </Tooltip>
                 )}
                 {onBranch && (
-                  <Tooltip title="从这里分支" placement="bottom">
+                  <Tooltip title="从这里创建分支" placement="bottom">
                     <button className="chat-action-btn" onClick={onBranch}><BranchesOutlined /></button>
-                  </Tooltip>
-                )}
-                {onEdit && isUser && (
-                  <Tooltip title="编辑并重发" placement="bottom">
-                    <button className="chat-action-btn" onClick={() => onEdit(content)}><EditOutlined /></button>
                   </Tooltip>
                 )}
                 <Tooltip title="踩" placement="bottom">

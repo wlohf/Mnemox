@@ -42,6 +42,7 @@ export interface CumulativeStats {
 
 // 时间范围类型
 export type DateRange = 'day' | 'week' | 'month' | 'all'
+export type PomodoroMode = 'focus' | 'break'
 
 interface PomodoroState {
   // Current timer state
@@ -51,6 +52,9 @@ interface PomodoroState {
   currentTask: string
   currentTaskId: number | null
   duration: number // in minutes
+  focusDuration: number // in minutes
+  breakDuration: number // in minutes
+  timerMode: PomodoroMode
   currentBackendId: number | null
   startedAt: number | null
   pausedAt: number | null
@@ -65,9 +69,11 @@ interface PomodoroState {
 
   // Actions
   startTimer: (taskName: string, duration: number, taskId?: number | null) => void
+  startBreakTimer: (durationOverride?: number) => void
+  setBreakDuration: (duration: number) => void
   pauseTimer: () => void
   resumeTimer: () => void
-  completeTimer: (actualSeconds?: number) => void
+  completeTimer: (actualSeconds?: number, options?: { startBreak?: boolean }) => void
   resetTimer: (durationOverride?: number) => void
   tick: () => void
   addRecord: (taskName: string, duration: number) => void
@@ -107,6 +113,9 @@ export const usePomodoroStore = create<PomodoroState>()(
       currentTask: '',
       currentTaskId: null,
       duration: 25,
+      focusDuration: 25,
+      breakDuration: 5,
+      timerMode: 'focus',
       currentBackendId: null,
       startedAt: null,
       pausedAt: null,
@@ -117,13 +126,16 @@ export const usePomodoroStore = create<PomodoroState>()(
 
       startTimer: (taskName: string, duration: number, taskId?: number | null) => {
         const now = Date.now()
+        const nextDuration = Math.max(1, Math.min(120, Math.floor(duration)))
         set({
           isRunning: true,
           isPaused: false,
-          remainingTime: duration * 60,
+          remainingTime: nextDuration * 60,
           currentTask: taskName,
           currentTaskId: taskId ?? null,
-          duration,
+          duration: nextDuration,
+          focusDuration: nextDuration,
+          timerMode: 'focus',
           currentBackendId: null,
           startedAt: now,
           pausedAt: null,
@@ -131,13 +143,37 @@ export const usePomodoroStore = create<PomodoroState>()(
         })
 
         // Fire-and-forget API call
-        pomodoroApi.startPomodoro(taskName, duration, taskId).then((res) => {
+        pomodoroApi.startPomodoro(taskName, nextDuration, taskId).then((res) => {
           if (res) {
             set({ currentBackendId: res.id, backendOnline: true })
           } else {
             set({ backendOnline: false })
           }
         })
+      },
+
+      startBreakTimer: (durationOverride?: number) => {
+        const now = Date.now()
+        const { breakDuration } = get()
+        const nextDuration = Math.max(1, Math.min(60, Math.floor(durationOverride ?? breakDuration)))
+        set({
+          isRunning: true,
+          isPaused: false,
+          remainingTime: nextDuration * 60,
+          currentTask: '休息',
+          currentTaskId: null,
+          duration: nextDuration,
+          timerMode: 'break',
+          currentBackendId: null,
+          startedAt: now,
+          pausedAt: null,
+          pausedTotalMs: 0,
+        })
+      },
+
+      setBreakDuration: (duration: number) => {
+        const nextDuration = Math.max(1, Math.min(60, Math.floor(duration)))
+        set({ breakDuration: nextDuration })
       },
 
       pauseTimer: () => {
@@ -152,8 +188,25 @@ export const usePomodoroStore = create<PomodoroState>()(
         set({ isRunning: true, isPaused: false, pausedAt: null, pausedTotalMs: nextPausedTotalMs })
       },
 
-      completeTimer: (actualSecondsOverride?: number) => {
-        const { currentTask, currentTaskId, duration, currentBackendId, startedAt, pausedTotalMs } = get()
+      completeTimer: (actualSecondsOverride?: number, options?: { startBreak?: boolean }) => {
+        const { currentTask, currentTaskId, duration, focusDuration, currentBackendId, startedAt, pausedTotalMs, timerMode, breakDuration } = get()
+        if (timerMode === 'break') {
+          set({
+            isRunning: false,
+            isPaused: false,
+            remainingTime: focusDuration * 60,
+            currentTask: '',
+            currentTaskId: null,
+            duration: focusDuration,
+            timerMode: 'focus',
+            currentBackendId: null,
+            startedAt: null,
+            pausedAt: null,
+            pausedTotalMs: 0,
+          })
+          return
+        }
+
         const totalSeconds = duration * 60
         const now = Date.now()
         const elapsedMs = startedAt ? Math.max(0, now - startedAt - pausedTotalMs) : totalSeconds * 1000
@@ -214,28 +267,38 @@ export const usePomodoroStore = create<PomodoroState>()(
           }
         }
 
-        set({
-          isRunning: false,
-          isPaused: false,
-          remainingTime: duration * 60,
-          currentTaskId: null,
-          currentBackendId: null,
-          startedAt: null,
-          pausedAt: null,
-          pausedTotalMs: 0,
-        })
+        if (options?.startBreak === false) {
+          set({
+            isRunning: false,
+            isPaused: false,
+            remainingTime: focusDuration * 60,
+            currentTaskId: null,
+            duration: focusDuration,
+            timerMode: 'focus',
+            currentBackendId: null,
+            startedAt: null,
+            pausedAt: null,
+            pausedTotalMs: 0,
+          })
+          return
+        }
+
+        get().startBreakTimer(breakDuration)
       },
 
       resetTimer: (durationOverride?: number) => {
-        const { duration } = get()
+        const { focusDuration } = get()
         const nextDuration = durationOverride !== undefined
           ? Math.max(1, Math.min(120, Math.floor(durationOverride)))
-          : duration
+          : focusDuration
         set({
           isRunning: false,
           isPaused: false,
           remainingTime: nextDuration * 60,
           duration: nextDuration,
+          focusDuration: nextDuration,
+          timerMode: 'focus',
+          currentTask: '',
           currentTaskId: null,
           currentBackendId: null,
           startedAt: null,
@@ -483,6 +546,8 @@ export const usePomodoroStore = create<PomodoroState>()(
       partialize: (state) => ({
         records: state.records,
         migrated: state.migrated,
+        focusDuration: state.focusDuration,
+        breakDuration: state.breakDuration,
       }),
     }
   )
