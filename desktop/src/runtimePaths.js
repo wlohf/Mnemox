@@ -55,6 +55,7 @@ function ensureStableSecret(userData) {
 function buildBackendEnv({ baseEnv = process.env, port, userData, frontendDistDir, secretKey }) {
   const dataDir = path.join(userData, 'data')
   fs.mkdirSync(dataDir, { recursive: true })
+  const updateManifestUrl = baseEnv.APP_UPDATE_MANIFEST_URL || 'https://raw.githubusercontent.com/wlohf/Mnemox/main/release-manifest/latest.json'
   return {
     ...baseEnv,
     HOST: '127.0.0.1',
@@ -67,6 +68,7 @@ function buildBackendEnv({ baseEnv = process.env, port, userData, frontendDistDi
     DATABASE_URL: sqliteUrlFromPath(path.join(dataDir, 'study.db')),
     SECRET_KEY: secretKey,
     AI_KEY_ENCRYPTION_SECRET: secretKey,
+    APP_UPDATE_MANIFEST_URL: updateManifestUrl,
     RAG_ENABLED: baseEnv.RAG_ENABLED || 'False',
     CORS_ORIGINS: JSON.stringify([`http://127.0.0.1:${port}`, `http://localhost:${port}`]),
     MATERIAL_UPLOAD_MAX_MB: baseEnv.MATERIAL_UPLOAD_MAX_MB || '200',
