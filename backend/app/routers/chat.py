@@ -1,10 +1,12 @@
 """AI 对话路由"""
+import asyncio
 import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from sqlalchemy.exc import OperationalError
 from pydantic import BaseModel
 from typing import List, Optional, cast
 
@@ -34,6 +36,8 @@ from app.models.user import User
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
+
+_SQLITE_LOCK_RETRY_DELAYS = (0.25, 0.75, 1.5, 3.0)
 
 
 # Correction markers that suggest the user made a mistake
@@ -612,24 +616,30 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
 
 
-async def _persist_streamed_chat_turn(
+def _is_sqlite_database_locked(exc: Exception) -> bool:
+    if isinstance(exc, OperationalError) and "database is locked" in str(exc).lower():
+        return True
+    return "sqlite3.operationalerror" in str(exc).lower() and "database is locked" in str(exc).lower()
+
+
+async def _persist_streamed_chat_turn_once(
     *,
     body: ChatRequest,
     full_reply: str,
     user_id: int,
-    sessionmaker=None,
+    sessionmaker,
 ) -> None:
-    """Persist the recoverable part of a streamed chat turn before SSE success."""
-    if not full_reply or not (body.conversation_id or body.study_session_id):
-        return
-
-    if sessionmaker is None:
-        from app.database import async_session_maker
-        sessionmaker = async_session_maker
-
     async with sessionmaker() as save_db:
         try:
             if body.conversation_id:
+                conv_result = await save_db.execute(
+                    select(ChatConversation).where(
+                        ChatConversation.id == body.conversation_id,
+                        ChatConversation.user_id == user_id,
+                    )
+                )
+                conv = conv_result.scalar_one_or_none()
+
                 save_db.add(
                     ChatMessageModel(
                         conversation_id=body.conversation_id,
@@ -646,13 +656,6 @@ async def _persist_streamed_chat_turn(
                     )
                 )
 
-                conv_result = await save_db.execute(
-                    select(ChatConversation).where(
-                        ChatConversation.id == body.conversation_id,
-                        ChatConversation.user_id == user_id,
-                    )
-                )
-                conv = conv_result.scalar_one_or_none()
                 if conv and conv.title == "新对话":
                     conv.title = body.message[:50]
 
@@ -685,6 +688,45 @@ async def _persist_streamed_chat_turn(
             await save_db.commit()
         except Exception:
             await save_db.rollback()
+            raise
+
+
+async def _persist_streamed_chat_turn(
+    *,
+    body: ChatRequest,
+    full_reply: str,
+    user_id: int,
+    sessionmaker=None,
+) -> None:
+    """Persist the recoverable part of a streamed chat turn before SSE success."""
+    if not full_reply or not (body.conversation_id or body.study_session_id):
+        return
+
+    if sessionmaker is None:
+        from app.database import async_session_maker
+        sessionmaker = async_session_maker
+
+    for attempt, delay in enumerate((0, *_SQLITE_LOCK_RETRY_DELAYS), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await _persist_streamed_chat_turn_once(
+                body=body,
+                full_reply=full_reply,
+                user_id=user_id,
+                sessionmaker=sessionmaker,
+            )
+            break
+        except Exception as exc:
+            if _is_sqlite_database_locked(exc) and attempt <= len(_SQLITE_LOCK_RETRY_DELAYS):
+                logger.warning(
+                    "流式对话核心消息保存遇到 SQLite 写锁，准备重试: attempt=%s conversation_id=%s study_session_id=%s user_id=%s",
+                    attempt,
+                    body.conversation_id,
+                    body.study_session_id,
+                    user_id,
+                )
+                continue
             logger.exception(
                 "流式对话核心消息保存失败: conversation_id=%s study_session_id=%s user_id=%s",
                 body.conversation_id,

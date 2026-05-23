@@ -1,9 +1,11 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
@@ -69,6 +71,33 @@ class ChatStreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message.role for message in messages], ["user", "assistant"])
         self.assertEqual(messages[0].content, "解释一下梯度下降")
         self.assertEqual(messages[1].content, "梯度下降是一种迭代优化方法。")
+
+    async def test_core_message_persistence_retries_when_sqlite_is_locked(self):
+        user_id, conversation_id = await self._create_conversation()
+        body = ChatRequest(
+            message="hello",
+            conversation_id=conversation_id,
+            history=[],
+        )
+        locked_error = OperationalError("INSERT", {}, sqlite3.OperationalError("database is locked"))
+
+        with (
+            patch("app.routers.chat._persist_streamed_chat_turn_once", new_callable=AsyncMock) as persist_once,
+            patch("app.routers.chat.asyncio.sleep", new_callable=AsyncMock) as sleep_mock,
+            patch("app.routers.chat.upsert_conversation_summary", AsyncMock()),
+            patch("app.routers.chat.upsert_user_memories_from_turn", AsyncMock()),
+        ):
+            persist_once.side_effect = [locked_error, None]
+
+            await _persist_streamed_chat_turn(
+                body=body,
+                full_reply="ok",
+                user_id=user_id,
+                sessionmaker=self.sessionmaker,
+            )
+
+        self.assertEqual(persist_once.await_count, 2)
+        sleep_mock.assert_awaited_once_with(0.25)
 
 
 if __name__ == "__main__":
