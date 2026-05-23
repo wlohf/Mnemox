@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.0.3",
-  "release_notes": "新增桌面安全登录记忆、托盘常驻番茄钟提醒、主链路 API 错误显式提示，并补齐 GitHub Release 更新清单。",
-  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.3",
-  "published_at": "2026-05-23T12:00:00Z",
+  "latest_version": "1.0.4",
+  "release_notes": "修复番茄钟重启后历史记录与进行中计时丢失的问题，新增历史对话直达路由，并完善桌面更新展示。",
+  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.4",
+  "published_at": "2026-05-23T17:17:12+08:00",
   "downloads": {
-    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.3/Mnemox-Setup-1.0.3.exe"
+    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.4/Mnemox-Setup-1.0.4.exe"
   }
 }

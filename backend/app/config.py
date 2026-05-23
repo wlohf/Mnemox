@@ -13,6 +13,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_DB_PATH = resolve_runtime_path("study.db")
 _DEFAULT_SQLITE_URL = f"sqlite+aiosqlite:///{_DEFAULT_DB_PATH}"
 _DEFAULT_PG_URL = "postgresql+asyncpg://postgres:password@localhost:5432/study_assistant"
+_DEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/wlohf/Mnemox/main/release-manifest/latest.json"
 
 # Use PostgreSQL when DB_PASSWORD env is set (production), otherwise SQLite (local dev)
 _DEFAULT_DB_URL = _DEFAULT_PG_URL if os.environ.get("DB_PASSWORD") else _DEFAULT_SQLITE_URL
@@ -93,8 +94,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
 
     # App Update
-    APP_VERSION: str = "1.0.3"
-    APP_UPDATE_MANIFEST_URL: str = ""
+    APP_VERSION: str = "1.0.4"
+    APP_UPDATE_MANIFEST_URL: str = _DEFAULT_UPDATE_MANIFEST_URL
 
     # Local packaged app
     SERVE_FRONTEND: bool = False
@@ -116,6 +117,9 @@ class Settings(BaseSettings):
             and self.OPENCODE_MODEL_GGBOOM
         ):
             self.OPENAI_MODEL = self.OPENCODE_MODEL_GGBOOM
+
+        if not self.APP_UPDATE_MANIFEST_URL.strip():
+            self.APP_UPDATE_MANIFEST_URL = _DEFAULT_UPDATE_MANIFEST_URL
 
         return self
 

@@ -80,4 +80,5 @@ backend/.venv/
 chromadb/
 rag_settings.json
 desktop-build/
+release/
 release/desktop/

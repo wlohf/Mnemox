@@ -11,6 +11,7 @@ import { ankiCardsSyncAdapter } from './sync/adapters/ankiCardsSyncAdapter'
 import { wrongQuestionsSyncAdapter } from './sync/adapters/wrongQuestionsSyncAdapter'
 import { useThemeStore } from './stores/themeStore'
 import { useAuthStore } from './stores/authStore'
+import { usePomodoroStore } from './stores/pomodoroStore'
 import { checkSystemUpdate } from './services/systemApi'
 import { getToken } from './services/apiClient'
 
@@ -71,6 +72,7 @@ function notifyUpdateIfPossible(latestVersion: string) {
 function App() {
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const refreshPomodoroRecords = usePomodoroStore((s) => s.refreshRecordsFromBackend)
   const autoCheckTimer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -84,11 +86,12 @@ function App() {
   useEffect(() => {
     if (isAuthenticated && getToken()) {
       syncEngine.start(true)
+      void refreshPomodoroRecords()
     } else {
       syncEngine.stop()
     }
     return () => syncEngine.stop()
-  }, [isAuthenticated])
+  }, [isAuthenticated, refreshPomodoroRecords])
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -237,6 +240,7 @@ function App() {
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
+              <Route path="/conversations/:conversationId" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
               <Route path="/pomodoro" element={<ProtectedRoute><PomodoroPage /></ProtectedRoute>} />
               <Route path="/wrong-questions" element={<ProtectedRoute><WrongQuestionsPage /></ProtectedRoute>} />
               <Route path="/review" element={<ProtectedRoute><ReviewPage /></ProtectedRoute>} />

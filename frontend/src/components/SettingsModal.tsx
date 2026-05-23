@@ -28,6 +28,12 @@ import {
   subscribeDesktopUpdateState,
   type DesktopUpdateState,
 } from '../services/desktopUpdater'
+import {
+  getDisplayedLatestVersion,
+  getDisplayedReleaseNotes,
+  hasDownloadableUpdate,
+  isDesktopUpdateAvailable,
+} from '../services/updateDisplay'
 import { useNavigate } from 'react-router-dom'
 
 interface SettingsModalProps {
@@ -265,22 +271,45 @@ function SystemSettings() {
   const checkUpdate = async (showToast: boolean) => {
     setCheckingUpdate(true)
     try {
+      let desktopState: DesktopUpdateState | null = null
+      let systemResult: SystemUpdateInfo | null = null
+      let systemError: unknown = null
+
       if (desktopUpdaterAvailable) {
-        const desktopState = await checkForDesktopUpdate()
-        setDesktopUpdateState(desktopState)
+        try {
+          desktopState = await checkForDesktopUpdate()
+          setDesktopUpdateState(desktopState)
+        } catch {
+          desktopState = await getDesktopUpdateState().catch(() => null)
+          if (desktopState) {
+            setDesktopUpdateState(desktopState)
+          }
+        }
       }
-      const result = await checkSystemUpdate()
-      setUpdateInfo(result)
-      localStorage.setItem('sys_update_last', JSON.stringify(result))
-      if (result.latest_version) {
-        localStorage.setItem('sys_update_last_latest_version', result.latest_version)
+
+      try {
+        systemResult = await checkSystemUpdate()
+        setUpdateInfo(systemResult)
+        localStorage.setItem('sys_update_last', JSON.stringify(systemResult))
+        if (systemResult.latest_version) {
+          localStorage.setItem('sys_update_last_latest_version', systemResult.latest_version)
+        }
+      } catch (error) {
+        systemError = error
+      }
+
+      if (systemError && !desktopState) {
+        throw systemError
       }
 
       if (!showToast) {
         return
       }
-      if (result.has_update) {
-        message.success(`发现新版本 v${result.latest_version}`)
+      if (hasDownloadableUpdate(systemResult, desktopState)) {
+        const version = getDisplayedLatestVersion(systemResult, desktopState)
+        message.success(version ? `发现新版本 v${version}` : '发现新版本')
+      } else if (systemError) {
+        message.warning(getApiErrorMessage(systemError, '版本说明获取失败，但桌面更新检查已完成'))
       } else {
         message.info('当前已是最新版本')
       }
@@ -294,7 +323,7 @@ function SystemSettings() {
   }
 
   const handleOpenUpdateLink = async () => {
-    if (desktopUpdaterAvailable) {
+    if (desktopUpdaterAvailable && isDesktopUpdateAvailable(desktopUpdateState)) {
       try {
         const nextState = await downloadDesktopUpdate()
         setDesktopUpdateState(nextState)
@@ -385,6 +414,10 @@ function SystemSettings() {
     message.success('系统设置已保存')
   }
 
+  const displayedLatestVersion = getDisplayedLatestVersion(updateInfo, desktopUpdateState)
+  const displayedReleaseNotes = getDisplayedReleaseNotes(updateInfo, desktopUpdateState)
+  const canDownloadUpdate = hasDownloadableUpdate(updateInfo, desktopUpdateState)
+
   const row = (label: string, desc: string, control: React.ReactNode) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-light)' }}>
       <div>
@@ -432,9 +465,9 @@ function SystemSettings() {
           <Button size="small" loading={checkingUpdate} onClick={() => void checkUpdate(true)}>
             手动检查更新
           </Button>
-          {updateInfo?.has_update && (
+          {canDownloadUpdate && (
             <Button type="primary" size="small" onClick={handleOpenUpdateLink}>
-              {desktopUpdaterAvailable ? '下载并安装更新' : '下载更新'}
+              {isDesktopUpdateAvailable(desktopUpdateState) ? '下载并安装更新' : '下载更新'}
             </Button>
           )}
           {desktopUpdaterAvailable && desktopUpdateState?.phase === 'downloaded' && (
@@ -449,14 +482,14 @@ function SystemSettings() {
           ? `上次检查：${new Date(updateInfo.checked_at).toLocaleString()}`
           : '上次检查：尚未执行'}
       </div>
-      {!!updateInfo?.latest_version && (
+      {!!displayedLatestVersion && (
         <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          最新版本：v{updateInfo.latest_version}
+          最新版本：v{displayedLatestVersion}
         </div>
       )}
-      {!!compactUpdateNotes(updateInfo?.release_notes) && (
+      {!!compactUpdateNotes(displayedReleaseNotes) && (
         <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          更新说明：{compactUpdateNotes(updateInfo?.release_notes)}
+          更新说明：{compactUpdateNotes(displayedReleaseNotes)}
         </div>
       )}
       {desktopUpdaterAvailable && !!desktopUpdateState?.message && (

@@ -231,8 +231,8 @@ async def get_recent_pomodoros(
     result = await db.execute(
         select(Pomodoro)
         .where(Pomodoro.user_id == current_user.id)
-        .order_by(Pomodoro.created_at.desc())
-        .limit(min(limit, 50))
+        .order_by(func.coalesce(Pomodoro.ended_at, Pomodoro.started_at, Pomodoro.created_at).desc())
+        .limit(min(limit, 500))
     )
     pomodoros = result.scalars().all()
 

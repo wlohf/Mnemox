@@ -25,6 +25,7 @@ dayjs.locale('zh-cn')
 interface ConversationSidebarProps {
   onOpenProjectSettings: (projectId?: number) => void
   onOpenProjectMaterials: () => void
+  onConversationOpened?: (conversationId: number) => void
   collapsed?: boolean
   onExpandSidebar?: (target?: 'default' | 'search' | 'categories' | 'history') => void
   expandTarget?: 'default' | 'search' | 'categories' | 'history' | null
@@ -34,6 +35,7 @@ interface ConversationSidebarProps {
 export function ConversationSidebar({
   onOpenProjectSettings,
   onOpenProjectMaterials,
+  onConversationOpened,
   collapsed = false,
   onExpandSidebar,
   expandTarget = null,
@@ -129,7 +131,8 @@ export function ConversationSidebar({
 
   const handleNewChat = async () => {
     try {
-      await createNewConversation(activeProjectId)
+      const conversation = await createNewConversation(activeProjectId)
+      onConversationOpened?.(conversation.id)
     } catch (error) {
       message.error(getApiErrorMessage(error, '创建对话失败，请检查后端服务'))
     }
@@ -189,7 +192,9 @@ export function ConversationSidebar({
       const ok = await setActiveConversation(id)
       if (!ok) {
         message.error('加载历史对话失败，请稍后重试')
+        return
       }
+      onConversationOpened?.(id)
     } catch (error) {
       message.error(getApiErrorMessage(error, '加载历史对话失败，请稍后重试'))
     } finally {

@@ -91,6 +91,37 @@ describe('chatStore conversation restore', () => {
     expect(useChatStore.getState().messages).toEqual([{ role: 'user', content: 'hello', image_data: undefined }])
   })
 
+  it('switches to a clicked historical conversation and persists it', async () => {
+    useChatStore.setState({
+      activeConversationId: 5,
+      messages: [{ role: 'assistant', content: 'old chat' }],
+    })
+    conversationApiMock.getConversation.mockResolvedValue(conversationDetail(9))
+
+    const switched = await useChatStore.getState().setActiveConversation(9)
+
+    expect(switched).toBe(true)
+    expect(conversationApiMock.getConversation).toHaveBeenCalledWith(9)
+    expect(useChatStore.getState().activeConversationId).toBe(9)
+    expect(useChatStore.getState().messages).toEqual([{ role: 'user', content: 'hello', image_data: undefined }])
+    expect(localStorage.getItem('chat_activeConversationId')).toBe('9')
+  })
+
+  it('keeps the current conversation selected when historical conversation loading fails', async () => {
+    useChatStore.setState({
+      activeConversationId: 5,
+      messages: [{ role: 'assistant', content: 'old chat' }],
+    })
+    conversationApiMock.getConversation.mockRejectedValue(new Error('not found'))
+
+    const switched = await useChatStore.getState().setActiveConversation(9)
+
+    expect(switched).toBe(false)
+    expect(useChatStore.getState().activeConversationId).toBe(5)
+    expect(useChatStore.getState().messages).toEqual([{ role: 'assistant', content: 'old chat' }])
+    expect(localStorage.getItem('chat_activeConversationId')).toBe('5')
+  })
+
   it('clears a stale persisted project before project detail can be requested', async () => {
     localStorage.setItem('chat_activeProjectId', '9999')
     useChatStore.setState({ activeProjectId: 9999 })

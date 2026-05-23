@@ -57,6 +57,10 @@ test('backend environment uses stable user data and localhost-only port', () => 
   assert.match(env.DATABASE_URL, /study\.db$/)
   assert.equal(env.SECRET_KEY, 'stable-secret')
   assert.equal(env.AI_KEY_ENCRYPTION_SECRET, 'stable-secret')
+  assert.equal(
+    env.APP_UPDATE_MANIFEST_URL,
+    'https://raw.githubusercontent.com/wlohf/Mnemox/main/release-manifest/latest.json',
+  )
 })
 
 test('sqliteUrlFromPath formats Windows paths for SQLAlchemy', () => {

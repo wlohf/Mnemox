@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as pomodoroApi from '../services/pomodoroApi'
+import type { PomodoroStartResponse } from '../services/pomodoroApi'
 import { clearPomodoroReminder, setPomodoroReminder } from '../services/desktopReminder'
 
 export interface PomodoroRecord {
@@ -82,6 +83,7 @@ interface PomodoroState {
   // Sync actions
   syncPendingRecords: () => Promise<void>
   migrateLocalRecords: () => Promise<void>
+  refreshRecordsFromBackend: () => Promise<void>
 
   // Stats
   getStats: () => PomodoroStats
@@ -96,6 +98,72 @@ interface PomodoroState {
 
 const getDateString = (date: Date = new Date()) => {
   return date.toISOString().split('T')[0]
+}
+
+const MAX_RECORDS = 500
+const BACKEND_REFRESH_LIMIT = 500
+const ACTIVE_TIMER_STALE_GRACE_MS = 12 * 60 * 60 * 1000
+
+const getDateFromIso = (value: string) => {
+  const datePrefix = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+  if (datePrefix) return datePrefix
+
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? getDateString() : getDateString(parsed)
+}
+
+const parseTimestamp = (value: string | null | undefined) => {
+  if (!value) return Number.NaN
+  return new Date(value).getTime()
+}
+
+const sortRecordsByCompletedAt = (records: PomodoroRecord[]) => {
+  return [...records].sort((a, b) => parseTimestamp(b.completedAt) - parseTimestamp(a.completedAt))
+}
+
+const getRecordDedupKey = (record: PomodoroRecord) => {
+  return [
+    record.taskId ?? '',
+    record.taskName.trim().toLowerCase(),
+    record.duration,
+    record.completedAt,
+  ].join('|')
+}
+
+const mergeRecords = (backendRecords: PomodoroRecord[], localRecords: PomodoroRecord[]) => {
+  const seenBackendIds = new Set<number>()
+  const seenKeys = new Set<string>()
+  const merged: PomodoroRecord[] = []
+
+  for (const record of [...backendRecords, ...localRecords]) {
+    if (record.backendId !== undefined) {
+      if (seenBackendIds.has(record.backendId)) continue
+      seenBackendIds.add(record.backendId)
+    } else {
+      const key = getRecordDedupKey(record)
+      if (seenKeys.has(key)) continue
+      seenKeys.add(key)
+    }
+    merged.push(record)
+  }
+
+  return sortRecordsByCompletedAt(merged).slice(0, MAX_RECORDS)
+}
+
+const toRecord = (pomodoro: PomodoroStartResponse, completedAtOverride?: string): PomodoroRecord | null => {
+  const completedAt = completedAtOverride ?? pomodoro.ended_at
+  if (!completedAt) return null
+
+  return {
+    id: `backend-${pomodoro.id}`,
+    backendId: pomodoro.id,
+    taskId: pomodoro.task_id,
+    taskName: pomodoro.task_name?.trim() || '专注学习',
+    duration: pomodoro.duration,
+    completedAt,
+    date: getDateFromIso(completedAt),
+    synced: true,
+  }
 }
 
 const getWeekStart = () => {
@@ -245,7 +313,7 @@ export const usePomodoroStore = create<PomodoroState>()(
             synced: false,
           }
           set((state) => ({
-            records: [newRecord, ...state.records].slice(0, 500),
+            records: [newRecord, ...state.records].slice(0, MAX_RECORDS),
           }))
 
           // Sync to backend
@@ -347,7 +415,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           synced: false,
         }
         set((state) => ({
-          records: [newRecord, ...state.records].slice(0, 500),
+          records: [newRecord, ...state.records].slice(0, MAX_RECORDS),
         }))
       },
 
@@ -408,6 +476,80 @@ export const usePomodoroStore = create<PomodoroState>()(
             }
           })
         } else {
+          set({ backendOnline: false })
+        }
+      },
+
+      refreshRecordsFromBackend: async () => {
+        try {
+          const recent = await pomodoroApi.getRecentPomodoros(BACKEND_REFRESH_LIMIT)
+          const completedRecords = recent
+            .filter((p) => p.completed && p.ended_at)
+            .map((p) => toRecord(p))
+            .filter((record): record is PomodoroRecord => record !== null)
+
+          const activeTimer = recent.find((p) => !p.completed && !p.ended_at)
+          const activeState: Partial<PomodoroState> = {}
+          const expiredRecords: PomodoroRecord[] = []
+
+          if (activeTimer) {
+            const startedAt = parseTimestamp(activeTimer.started_at)
+            const durationMinutes = Math.max(0.1, Number(activeTimer.duration) || 25)
+            const totalSeconds = Math.max(1, Math.round(durationMinutes * 60))
+
+            if (Number.isFinite(startedAt)) {
+              const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+              const remainingSeconds = Math.max(totalSeconds - elapsedSeconds, 0)
+
+              if (remainingSeconds > 0) {
+                const taskName = activeTimer.task_name?.trim() || '专注学习'
+                Object.assign(activeState, {
+                  isRunning: true,
+                  isPaused: false,
+                  remainingTime: remainingSeconds,
+                  currentTask: taskName,
+                  currentTaskId: activeTimer.task_id,
+                  duration: durationMinutes,
+                  focusDuration: durationMinutes,
+                  timerMode: 'focus',
+                  currentBackendId: activeTimer.id,
+                  startedAt,
+                  pausedAt: null,
+                  pausedTotalMs: 0,
+                })
+                scheduleDesktopReminder(taskName, remainingSeconds / 60, 'focus')
+              } else if ((Date.now() - startedAt - totalSeconds * 1000) <= ACTIVE_TIMER_STALE_GRACE_MS) {
+                const completedAt = new Date(startedAt + totalSeconds * 1000).toISOString()
+                const completedRecord = toRecord(activeTimer, completedAt)
+                if (completedRecord) {
+                  expiredRecords.push(completedRecord)
+                }
+                Object.assign(activeState, {
+                  isRunning: false,
+                  isPaused: false,
+                  remainingTime: totalSeconds,
+                  currentTask: '',
+                  currentTaskId: null,
+                  duration: durationMinutes,
+                  focusDuration: durationMinutes,
+                  timerMode: 'focus',
+                  currentBackendId: null,
+                  startedAt: null,
+                  pausedAt: null,
+                  pausedTotalMs: 0,
+                })
+
+                await pomodoroApi.completePomodoro(activeTimer.id, true, undefined, durationMinutes)
+              }
+            }
+          }
+
+          set((state) => ({
+            records: mergeRecords([...expiredRecords, ...completedRecords], state.records),
+            backendOnline: true,
+            ...activeState,
+          }))
+        } catch {
           set({ backendOnline: false })
         }
       },
@@ -558,6 +700,17 @@ export const usePomodoroStore = create<PomodoroState>()(
     {
       name: 'pomodoro-storage',
       partialize: (state) => ({
+        isRunning: state.isRunning,
+        isPaused: state.isPaused,
+        remainingTime: state.remainingTime,
+        currentTask: state.currentTask,
+        currentTaskId: state.currentTaskId,
+        duration: state.duration,
+        timerMode: state.timerMode,
+        currentBackendId: state.currentBackendId,
+        startedAt: state.startedAt,
+        pausedAt: state.pausedAt,
+        pausedTotalMs: state.pausedTotalMs,
         records: state.records,
         migrated: state.migrated,
         focusDuration: state.focusDuration,

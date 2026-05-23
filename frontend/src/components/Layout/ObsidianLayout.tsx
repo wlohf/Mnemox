@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Layout,
   Card,
@@ -89,6 +89,7 @@ import { GlobalNavRail } from './GlobalNavRail'
 import type { MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
 import { getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
 import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
+import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
@@ -162,6 +163,11 @@ interface QuoteNoteDraft {
 export function ObsidianLayout() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { conversationId: routeConversationIdParam } = useParams()
+  const routedConversationId = useMemo(
+    () => parseConversationRouteId(routeConversationIdParam),
+    [routeConversationIdParam],
+  )
   const { user, logout } = useAuthStore()
   const { bgImage, bgOpacity } = useThemeStore()
   // 使用zustand store管理番茄钟
@@ -740,6 +746,25 @@ export function ObsidianLayout() {
     }
     void loadAll()
   }, [backendReady, loadMaterials, reconcilePersistedSelections, restoreActiveConversation, syncPendingRecords])
+
+  useEffect(() => {
+    if (routeConversationIdParam !== undefined && routedConversationId === null) {
+      navigate('/', { replace: true })
+    }
+  }, [navigate, routeConversationIdParam, routedConversationId])
+
+  useEffect(() => {
+    if (!backendReady || routedConversationId === null || activeConversationId === routedConversationId) {
+      return
+    }
+
+    void setActiveConversation(routedConversationId).then((ok) => {
+      if (!ok) {
+        message.error('加载历史对话失败，请稍后重试')
+        navigate('/', { replace: true })
+      }
+    })
+  }, [activeConversationId, backendReady, navigate, routedConversationId, setActiveConversation])
 
   useEffect(() => {
     if (!backendReady) return
@@ -1847,8 +1872,13 @@ export function ObsidianLayout() {
             <ConversationSidebar
               collapsed
               onExpandSidebar={(target) => {
+                setLeftSidebarTab('conversations')
                 setLeftExpandTarget(target || 'default')
                 setLeftCollapsed(false)
+              }}
+              onConversationOpened={(conversationId) => {
+                setLeftSidebarTab('conversations')
+                navigate(getConversationPath(conversationId))
               }}
               onOpenProjectSettings={(projectId) => {
                 setEditingProjectId(projectId)
@@ -1880,6 +1910,10 @@ export function ObsidianLayout() {
                     <ConversationSidebar
                       expandTarget={leftExpandTarget}
                       onExpandTargetHandled={() => setLeftExpandTarget(null)}
+                      onConversationOpened={(conversationId) => {
+                        setLeftSidebarTab('conversations')
+                        navigate(getConversationPath(conversationId))
+                      }}
                       onOpenProjectSettings={(projectId) => {
                         setEditingProjectId(projectId)
                         setProjectSettingsOpen(true)
