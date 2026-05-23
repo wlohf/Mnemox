@@ -1,14 +1,39 @@
 """数据库连接和会话管理"""
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from app.config import settings
+
+
+def _is_sqlite_url(database_url: str) -> bool:
+    return database_url.startswith("sqlite")
+
+
+def _sqlite_connect_args() -> dict:
+    if not _is_sqlite_url(settings.DATABASE_URL):
+        return {}
+    return {"timeout": 30}
+
+
+def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+    finally:
+        cursor.close()
 
 # 创建异步引擎
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    future=True
+    future=True,
+    connect_args=_sqlite_connect_args(),
 )
+
+if _is_sqlite_url(settings.DATABASE_URL):
+    event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
 
 # 创建会话工厂
 async_session_maker = async_sessionmaker(
@@ -35,7 +60,7 @@ async def get_db() -> AsyncSession:
 
 
 def _is_sqlite() -> bool:
-    return settings.DATABASE_URL.startswith("sqlite")
+    return _is_sqlite_url(settings.DATABASE_URL)
 
 
 async def _run_lightweight_migrations(conn):

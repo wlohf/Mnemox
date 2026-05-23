@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, Tray, dialog, shell, ipcMain, safeStorage } = require('electron')
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, shell, ipcMain, safeStorage, nativeImage } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -20,6 +20,7 @@ const {
 } = require('./runtimePaths')
 const { createDesktopAuthStore } = require('./desktopAuth')
 const { createReminderManager } = require('./desktopReminder')
+const { createTrayIcon } = require('./trayIcon')
 
 app.setName('Mnemox')
 
@@ -150,6 +151,7 @@ function createWindow() {
   })
   mainWindow.on('close', (event) => {
     if (isQuitting) return
+    if (!tray) return
     event.preventDefault()
     mainWindow.hide()
   })
@@ -169,7 +171,7 @@ function showMainWindow() {
 
 function createTray() {
   if (tray) return
-  tray = new Tray(process.execPath)
+  tray = new Tray(createTrayIcon(nativeImage))
   tray.setToolTip('Mnemox')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Mnemox', click: showMainWindow },
@@ -183,6 +185,22 @@ function createTray() {
     },
   ]))
   tray.on('double-click', showMainWindow)
+}
+
+function createTraySafely() {
+  try {
+    createTray()
+  } catch (error) {
+    if (tray) {
+      try {
+        tray.destroy()
+      } catch {
+        // ignore tray cleanup failures
+      }
+      tray = null
+    }
+    console.error('[desktop] failed to create tray', error)
+  }
 }
 
 function registerAutoUpdater() {
@@ -283,7 +301,7 @@ app.whenReady().then(async () => {
     registerDesktopAuth()
     registerDesktopReminder()
     createWindow()
-    createTray()
+    createTraySafely()
     void maybeAutoCheckForUpdates()
   } catch (error) {
     await dialog.showMessageBox({
@@ -297,9 +315,11 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && tray) {
     // Keep the tray process alive so desktop reminders still fire.
+    return
   }
+  app.quit()
 })
 
 app.on('before-quit', () => {

@@ -129,7 +129,7 @@ def _get_effective_values(row: AIProviderSetting) -> tuple[str, str, str]:
     stored_key = decrypt_secret(row.api_key)
     # API keys are user-owned. Do not fall back to .env here; otherwise a key
     # cleared in the UI can reappear as "configured" and still be used by tests.
-    model = row.model or (getattr(settings, env_attrs[1], "") if env_attrs[1] else "")
+    model = row.model or ""
     base_url = row.base_url or (getattr(settings, env_attrs[2], "") if env_attrs[2] else "")
     return stored_key, base_url, model
 

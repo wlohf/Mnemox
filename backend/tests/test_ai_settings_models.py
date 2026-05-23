@@ -70,7 +70,28 @@ class AISettingsModelCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(api_key, "")
         self.assertEqual(base_url, "https://api.openai.com/v1")
-        self.assertEqual(model, "gpt-4")
+        self.assertEqual(model, "")
+
+    async def test_available_models_can_be_cleared_without_default_model_reappearing(self):
+        row = AIProviderSetting(
+            user_id=1,
+            provider_name="openai",
+            display_name="OpenAI",
+            api_key="",
+            base_url="https://api.openai.com/v1",
+            model="",
+            available_models="[]",
+            enabled=False,
+        )
+
+        with patch("app.routers.ai_settings.settings.OPENAI_MODEL", "gpt-4"):
+            api_key, base_url, model = _get_effective_values(row)
+            models = _parse_available_models(row.available_models, model)
+
+        self.assertEqual(api_key, "")
+        self.assertEqual(base_url, "https://api.openai.com/v1")
+        self.assertEqual(model, "")
+        self.assertEqual(models, [])
 
     async def test_model_search_merges_without_mutating_provider_settings(self):
         row = AIProviderSetting(

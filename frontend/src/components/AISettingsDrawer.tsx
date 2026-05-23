@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Button,
+  Switch,
   message,
   Space,
   Tag,
@@ -91,7 +92,7 @@ function buildProviderEditStates(data: AIProvider[]): Record<string, EditState> 
       clear_api_key: false,
       base_url: p.base_url,
       model: p.model,
-      available_models: withDefaultModel(p.available_models || [], p.model),
+      available_models: normalizeModels(p.available_models || []),
     }
   }
   return states
@@ -231,11 +232,11 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     }
     updateData.base_url = edit.base_url
     updateData.model = defaultModel
-    updateData.available_models = withDefaultModel(selectedModels, defaultModel)
+    updateData.available_models = selectedModels
 
     try {
       const result = await updateProvider(providerName, updateData)
-      const savedModels = withDefaultModel(result.available_models || [], result.model)
+      const savedModels = normalizeModels(result.available_models || [])
       setProviders((prev) =>
         prev.map((p) => (p.provider_name === providerName ? result : p))
       )
@@ -358,11 +359,11 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     setEditStates((prev) => {
       const current = prev[providerName]
       if (!current) return prev
-      const availableModels = withDefaultModel(models, current.model)
+      const availableModels = normalizeModels(models)
       const nextModel =
         current.model && availableModels.includes(current.model)
           ? current.model
-          : availableModels[0] || current.model
+          : current.model
       return {
         ...prev,
         [providerName]: {
@@ -390,7 +391,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         base_url: edit.base_url.trim() || undefined,
         model_hint: edit.model.trim() || undefined,
       })
-      const discoveredModels = withDefaultModel(result.models, edit.model || result.models[0])
+      const discoveredModels = normalizeModels(result.models)
       setEditStates((prev) => ({
         ...prev,
         [providerName]: {
@@ -513,9 +514,9 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         api_key: newProvider.api_key.trim() || undefined,
         base_url: newProvider.base_url.trim() || undefined,
         model: defaultModel || undefined,
-        available_models: withDefaultModel(selectedModels, defaultModel),
+        available_models: selectedModels,
       })
-      const savedModels = withDefaultModel(result.available_models || [], result.model)
+      const savedModels = normalizeModels(result.available_models || [])
       setProviders((prev) => [...prev, result])
       setEditStates((prev) => ({
         ...prev,
@@ -734,12 +735,6 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                   setNewProvider((prev) => ({
                     ...prev,
                     model: value,
-                  }))
-                }
-                onBlur={() =>
-                  setNewProvider((prev) => ({
-                    ...prev,
-                    available_models: withDefaultModel(prev.available_models, prev.model),
                   }))
                 }
                 options={modelOptions(newProvider.available_models, newProvider.model)}
@@ -1043,6 +1038,32 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                           保存后会删除此供应商的已保存 Key。
                         </div>
                       )}
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                      <Space>
+                        <Switch
+                          checked={provider.enabled}
+                          onChange={(checked) => {
+                            setProviders((prev) =>
+                              prev.map((p) =>
+                                p.provider_name === provider.provider_name ? { ...p, enabled: checked } : p
+                              )
+                            )
+                            void updateProvider(provider.provider_name, { enabled: checked }).catch((error) => {
+                              showApiError(error, '更新供应商启用状态失败')
+                              setProviders((prev) =>
+                                prev.map((p) =>
+                                  p.provider_name === provider.provider_name ? { ...p, enabled: !checked } : p
+                                )
+                              )
+                            })
+                          }}
+                        />
+                        <span style={{ fontSize: 12, color: '#666' }}>
+                          {provider.enabled ? '已启用' : '已停用，不会出现在对话模型切换中'}
+                        </span>
+                      </Space>
                     </div>
 
                     <div style={{ marginBottom: 12 }}>

@@ -849,6 +849,11 @@ async def chat_send(
     collected_reply = []
     user_id = current_user.id
 
+    try:
+        await db.rollback()
+    except Exception:
+        logger.warning("释放流式对话请求数据库会话失败", exc_info=True)
+
     async def event_stream():
         # 先发送自动命中的资料信息（标题匹配 + 项目资料 + 读取资料库意图）
         merged_detected = []
