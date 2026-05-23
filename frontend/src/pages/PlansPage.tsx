@@ -263,27 +263,24 @@ export function PlansPage() {
           }}
           cellRender={(current, info) => {
             if (info.type !== 'date') {
-              return info.originNode
+              return null
             }
             const hasPlan = planDateSet.has(current.format('YYYY-MM-DD'))
-            if (!hasPlan) return info.originNode
+            if (!hasPlan) return null
             return (
-              <>
-                {info.originNode}
-                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: 'var(--text-primary)',
-                      border: '1px solid var(--bg-secondary)',
-                      opacity: 0.9,
-                      display: 'inline-block',
-                    }}
-                  />
-                </div>
-              </>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: 'var(--text-primary)',
+                    border: '1px solid var(--bg-secondary)',
+                    opacity: 0.9,
+                    display: 'inline-block',
+                  }}
+                />
+              </div>
             )
           }}
         />

@@ -2859,7 +2859,7 @@ export function ObsidianLayout() {
                     fullscreen={false}
                     onSelect={onDateSelect}
                     cellRender={(current, info) => (
-                      info.type === 'date' ? <>{info.originNode}{renderDateBadge(current)}</> : info.originNode
+                      info.type === 'date' ? renderDateBadge(current) : null
                     )}
                   />
                 </div>
