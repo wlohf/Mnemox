@@ -44,9 +44,29 @@ $headers = @{
     "User-Agent" = "Mnemox-Release-Script"
 }
 
+function Get-GitHubErrorMessage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    if ($ErrorRecord.Exception.Response) {
+        try {
+            $reader = New-Object System.IO.StreamReader($ErrorRecord.Exception.Response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            if ($responseBody) {
+                return $responseBody
+            }
+        } catch {
+        }
+    }
+
+    return $ErrorRecord.Exception.Message
+}
+
 $tag = "v$Version"
 $releaseName = "Mnemox $tag"
-$body = Get-Content -Raw $ReleaseNotesPath
+$body = [string](Get-Content -Raw $ReleaseNotesPath)
 $releaseApi = "https://api.github.com/repos/$Repo/releases"
 
 try {
@@ -61,8 +81,14 @@ try {
         prerelease = $false
         generate_release_notes = $false
     } | ConvertTo-Json -Depth 4
-    $created = Invoke-RestMethod -Method Post -Uri $releaseApi -Headers $headers -Body $payload
-    $releaseId = $created.id
+
+    try {
+        $created = Invoke-RestMethod -Method Post -Uri $releaseApi -Headers $headers -Body $payload -ContentType "application/json; charset=utf-8"
+        $releaseId = $created.id
+    } catch {
+        $message = Get-GitHubErrorMessage -ErrorRecord $_
+        throw "创建 GitHub Release 失败：$message"
+    }
 }
 
 $release = Invoke-RestMethod -Method Get -Uri "$releaseApi/$releaseId" -Headers $headers
@@ -76,6 +102,7 @@ if (Test-Path $BlockmapPath) {
 foreach ($assetPath in $assets) {
     $fileName = [System.IO.Path]::GetFileName($assetPath)
     $assetBytes = [System.IO.File]::ReadAllBytes($assetPath)
+    $assetUploadUri = "{0}?name={1}" -f $uploadUrl, [uri]::EscapeDataString($fileName)
     $assetHeaders = @{
         Authorization = "Bearer $token"
         Accept = "application/vnd.github+json"
@@ -89,7 +116,7 @@ foreach ($assetPath in $assets) {
         Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$Repo/releases/assets/$($sameName.id)" -Headers $headers | Out-Null
     }
 
-    Invoke-RestMethod -Method Post -Uri "$uploadUrl?name=$([uri]::EscapeDataString($fileName))" -Headers $assetHeaders -Body $assetBytes | Out-Null
+    Invoke-RestMethod -Method Post -Uri $assetUploadUri -Headers $assetHeaders -Body $assetBytes | Out-Null
 }
 
 Write-Host "[OK] GitHub Release ready: https://github.com/$Repo/releases/tag/$tag"
