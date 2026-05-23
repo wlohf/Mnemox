@@ -4,7 +4,7 @@ import { Card, Button, List, Space, message, Tag, Segmented, Radio, Input, Spin,
 import { CheckCircleOutlined, ArrowRightOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { listReviewTasks, completeReviewTask, deleteReviewTask, type ReviewTaskItem } from '../services/reviewApi'
-import { apiFetch } from '../services/apiClient'
+import { apiFetch, getApiErrorMessage } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
 interface ReviewContent {
@@ -45,9 +45,15 @@ export function ReviewPage() {
 
   const load = async () => {
     setLoading(true)
-    const data = await listReviewTasks(scope, itemType)
-    setItems(data)
-    setLoading(false)
+    try {
+      const data = await listReviewTasks(scope, itemType)
+      setItems(data)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载复习任务失败'))
+      setItems([])
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {

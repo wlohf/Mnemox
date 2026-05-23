@@ -35,6 +35,10 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
+function showApiError(error: unknown, fallback: string) {
+  message.error(getApiErrorMessage(error, fallback))
+}
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { mode, setMode, bgImage, bgOpacity, setBgImage, setBgOpacity, resetToDefault } = useThemeStore()
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false)
@@ -493,12 +497,10 @@ function MotivationSettings() {
   const handleGenerate = async () => {
     setLoading(true)
     try {
-      const result = await generateAIQuote()
-      if (result) {
-        message.success('已生成新的激励语录')
-      } else {
-        message.error('生成失败，请稍后重试')
-      }
+      await generateAIQuote()
+      message.success('已生成新的激励语录')
+    } catch (error) {
+      showApiError(error, '生成失败，请稍后重试')
     } finally {
       setLoading(false)
     }

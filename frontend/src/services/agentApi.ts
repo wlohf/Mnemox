@@ -194,43 +194,27 @@ export interface AgentTriggerResponse {
   runtime: AgentRuntimeInfo
 }
 
-export async function getAgentBrief(useLlm = false): Promise<AgentBrief | null> {
-  try {
-    return await apiFetch<AgentBrief>(`/api/agent/brief${useLlm ? '?use_llm=true' : ''}`)
-  } catch {
-    return null
-  }
+export async function getAgentBrief(useLlm = false): Promise<AgentBrief> {
+  return await apiFetch<AgentBrief>(`/api/agent/brief${useLlm ? '?use_llm=true' : ''}`)
 }
 
-export async function getAgentPrompt(): Promise<{ prompt: string } | null> {
-  try {
-    return await apiFetch<{ prompt: string }>('/api/agent/prompt')
-  } catch {
-    return null
-  }
+export async function getAgentPrompt(): Promise<{ prompt: string }> {
+  return await apiFetch<{ prompt: string }>('/api/agent/prompt')
 }
 
 
-export async function draftAgentWrite(message: string): Promise<AgentWriteDraftResponse | null> {
-  try {
-    return await apiFetch<AgentWriteDraftResponse>('/api/agent/write/draft', {
-      method: 'POST',
-      body: JSON.stringify({ message }),
-    })
-  } catch {
-    return null
-  }
+export async function draftAgentWrite(message: string): Promise<AgentWriteDraftResponse> {
+  return await apiFetch<AgentWriteDraftResponse>('/api/agent/write/draft', {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  })
 }
 
-export async function executeAgentWrite(intent: AgentWriteIntent, draft: Record<string, any>): Promise<AgentWriteExecuteResponse | null> {
-  try {
-    return await apiFetch<AgentWriteExecuteResponse>('/api/agent/write/execute', {
-      method: 'POST',
-      body: JSON.stringify({ intent, draft }),
-    })
-  } catch {
-    return null
-  }
+export async function executeAgentWrite(intent: AgentWriteIntent, draft: Record<string, any>): Promise<AgentWriteExecuteResponse> {
+  return await apiFetch<AgentWriteExecuteResponse>('/api/agent/write/execute', {
+    method: 'POST',
+    body: JSON.stringify({ intent, draft }),
+  })
 }
 
 export async function getAgentActionDraft(actionId: string, useLlm = false): Promise<AgentActionDraftResponse | null> {

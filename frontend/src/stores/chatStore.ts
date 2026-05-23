@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { ChatMessage } from '../services/chatApi'
+import { getApiErrorMessage } from '../services/apiClient'
 import {
   listConversations,
   createConversation,
@@ -33,14 +34,14 @@ interface ChatStore {
 
   // Actions - Projects
   loadProjects: () => Promise<void>
-  createProject: (name: string, description?: string, defaultInstructions?: string, color?: string) => Promise<ChatProject | null>
+  createProject: (name: string, description?: string, defaultInstructions?: string, color?: string) => Promise<ChatProject>
   updateProject: (id: number, data: { name?: string; description?: string; default_instructions?: string; color?: string }) => Promise<void>
   deleteProject: (id: number) => Promise<void>
   setActiveProjectId: (id: number | null) => void
 
   // Actions - Conversations
   loadConversations: (projectId?: number | null, search?: string) => Promise<Conversation[]>
-  createNewConversation: (projectId?: number | null) => Promise<Conversation | null>
+  createNewConversation: (projectId?: number | null) => Promise<Conversation>
   reconcilePersistedSelections: () => Promise<void>
   restoreActiveConversation: () => Promise<boolean>
   setActiveConversation: (id: number | null) => Promise<boolean>
@@ -108,9 +109,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       default_instructions: defaultInstructions,
       color,
     })
-    if (project) {
-      await get().loadProjects()
-    }
+    await get().loadProjects()
     return project
   },
 
@@ -165,9 +164,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   reconcilePersistedSelections: async () => {
     const { activeProjectId, activeConversationId } = get()
-    const conversations = await get().loadConversations()
-    const projects = await listProjects()
-    set({ projects })
+    let conversations: Conversation[] = []
+    let projects: ChatProject[] = []
+    try {
+      conversations = await get().loadConversations()
+      projects = await listProjects()
+      set({ projects })
+    } catch (error) {
+      throw new Error(getApiErrorMessage(error, '加载对话失败，请检查后端服务'))
+    }
 
     if (activeProjectId !== null && !projects.some((project) => project.id === activeProjectId)) {
       set({ activeProjectId: null })
@@ -191,11 +196,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       title: '新对话',
       project_id: projectId ?? undefined,
     })
-    if (conv) {
-      await get().loadConversations()
-      set({ activeConversationId: conv.id, messages: [], streamingContent: '' })
-      persistId('chat_activeConversationId', conv.id)
-    }
+    await get().loadConversations()
+    set({ activeConversationId: conv.id, messages: [], streamingContent: '' })
+    persistId('chat_activeConversationId', conv.id)
     return conv
   },
 
@@ -216,8 +219,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistId('chat_activeConversationId', id)
 
     if (id) {
-      const detail = await getConversation(id)
-      if (detail) {
+      try {
+        const detail = await getConversation(id)
         set({
           messages: detail.messages.map((m) => ({
             role: m.role as 'user' | 'assistant',
@@ -225,7 +228,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             image_data: m.image_data || undefined,
           })),
         })
-      } else {
+      } catch {
         const fallbackId = previousId === id ? null : previousId
         set({ activeConversationId: fallbackId, messages: fallbackId ? previousMessages : [] })
         persistId('chat_activeConversationId', fallbackId)

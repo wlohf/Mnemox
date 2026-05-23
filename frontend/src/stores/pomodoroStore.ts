@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as pomodoroApi from '../services/pomodoroApi'
+import { clearPomodoroReminder, setPomodoroReminder } from '../services/desktopReminder'
 
 export interface PomodoroRecord {
   id: string
@@ -104,6 +105,18 @@ const getWeekStart = () => {
   return new Date(now.setDate(diff))
 }
 
+const scheduleDesktopReminder = (taskName: string, durationMinutes: number, mode: PomodoroMode) => {
+  void setPomodoroReminder({
+    taskName,
+    dueAt: Date.now() + durationMinutes * 60 * 1000,
+    mode,
+  }).catch(() => undefined)
+}
+
+const clearDesktopReminder = () => {
+  void clearPomodoroReminder().catch(() => undefined)
+}
+
 export const usePomodoroStore = create<PomodoroState>()(
   persist(
     (set, get) => ({
@@ -141,15 +154,14 @@ export const usePomodoroStore = create<PomodoroState>()(
           pausedAt: null,
           pausedTotalMs: 0,
         })
+        scheduleDesktopReminder(taskName, nextDuration, 'focus')
 
         // Fire-and-forget API call
-        pomodoroApi.startPomodoro(taskName, nextDuration, taskId).then((res) => {
-          if (res) {
+        pomodoroApi.startPomodoro(taskName, nextDuration, taskId)
+          .then((res) => {
             set({ currentBackendId: res.id, backendOnline: true })
-          } else {
-            set({ backendOnline: false })
-          }
-        })
+          })
+          .catch(() => set({ backendOnline: false }))
       },
 
       startBreakTimer: (durationOverride?: number) => {
@@ -169,6 +181,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           pausedAt: null,
           pausedTotalMs: 0,
         })
+        scheduleDesktopReminder('休息', nextDuration, 'break')
       },
 
       setBreakDuration: (duration: number) => {
@@ -179,18 +192,21 @@ export const usePomodoroStore = create<PomodoroState>()(
       pauseTimer: () => {
         const now = Date.now()
         set({ isRunning: false, isPaused: true, pausedAt: now })
+        clearDesktopReminder()
       },
 
       resumeTimer: () => {
-        const { pausedAt, pausedTotalMs } = get()
+        const { pausedAt, pausedTotalMs, remainingTime, currentTask, timerMode } = get()
         const now = Date.now()
         const nextPausedTotalMs = pausedAt ? pausedTotalMs + (now - pausedAt) : pausedTotalMs
         set({ isRunning: true, isPaused: false, pausedAt: null, pausedTotalMs: nextPausedTotalMs })
+        scheduleDesktopReminder(currentTask || (timerMode === 'break' ? '休息' : '专注学习'), Math.max(1 / 60, remainingTime / 60), timerMode)
       },
 
       completeTimer: (actualSecondsOverride?: number, options?: { startBreak?: boolean }) => {
         const { currentTask, currentTaskId, duration, focusDuration, currentBackendId, startedAt, pausedTotalMs, timerMode, breakDuration } = get()
         if (timerMode === 'break') {
+          clearDesktopReminder()
           set({
             isRunning: false,
             isPaused: false,
@@ -235,25 +251,21 @@ export const usePomodoroStore = create<PomodoroState>()(
           // Sync to backend
           if (currentBackendId) {
             pomodoroApi.completePomodoro(currentBackendId, true, undefined, actualMinutes).then((res) => {
-              if (res) {
-                // Mark as synced
-                set((state) => ({
-                  records: state.records.map((r) =>
-                    r.id === newRecord.id ? { ...r, synced: true, backendId: res.id } : r
-                  ),
-                  backendOnline: true,
-                }))
-              } else {
-                set({ backendOnline: false })
-              }
-            })
+              // Mark as synced
+              set((state) => ({
+                records: state.records.map((r) =>
+                  r.id === newRecord.id ? { ...r, synced: true, backendId: res.id } : r
+                ),
+                backendOnline: true,
+              }))
+            }).catch(() => set({ backendOnline: false }))
           } else {
             // No backendId — try to create a completed record directly via batch
             pomodoroApi.batchCreatePomodoros(
               [{ task_name: currentTask, duration: actualMinutes, task_id: currentTaskId ?? null }],
               [now.toISOString()]
             ).then((res) => {
-              if (res && res.ids.length > 0) {
+              if (res.ids.length > 0) {
                 set((state) => ({
                   records: state.records.map((r) =>
                     r.id === newRecord.id ? { ...r, synced: true, backendId: res.ids[0] } : r
@@ -263,11 +275,12 @@ export const usePomodoroStore = create<PomodoroState>()(
               } else {
                 set({ backendOnline: false })
               }
-            })
+            }).catch(() => set({ backendOnline: false }))
           }
         }
 
         if (options?.startBreak === false) {
+          clearDesktopReminder()
           set({
             isRunning: false,
             isPaused: false,
@@ -287,6 +300,7 @@ export const usePomodoroStore = create<PomodoroState>()(
       },
 
       resetTimer: (durationOverride?: number) => {
+        clearDesktopReminder()
         const { focusDuration } = get()
         const nextDuration = durationOverride !== undefined
           ? Math.max(1, Math.min(120, Math.floor(durationOverride)))

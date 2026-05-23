@@ -76,7 +76,7 @@ export function ProjectSettingsModal({ open, projectId, onClose }: ProjectSettin
     if (isEdit && projectId) {
       void (async () => {
         const detail = await getProject(projectId)
-        const ids = new Set<number>(detail?.material_ids || [])
+        const ids = new Set<number>(detail.material_ids || [])
         setSelectedMaterialIds(ids)
         setInitialMaterialIds(new Set(ids))
       })()
@@ -111,10 +111,6 @@ export function ProjectSettingsModal({ open, projectId, onClose }: ProjectSettin
         message.success('项目已更新')
       } else {
         const created = await createProject(name.trim(), description.trim(), defaultInstructions.trim(), color)
-        if (!created) {
-          throw new Error('创建项目失败')
-        }
-
         if (selectedMaterialIds.size > 0) {
           await batchUpdateProjectMaterials(created.id, Array.from(selectedMaterialIds), [])
         }

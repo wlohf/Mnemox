@@ -14,6 +14,7 @@ import {
   HistoryOutlined,
 } from '@ant-design/icons'
 import { useChatStore } from '../stores/chatStore'
+import { getApiErrorMessage } from '../services/apiClient'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import 'dayjs/locale/zh-cn'
@@ -71,9 +72,14 @@ export function ConversationSidebar({
 
   const handleDropToProject = async (projectId: number | null) => {
     if (draggingConversationId === null) return
-    await moveConversation(draggingConversationId, projectId)
-    setDraggingConversationId(null)
-    setDropTargetKey(null)
+    try {
+      await moveConversation(draggingConversationId, projectId)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '移动对话失败'))
+    } finally {
+      setDraggingConversationId(null)
+      setDropTargetKey(null)
+    }
   }
 
   useEffect(() => {
@@ -122,7 +128,11 @@ export function ConversationSidebar({
   }
 
   const handleNewChat = async () => {
-    await createNewConversation(activeProjectId)
+    try {
+      await createNewConversation(activeProjectId)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '创建对话失败，请检查后端服务'))
+    }
   }
 
   const handleSearch = (value: string) => {
@@ -132,7 +142,11 @@ export function ConversationSidebar({
 
   const handleRename = async (id: number) => {
     if (renameValue.trim()) {
-      await renameConversation(id, renameValue.trim())
+      try {
+        await renameConversation(id, renameValue.trim())
+      } catch (error) {
+        message.error(getApiErrorMessage(error, '重命名对话失败'))
+      }
     }
     setRenameId(null)
     setRenameValue('')
@@ -145,16 +159,26 @@ export function ConversationSidebar({
       okText: '删除',
       okType: 'danger',
       cancelText: '取消',
-      onOk: () => deleteConversation(id),
+      onOk: async () => {
+        try {
+          await deleteConversation(id)
+        } catch (error) {
+          message.error(getApiErrorMessage(error, '删除对话失败'))
+        }
+      },
     })
   }
 
   const handleProjectFilter = async (projectId: number | null) => {
     setActiveProjectId(projectId)
-    if (projectId !== null) {
-      await loadConversations(projectId)
-    } else {
-      await loadConversations()
+    try {
+      if (projectId !== null) {
+        await loadConversations(projectId)
+      } else {
+        await loadConversations()
+      }
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载对话列表失败'))
     }
   }
 
@@ -166,6 +190,8 @@ export function ConversationSidebar({
       if (!ok) {
         message.error('加载历史对话失败，请稍后重试')
       }
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载历史对话失败，请稍后重试'))
     } finally {
       setLoadingConversationId(null)
     }

@@ -23,23 +23,15 @@ export async function listReviewTasks(
   scope: 'due' | 'all' = 'due',
   itemType: 'all' | 'question' | 'chapter' = 'all'
 ): Promise<ReviewTaskItem[]> {
-  try {
-    return await apiFetch<ReviewTaskItem[]>(`/api/review/tasks?scope=${scope}&item_type=${itemType}`)
-  } catch {
-    return []
-  }
+  return await apiFetch<ReviewTaskItem[]>(`/api/review/tasks?scope=${scope}&item_type=${itemType}`)
 }
 
 export async function completeReviewTask(taskId: number, quality: number): Promise<ReviewTaskItem | null> {
-  try {
-    return await apiFetch<ReviewTaskItem>(`/api/review/tasks/${taskId}/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality }),
-    })
-  } catch {
-    return null
-  }
+  return await apiFetch<ReviewTaskItem>(`/api/review/tasks/${taskId}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quality }),
+  })
 }
 
 export async function deleteReviewTask(taskId: number): Promise<boolean> {
@@ -52,10 +44,6 @@ export async function deleteReviewTask(taskId: number): Promise<boolean> {
 }
 
 export async function getDueReviewCount(): Promise<number> {
-  try {
-    const data = await apiFetch<{ due_count: number }>('/api/review/due-count')
-    return data.due_count ?? 0
-  } catch {
-    return 0
-  }
+  const data = await apiFetch<{ due_count: number }>('/api/review/due-count')
+  return data.due_count ?? 0
 }

@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
 
     # App Update
-    APP_VERSION: str = "1.0.1"
+    APP_VERSION: str = "1.0.2"
     APP_UPDATE_MANIFEST_URL: str = ""
 
     # Local packaged app

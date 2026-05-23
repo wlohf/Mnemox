@@ -79,3 +79,5 @@ backend/.venv/
 *.db-wal
 chromadb/
 rag_settings.json
+desktop-build/
+release/desktop/

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron')
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, shell, ipcMain, safeStorage } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const net = require('node:net')
@@ -18,6 +18,8 @@ const {
   getBackendExecutable,
   getFrontendDistDir,
 } = require('./runtimePaths')
+const { createDesktopAuthStore } = require('./desktopAuth')
+const { createReminderManager } = require('./desktopReminder')
 
 app.setName('Mnemox')
 
@@ -26,6 +28,10 @@ let mainWindow = null
 let backendPort = null
 let autoUpdateManager = null
 let updateSettingsPath = null
+let desktopAuthStore = null
+let reminderManager = null
+let tray = null
+let isQuitting = false
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -142,6 +148,41 @@ function createWindow() {
     shell.openExternal(url)
     return { action: 'deny' }
   })
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    mainWindow.hide()
+  })
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray() {
+  if (tray) return
+  tray = new Tray(process.execPath)
+  tray.setToolTip('Mnemox')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开 Mnemox', click: showMainWindow },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      },
+    },
+  ]))
+  tray.on('double-click', showMainWindow)
 }
 
 function registerAutoUpdater() {
@@ -175,6 +216,39 @@ function registerAutoUpdater() {
   })
 }
 
+function registerDesktopAuth() {
+  desktopAuthStore = createDesktopAuthStore({
+    safeStorage,
+    fs,
+    credentialsPath: path.join(app.getPath('userData'), 'saved-login.bin'),
+  })
+  ipcMain.handle('desktop-auth:get-saved-login', () => desktopAuthStore.getSavedLogin())
+  ipcMain.handle('desktop-auth:save-login', (_event, payload) => desktopAuthStore.saveSavedLogin(payload))
+  ipcMain.handle('desktop-auth:clear-saved-login', () => desktopAuthStore.clearSavedLogin())
+}
+
+function registerDesktopReminder() {
+  reminderManager = createReminderManager({
+    notify: ({ title, body }) => {
+      const notice = new Notification({
+        title,
+        body,
+        silent: false,
+      })
+      notice.on('click', showMainWindow)
+      notice.show()
+      shell.beep()
+    },
+    emit: (channel, payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(channel, payload)
+      }
+    },
+  })
+  ipcMain.handle('desktop-reminder:set', (_event, payload) => reminderManager.setReminder(payload))
+  ipcMain.handle('desktop-reminder:clear', () => reminderManager.clearReminder())
+}
+
 async function maybeAutoCheckForUpdates() {
   const { autoCheck, intervalMinutes, lastCheckedAt } = readUpdateSettings(updateSettingsPath)
 
@@ -206,7 +280,10 @@ app.whenReady().then(async () => {
     updateSettingsPath = path.join(app.getPath('userData'), 'desktop-update-settings.json')
     await startBackend()
     registerAutoUpdater()
+    registerDesktopAuth()
+    registerDesktopReminder()
     createWindow()
+    createTray()
     void maybeAutoCheckForUpdates()
   } catch (error) {
     await dialog.showMessageBox({
@@ -220,10 +297,15 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  stopBackend()
-  app.quit()
+  if (process.platform !== 'darwin') {
+    // Keep the tray process alive so desktop reminders still fire.
+  }
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
+  if (reminderManager) {
+    reminderManager.clearReminder()
+  }
   stopBackend()
 })

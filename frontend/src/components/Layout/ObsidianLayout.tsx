@@ -440,7 +440,7 @@ export function ObsidianLayout() {
 
   const loadCurrentQuote = useCallback(async (offset?: number) => {
     const res = await getCurrentQuote(offset ?? refreshOffset)
-    if (res) setMotivationQuote(res)
+    setMotivationQuote(res)
   }, [refreshOffset])
 
   const loadAllQuotes = useCallback(async (sortMode?: string) => {
@@ -450,11 +450,8 @@ export function ObsidianLayout() {
 
   const loadMotivationSettings = useCallback(async () => {
     const data = await getMotivationSettings()
-    if (data) {
-      setMotivationSettings(data)
-      return data
-    }
-    return null
+    setMotivationSettings(data)
+    return data
   }, [])
 
   const handleProjectSearch = useCallback(async (value?: string) => {
@@ -981,12 +978,15 @@ export function ObsidianLayout() {
       return
     }
     setAgentWriteExecuting(true)
-    const result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft).catch(() => null)
-    setAgentWriteExecuting(false)
-    if (!result) {
-      message.error('Agent 写入失败，请检查草案内容后重试')
+    let result
+    try {
+      result = await executeAgentWrite(agentWriteDraft.intent, agentWriteDraft.draft)
+    } catch (error: any) {
+      setAgentWriteExecuting(false)
+      message.error(error?.message || 'Agent 写入失败，请检查草案内容后重试')
       return
     }
+    setAgentWriteExecuting(false)
     message.success(result.message || 'Agent 已写入系统')
     const userEntry: ChatMessage = { role: 'user', content: agentWriteSourceText }
     const assistantEntry: ChatMessage = {
@@ -996,17 +996,15 @@ export function ObsidianLayout() {
     let conversationId = activeConversationId
     if (!conversationId) {
       const conv = await createNewConversation(activeProjectId)
-      conversationId = conv?.id ?? null
+      conversationId = conv.id
     }
     addMessage(userEntry)
     addMessage(assistantEntry)
 
     if (conversationId) {
-      const saved = await appendConversationMessages(conversationId, [userEntry, assistantEntry])
-      if (saved) {
-        await setActiveConversation(conversationId)
-        await loadConversations(activeProjectId ?? undefined)
-      }
+      await appendConversationMessages(conversationId, [userEntry, assistantEntry])
+      await setActiveConversation(conversationId)
+      await loadConversations(activeProjectId ?? undefined)
     }
     setAgentWriteDraft(null)
     setAgentWriteSourceText('')
@@ -1027,13 +1025,18 @@ export function ObsidianLayout() {
 
     if (!forcedText && !options && pendingImages.length === 0 && shouldCheckAgentWrite(text)) {
       setAgentWriteLoading(true)
-      const draft = await draftAgentWrite(text)
-      setAgentWriteLoading(false)
-      if (draft?.requires_confirmation && draft.intent !== 'none') {
-        setAgentWriteDraft(draft)
-        setAgentWriteSourceText(text)
-        setChatInput('')
-        return
+      try {
+        const draft = await draftAgentWrite(text)
+        setAgentWriteLoading(false)
+        if (draft.requires_confirmation && draft.intent !== 'none') {
+          setAgentWriteDraft(draft)
+          setAgentWriteSourceText(text)
+          setChatInput('')
+          return
+        }
+      } catch (error: any) {
+        setAgentWriteLoading(false)
+        message.error(error?.message || 'Agent 草稿生成失败')
       }
     }
 
@@ -1155,10 +1158,6 @@ export function ObsidianLayout() {
       title,
       up_to_index: messageIndex,
     })
-    if (!fork) {
-      message.error('创建对话分支失败')
-      return null
-    }
     await setActiveConversation(fork.id)
     await loadConversations()
     return fork
@@ -1275,7 +1274,8 @@ export function ObsidianLayout() {
       ])
       setReviewDueCount(count)
       setReviewPreviewTasks(due.slice(0, 3))
-    } catch {
+    } catch (error: any) {
+      message.error(error?.message || '加载复习任务失败')
       setReviewDueCount(0)
       setReviewPreviewTasks([])
     }
@@ -2002,10 +2002,6 @@ export function ObsidianLayout() {
                               setArchiveMaterialsLoading(true)
                               try {
                                 const result = await archiveUnassignedMaterials()
-                                if (!result) {
-                                  message.error('归档失败')
-                                  return
-                                }
                                 if (result.added_count > 0) {
                                   message.success(`已归档 ${result.added_count} 份资料到 ${result.project_name}`)
                                 } else {
@@ -2013,7 +2009,7 @@ export function ObsidianLayout() {
                                 }
                                 if (activeProjectId === result.project_id) {
                                   const detail = await getProject(result.project_id)
-                                  setActiveProjectMaterialIds(detail?.material_ids || [])
+                                  setActiveProjectMaterialIds(detail.material_ids || [])
                                 }
                               } catch {
                                 message.error('归档失败')

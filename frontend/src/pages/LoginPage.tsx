@@ -1,16 +1,21 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Form, Input, Button, Tabs, message, Card } from 'antd'
+import { Form, Input, Button, Tabs, message, Card, Checkbox, Space } from 'antd'
 import { UserOutlined, LockOutlined, MailOutlined, ThunderboltOutlined, ReadOutlined, FieldTimeOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../stores/authStore'
 import { register } from '../services/authApi'
+import { clearSavedLogin, getSavedLogin, isDesktopAuthAvailable } from '../services/desktopAuth'
 import { MnemoxLogo } from '../components/MnemoxLogo'
 
 export function LoginPage() {
   const navigate = useNavigate()
   const login = useAuthStore((s) => s.login)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const [loginForm] = Form.useForm()
   const [loading, setLoading] = useState(false)
+  const [rememberPassword, setRememberPassword] = useState(false)
+  const [autoLogin, setAutoLogin] = useState(false)
+  const desktopAuthAvailable = isDesktopAuthAvailable()
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -19,16 +24,60 @@ export function LoginPage() {
     }
   }, [isAuthenticated, navigate])
 
+  useEffect(() => {
+    if (!desktopAuthAvailable || isAuthenticated) return
+    let cancelled = false
+    const loadSavedLogin = async () => {
+      const saved = await getSavedLogin()
+      if (cancelled || !saved) return
+      loginForm.setFieldsValue({
+        username: saved.username,
+        password: saved.password,
+      })
+      setRememberPassword(true)
+      setAutoLogin(saved.autoLogin)
+      if (saved.autoLogin) {
+        setLoading(true)
+        try {
+          await login(saved.username, saved.password)
+          message.success('已自动登录')
+          navigate('/', { replace: true })
+        } catch (e: any) {
+          message.error(e?.message || '自动登录失败，请重新登录')
+        } finally {
+          if (!cancelled) setLoading(false)
+        }
+      }
+    }
+    void loadSavedLogin()
+    return () => { cancelled = true }
+  }, [desktopAuthAvailable, isAuthenticated, login, loginForm, navigate])
+
   const handleLogin = async (values: { username: string; password: string }) => {
     setLoading(true)
     try {
-      await login(values.username, values.password)
+      await login(values.username, values.password, {
+        rememberPassword: desktopAuthAvailable && rememberPassword,
+        autoLogin: desktopAuthAvailable && rememberPassword && autoLogin,
+      })
       message.success('登录成功')
       navigate('/', { replace: true })
     } catch (e: any) {
       message.error(e?.message || '登录失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleClearSavedLogin = async () => {
+    try {
+      await clearSavedLogin()
+      loginForm.resetFields(['password'])
+      setRememberPassword(false)
+      setAutoLogin(false)
+      message.success('已清除保存的登录信息')
+    } catch (e: any) {
+      message.error(e?.message || '清除已保存登录信息失败')
     }
   }
 
@@ -61,7 +110,7 @@ export function LoginPage() {
       key: 'login',
       label: '登录',
       children: (
-        <Form name="login" onFinish={handleLogin} autoComplete="on" size="large" style={{ marginTop: 16 }}>
+        <Form form={loginForm} name="login" onFinish={handleLogin} autoComplete="on" size="large" style={{ marginTop: 16 }}>
           <Form.Item
             name="username"
             rules={[{ required: true, message: '请输入用户名' }]}
@@ -86,6 +135,36 @@ export function LoginPage() {
               placeholder="密码"
             />
           </Form.Item>
+          {desktopAuthAvailable && (
+            <Form.Item style={{ marginBottom: 8 }}>
+              <Space direction="vertical" size={4}>
+                <Checkbox
+                  checked={rememberPassword}
+                  onChange={(event) => {
+                    setRememberPassword(event.target.checked)
+                    if (!event.target.checked) setAutoLogin(false)
+                  }}
+                >
+                  记住密码
+                </Checkbox>
+                <Checkbox
+                  checked={autoLogin}
+                  disabled={!rememberPassword}
+                  onChange={(event) => setAutoLogin(event.target.checked)}
+                >
+                  下次自动登录
+                </Checkbox>
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => void handleClearSavedLogin()}
+                  style={{ padding: 0, alignSelf: 'flex-start' }}
+                >
+                  清除已保存登录信息
+                </Button>
+              </Space>
+            </Form.Item>
+          )}
           <Form.Item style={{ marginTop: 32 }}>
             <Button
               type="primary"

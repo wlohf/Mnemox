@@ -31,11 +31,7 @@ export async function getCurrentQuote(refresh?: number): Promise<MotivationQuote
   const query = new URLSearchParams()
   if (refresh !== undefined) query.set('refresh', String(refresh))
   const qs = query.toString()
-  try {
-    return await apiFetch<MotivationQuote>(`/api/motivation/current${qs ? `?${qs}` : ''}`)
-  } catch {
-    return null
-  }
+  return await apiFetch<MotivationQuote>(`/api/motivation/current${qs ? `?${qs}` : ''}`)
 }
 
 export async function listQuotes(sourceType?: string, sortMode?: string): Promise<MotivationQuote[]> {
@@ -43,23 +39,15 @@ export async function listQuotes(sourceType?: string, sortMode?: string): Promis
   if (sourceType) query.set('source_type', sourceType)
   if (sortMode) query.set('sort_mode', sortMode)
   const qs = query.toString()
-  try {
-    return await apiFetch<MotivationQuote[]>(`/api/motivation/quotes${qs ? `?${qs}` : ''}`)
-  } catch {
-    return []
-  }
+  return await apiFetch<MotivationQuote[]>(`/api/motivation/quotes${qs ? `?${qs}` : ''}`)
 }
 
 export async function addCustomQuote(content: string, author?: string): Promise<MotivationQuote | null> {
-  try {
-    return await apiFetch<MotivationQuote>('/api/motivation/quotes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, author }),
-    })
-  } catch {
-    return null
-  }
+  return await apiFetch<MotivationQuote>('/api/motivation/quotes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, author }),
+  })
 }
 
 export async function deleteQuote(quoteId: number): Promise<ApiResult> {
@@ -71,20 +59,12 @@ export async function deleteQuote(quoteId: number): Promise<ApiResult> {
   }
 }
 
-export async function generateAIQuote(): Promise<MotivationQuote | null> {
-  try {
-    return await apiFetch<MotivationQuote>('/api/motivation/generate', { method: 'POST' })
-  } catch {
-    return null
-  }
+export async function generateAIQuote(): Promise<MotivationQuote> {
+  return await apiFetch<MotivationQuote>('/api/motivation/generate', { method: 'POST' })
 }
 
-export async function getMotivationSettings(): Promise<MotivationSettings | null> {
-  try {
-    return await apiFetch<MotivationSettings>('/api/motivation/settings')
-  } catch {
-    return null
-  }
+export async function getMotivationSettings(): Promise<MotivationSettings> {
+  return await apiFetch<MotivationSettings>('/api/motivation/settings')
 }
 
 export async function updateMotivationSettings(payload: MotivationSettingsUpdate): Promise<MotivationSettings> {

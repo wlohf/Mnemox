@@ -122,8 +122,12 @@ export async function apiFetch<T = any>(
       const now = Date.now()
       if (now - _lastNetworkToastAt > 5000) {
         _lastNetworkToastAt = now
-        message.error('网络连接异常，请检查网络后重试')
+        message.error('后端服务不可用，请确认 Mnemox 后端已启动')
       }
+      throw new ApiRequestError('后端服务不可用，请确认 Mnemox 后端已启动', {
+        code: 'NETWORK_ERROR',
+        detail: err.message,
+      })
     }
     throw err
   }

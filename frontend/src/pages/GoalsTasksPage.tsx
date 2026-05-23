@@ -146,34 +146,46 @@ export function GoalsTasksPage() {
 
   const handleCreateGoal = async () => {
     if (!goalTitle.trim()) { message.warning('请输入目标标题'); return }
-    const created = await createGoal({
-      title: goalTitle.trim(),
-      description: goalDesc.trim() || undefined,
-      deadline: goalDeadline,
-    })
-    message.success('目标已创建')
-    setGoalModalOpen(false)
-    setGoalTitle(''); setGoalDesc(''); setGoalDeadline(undefined)
-    setSelectedGoal(created)
+    try {
+      const created = await createGoal({
+        title: goalTitle.trim(),
+        description: goalDesc.trim() || undefined,
+        deadline: goalDeadline,
+      })
+      message.success('目标已创建')
+      setGoalModalOpen(false)
+      setGoalTitle(''); setGoalDesc(''); setGoalDeadline(undefined)
+      setSelectedGoal(created)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '创建目标失败'))
+    }
   }
 
   const handleCreateTask = async () => {
     if (!selectedGoal) { message.warning('请先选择目标'); return }
     if (!taskTitle.trim()) { message.warning('请输入任务标题'); return }
-    await createGoalTask(selectedGoal._localId, selectedGoal._serverId, {
-      title: taskTitle.trim(),
-      task_type: taskType,
-      planned_date: taskPlannedDate,
-      parent_task_id: taskType === 'milestone' ? null : taskParentId,
-    })
-    message.success('任务已创建')
-    setTaskModalOpen(false)
-    setTaskTitle(''); setTaskType('learn'); setTaskPlannedDate(undefined); setTaskParentId(null)
+    try {
+      await createGoalTask(selectedGoal._localId, selectedGoal._serverId, {
+        title: taskTitle.trim(),
+        task_type: taskType,
+        planned_date: taskPlannedDate,
+        parent_task_id: taskType === 'milestone' ? null : taskParentId,
+      })
+      message.success('任务已创建')
+      setTaskModalOpen(false)
+      setTaskTitle(''); setTaskType('learn'); setTaskPlannedDate(undefined); setTaskParentId(null)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '创建任务失败'))
+    }
   }
 
   const quickStatus = async (t: OfflineGoalTaskItem, status: 'pending' | 'in_progress' | 'completed') => {
     if (status === 'completed') { openEval(t); return }
-    await updateGoalTask(t._localId, { status })
+    try {
+      await updateGoalTask(t._localId, { status })
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '更新任务状态失败'))
+    }
   }
 
   const startLearning = async (t: OfflineGoalTaskItem) => {

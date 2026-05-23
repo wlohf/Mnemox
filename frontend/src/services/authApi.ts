@@ -72,10 +72,5 @@ export async function register(
 export async function getMe(): Promise<UserInfo | null> {
   const token = getToken()
   if (!token) return null
-
-  try {
-    return await apiFetch<UserInfo>('/api/auth/me')
-  } catch {
-    return null
-  }
+  return await apiFetch<UserInfo>('/api/auth/me')
 }

@@ -39,16 +39,12 @@ export async function startPomodoro(
   taskName: string,
   duration: number,
   taskId?: number | null
-): Promise<PomodoroStartResponse | null> {
-  try {
-    return await apiFetch<PomodoroStartResponse>(`${API_BASE}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_name: taskName, duration, task_id: taskId ?? null }),
-    })
-  } catch {
-    return null
-  }
+): Promise<PomodoroStartResponse> {
+  return await apiFetch<PomodoroStartResponse>(`${API_BASE}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_name: taskName, duration, task_id: taskId ?? null }),
+  })
 }
 
 export async function completePomodoro(
@@ -57,91 +53,63 @@ export async function completePomodoro(
   note?: string,
   actualDuration?: number,
   stopReason?: 'early_done' | 'interrupted' | 'distracted'
-): Promise<PomodoroStartResponse | null> {
-  try {
-    const payload: { completed: boolean; note?: string; actual_duration?: number; stop_reason?: string } = { completed }
-    if (note) payload.note = note
-    if (actualDuration !== undefined) payload.actual_duration = actualDuration
-    if (stopReason !== undefined) payload.stop_reason = stopReason
-    return await apiFetch<PomodoroStartResponse>(`${API_BASE}/${id}/complete`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-  } catch {
-    return null
-  }
+): Promise<PomodoroStartResponse> {
+  const payload: { completed: boolean; note?: string; actual_duration?: number; stop_reason?: string } = { completed }
+  if (note) payload.note = note
+  if (actualDuration !== undefined) payload.actual_duration = actualDuration
+  if (stopReason !== undefined) payload.stop_reason = stopReason
+  return await apiFetch<PomodoroStartResponse>(`${API_BASE}/${id}/complete`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function getRecentPomodoros(
   limit: number = 10
-): Promise<PomodoroStartResponse[] | null> {
-  try {
-    return await apiFetch<PomodoroStartResponse[]>(`${API_BASE}/recent?limit=${limit}`)
-  } catch {
-    return null
-  }
+): Promise<PomodoroStartResponse[]> {
+  return await apiFetch<PomodoroStartResponse[]>(`${API_BASE}/recent?limit=${limit}`)
 }
 
-export async function getTotalStats(): Promise<PomodoroStatsResponse | null> {
-  try {
-    return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/total`)
-  } catch {
-    return null
-  }
+export async function getTotalStats(): Promise<PomodoroStatsResponse> {
+  return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/total`)
 }
 
-export async function getWeeklyStats(): Promise<PomodoroStatsResponse | null> {
-  try {
-    return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/weekly`)
-  } catch {
-    return null
-  }
+export async function getWeeklyStats(): Promise<PomodoroStatsResponse> {
+  return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/weekly`)
 }
 
 export async function getMonthlyStats(
   year?: number,
   month?: number
-): Promise<PomodoroStatsResponse | null> {
-  try {
-    const params = new URLSearchParams()
-    if (year) params.set('year', String(year))
-    if (month) params.set('month', String(month))
-    const qs = params.toString()
-    return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/monthly${qs ? '?' + qs : ''}`)
-  } catch {
-    return null
-  }
+): Promise<PomodoroStatsResponse> {
+  const params = new URLSearchParams()
+  if (year) params.set('year', String(year))
+  if (month) params.set('month', String(month))
+  const qs = params.toString()
+  return await apiFetch<PomodoroStatsResponse>(`${API_BASE}/statistics/monthly${qs ? '?' + qs : ''}`)
 }
 
 export async function getDailyStats(
   days: number = 7
-): Promise<DailyStatsResponse[] | null> {
-  try {
-    return await apiFetch<DailyStatsResponse[]>(`${API_BASE}/statistics/daily?days=${days}`)
-  } catch {
-    return null
-  }
+): Promise<DailyStatsResponse[]> {
+  return await apiFetch<DailyStatsResponse[]>(`${API_BASE}/statistics/daily?days=${days}`)
 }
 
 export async function batchCreatePomodoros(
   records: { task_name: string; duration: number; task_id?: number | null }[],
   completedAts: string[]
-): Promise<BatchCreateResponse | null> {
-  try {
-    return await apiFetch<BatchCreateResponse>(`${API_BASE}/batch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        records: records.map((r) => ({
-          task_name: r.task_name,
-          duration: r.duration,
-          task_id: r.task_id ?? null,
-        })),
-        completed_ats: completedAts,
-      }),
-    })
-  } catch {
-    return null
-  }
+): Promise<BatchCreateResponse> {
+  return await apiFetch<BatchCreateResponse>(`${API_BASE}/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      records: records.map((r) => ({
+        task_name: r.task_name,
+        duration: r.duration,
+        task_id: r.task_id ?? null,
+      })),
+      completed_ats: completedAts,
+    }),
+  })
 }
