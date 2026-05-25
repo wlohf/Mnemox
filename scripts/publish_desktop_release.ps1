@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [string]$Repo = "wlohf/Mnemox",
     [string]$ReleaseNotesPath = "",
     [switch]$Draft
