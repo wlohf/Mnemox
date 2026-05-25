@@ -615,6 +615,7 @@ class ChatRequest(BaseModel):
     chat_mode: Optional[str] = "normal"  # "normal" | "coach"
     provider_name: Optional[str] = None
     model: Optional[str] = None
+    web_search_enabled: bool = False
 
 
 def _is_sqlite_database_locked(exc: Exception) -> bool:
@@ -924,8 +925,21 @@ async def chat_send(
             )
             yield f"data: {mem_data}\n\n"
 
+        if body.web_search_enabled and not provider.supports_web_search():
+            error_data = json.dumps(
+                {"error": "当前供应商不支持 OpenAI 内置联网搜索，请切换到官方 OpenAI。"},
+                ensure_ascii=False,
+            )
+            yield f"data: {error_data}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
         try:
-            async for chunk in provider.chat_stream(
+            stream_method = provider.chat_stream
+            if body.web_search_enabled:
+                stream_method = getattr(provider, "chat_stream_with_web_search")
+
+            async for chunk in stream_method(
                 messages=messages,
                 system_prompt=system_prompt,
                 temperature=0.7,
@@ -938,7 +952,6 @@ async def chat_send(
             # Detect progress feedback before persistence and final success.
             full_reply = "".join(collected_reply)
             try:
-                from app.services.memory_service import detect_progress_feedback
                 feedback = await detect_progress_feedback(body.message, full_reply, db)
                 if feedback:
                     fb_data = json.dumps(
@@ -1046,6 +1059,12 @@ async def chat_send_sync(
         raise HTTPException(
             status_code=500,
             detail=f"无法创建 AI 提供商：{str(e)}",
+        )
+
+    if body.web_search_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="联网搜索目前仅支持流式对话接口。",
         )
 
     try:

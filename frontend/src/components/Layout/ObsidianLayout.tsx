@@ -53,6 +53,7 @@ import {
   DoubleLeftOutlined,
   DoubleRightOutlined,
   SendOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
@@ -358,6 +359,7 @@ export function ObsidianLayout() {
   const [agentWriteExecuting, setAgentWriteExecuting] = useState(false)
   const [chatProviders, setChatProviders] = useState<AIProvider[]>([])
   const [selectedChatModel, setSelectedChatModel] = useState<string>(() => localStorage.getItem('chat_model_override') || '__route__')
+  const [webSearchEnabled, setWebSearchEnabled] = useState(() => localStorage.getItem('chat_web_search_enabled') === 'true')
   const [quoteNoteDraft, setQuoteNoteDraft] = useState<QuoteNoteDraft | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -826,6 +828,10 @@ export function ObsidianLayout() {
   }, [selectedChatModel])
 
   useEffect(() => {
+    localStorage.setItem('chat_web_search_enabled', String(webSearchEnabled))
+  }, [webSearchEnabled])
+
+  useEffect(() => {
     if (chatProviders.length === 0) return
     if (!chatModelValues.has(selectedChatModel)) {
       setSelectedChatModel('__route__')
@@ -1163,6 +1169,7 @@ export function ObsidianLayout() {
       },
       selectedChatModelConfig.providerName,
       selectedChatModelConfig.model,
+      webSearchEnabled,
     )
   }
 
@@ -2648,6 +2655,16 @@ export function ObsidianLayout() {
                     popupMatchSelectWidth={false}
                     aria-label="聊天模型"
                   />
+                  <Tooltip title="使用 OpenAI 内置网页搜索">
+                    <Switch
+                      size="small"
+                      checked={webSearchEnabled}
+                      onChange={setWebSearchEnabled}
+                      checkedChildren={<GlobalOutlined />}
+                      unCheckedChildren={<GlobalOutlined />}
+                      aria-label="联网搜索"
+                    />
+                  </Tooltip>
                   {chatLoading ? (
                     <Button
                       type="primary"

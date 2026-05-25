@@ -9,6 +9,10 @@ class AIProvider(ABC):
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
+
+    def supports_web_search(self) -> bool:
+        """Whether this provider can use the OpenAI hosted web search tool."""
+        return False
     
     @abstractmethod
     async def chat(

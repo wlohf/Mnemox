@@ -44,6 +44,7 @@ export async function sendMessageStream(
   onProgressFeedback?: (feedback: ProgressFeedback) => void,
   providerName?: string,
   model?: string,
+  webSearchEnabled?: boolean,
 ): Promise<void> {
   try {
     const payload: any = {
@@ -70,6 +71,9 @@ export async function sendMessageStream(
     }
     if (model) {
       payload.model = model
+    }
+    if (webSearchEnabled) {
+      payload.web_search_enabled = true
     }
     const token = getToken()
     const res = await fetch('/api/chat/send', {
