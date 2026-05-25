@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -71,6 +72,44 @@ class ChatStreamPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message.role for message in messages], ["user", "assistant"])
         self.assertEqual(messages[0].content, "解释一下梯度下降")
         self.assertEqual(messages[1].content, "梯度下降是一种迭代优化方法。")
+
+    async def test_persisted_chat_turn_updates_existing_conversation_timestamp(self):
+        user_id, conversation_id = await self._create_conversation()
+        old_time = datetime.now() - timedelta(days=7)
+        async with self.sessionmaker() as session:
+            conversation = await session.get(ChatConversation, conversation_id)
+            conversation.title = "历史对话"
+            conversation.updated_at = old_time
+            await session.commit()
+
+        body = ChatRequest(
+            message="继续聊这个知识点",
+            conversation_id=conversation_id,
+            history=[],
+        )
+
+        with (
+            patch("app.routers.chat.upsert_conversation_summary", AsyncMock()),
+            patch("app.routers.chat.upsert_user_memories_from_turn", AsyncMock()),
+        ):
+            await _persist_streamed_chat_turn(
+                body=body,
+                full_reply="好的，我们继续。",
+                user_id=user_id,
+                sessionmaker=self.sessionmaker,
+            )
+
+        async with self.sessionmaker() as session:
+            conversation = await session.get(ChatConversation, conversation_id)
+            result = await session.execute(
+                select(ChatMessage).where(ChatMessage.conversation_id == conversation_id).order_by(ChatMessage.id)
+            )
+            messages = result.scalars().all()
+
+        self.assertGreater(conversation.updated_at, old_time)
+        self.assertEqual([message.role for message in messages], ["user", "assistant"])
+        self.assertEqual(messages[0].content, "继续聊这个知识点")
+        self.assertEqual(messages[1].content, "好的，我们继续。")
 
     async def test_core_message_persistence_retries_when_sqlite_is_locked(self):
         user_id, conversation_id = await self._create_conversation()

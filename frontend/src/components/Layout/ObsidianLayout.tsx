@@ -90,6 +90,7 @@ import type { MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
 import { getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
 import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
 import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
+import { getProviderModels, getSelectableChatProviders } from './chatModelOptions'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
@@ -619,10 +620,9 @@ export function ObsidianLayout() {
   }, [projects])
 
   const chatModelOptions = useMemo(() => {
-    const groups = chatProviders
-      .filter((provider) => provider.enabled)
+    const groups = getSelectableChatProviders(chatProviders)
       .map((provider) => {
-        const models = Array.from(new Set([provider.model, ...(provider.available_models || [])].filter(Boolean)))
+        const models = getProviderModels(provider)
         return {
           label: provider.display_name,
           options: models.map((model) => ({
@@ -641,9 +641,8 @@ export function ObsidianLayout() {
 
   const chatModelValues = useMemo(() => {
     const values = new Set<string>(['__route__'])
-    for (const provider of chatProviders) {
-      if (!provider.enabled) continue
-      const models = Array.from(new Set([provider.model, ...(provider.available_models || [])].filter(Boolean)))
+    for (const provider of getSelectableChatProviders(chatProviders)) {
+      const models = getProviderModels(provider)
       for (const model of models) {
         values.add(`${provider.provider_name}::${model}`)
       }
@@ -2583,7 +2582,6 @@ export function ObsidianLayout() {
                         }
                       }
                     }}
-                    disabled={chatLoading}
                   />
                 </div>
                 {/* Image preview strip */}

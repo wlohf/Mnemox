@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -656,8 +657,10 @@ async def _persist_streamed_chat_turn_once(
                     )
                 )
 
-                if conv and conv.title == "新对话":
-                    conv.title = body.message[:50]
+                if conv:
+                    if conv.title == "新对话":
+                        conv.title = body.message[:50]
+                    conv.updated_at = datetime.now()
 
             if body.study_session_id:
                 sess_result = await save_db.execute(
