@@ -38,6 +38,7 @@
 | AI 对话无记忆 | 双层记忆：Episodic 记忆（对话摘要）+ Semantic 记忆（长期事实提炼）|
 | 学习资料利用率低 | RAG 管道：资料自动向量化，AI 回答时自动检索相关内容 |
 | 无法追踪学习行为 | 事件追踪系统：记录每一次番茄钟、答题、复习的行为数据 |
+| AI 配置容易出错 | AI Provider 设置：场景路由、RAG Embedding、自定义中转、联网搜索和可读错误提示 |
 
 ---
 
@@ -46,9 +47,10 @@
 ```mermaid
 graph TB
     subgraph Frontend["前端 (React 18 + TypeScript)"]
-        UI["Dashboard / Pomodoro / Goals\nReview / WrongQuestions / Notes"]
+        UI["Chat Workspace / Dashboard / Pomodoro / Goals\nReview / WrongQuestions / Notes"]
         PP["PromptsPage\n自定义 AI 提示词"]
         UP["UserProfilePage\n学习画像可视化"]
+        AS["AISettingsDrawer\n供应商 / 路由 / Web Search / Embedding"]
     end
 
     subgraph Backend["后端 (FastAPI + Python)"]
@@ -57,9 +59,10 @@ graph TB
         PS["ProfileService\n用户画像计算"]
         MS["MemoryService\nEpisodic + Semantic 记忆"]
         PT["PromptTemplates\n用户自定义 Prompt"]
+        AIS["AI Settings\n供应商配置 / 场景路由 / 密钥加密"]
 
         subgraph AI["AI 层"]
-            LLM["Multi-LLM Router\nOpenAI / Claude / Gemini / DeepSeek"]
+            LLM["Multi-LLM Router\nOpenAI / Claude / Gemini / DeepSeek / OpenAI-compatible"]
             RAG["RAG Service\nLlamaIndex + ChromaDB"]
         end
 
@@ -74,11 +77,13 @@ graph TB
     PS --> SQLite
     MS --> SQLite
     PT --> SQLite
+    AIS --> SQLite
     LLM --> RAG
     RAG --> VDB
     PS -->|画像注入 system prompt| LLM
     MS -->|记忆注入 system prompt| LLM
     PT -->|自定义 prompt 注入| LLM
+    AIS -->|模型与场景路由| LLM
 ```
 
 ---
@@ -122,21 +127,32 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **Semantic 记忆**：从对话中提炼长期事实（学习偏好、目标、薄弱点）
 - **画像上下文注入**：每次对话携带用户历史画像数据
 
-### 4. RAG 知识库
+### 4. AI 对话工作区
+- 根路径和 `/conversations/:conversationId` 都能直接恢复指定历史对话，刷新页面不会丢失当前上下文
+- 左侧会话栏支持新建、搜索、按时间分组、置顶、重命名、项目筛选和项目资料管理
+- 支持流式回复、会话持久化、学习会话聊天记录同步、对话摘要、长期记忆提取、错题自动检测和学习事件追踪
+- 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
+- 聊天输入区支持模型覆盖默认路由；官方 OpenAI Provider 可手动开启内置联网搜索，其他供应商会返回明确的不支持提示
+- 聊天中的自然语言写入会先生成可编辑草稿，再由用户确认写入笔记、目标任务或当天计划
+
+### 5. RAG 知识库
 - 支持 PDF / Word / Markdown / TXT 格式资料上传
 - LlamaIndex 自动解析 + 章节结构化
 - ChromaDB 向量存储，AI 回答自动检索相关章节
 - 意图识别：对话中自动判断是否需要检索资料库
 - **容错降级**：embedding 服务不可用时，资料创建、问答和分析不会 500；资料搜索自动回退到关键词检索
 
-### 5. 多 AI 提供商支持
+### 6. 多 AI 提供商支持
 - OpenAI（GPT-4o / GPT-4）
 - Anthropic Claude（Claude 3.5 Sonnet）
 - Google Gemini
 - DeepSeek / Qwen
-- 运行时切换，无需重启
+- OpenAI-compatible 自定义中转
+- 运行时切换，无需重启；支持按聊天、错题检测、复习、Agent、RAG Embedding 等场景分别指定模型
+- AI 设置页支持模型搜索、连接测试、供应商删除、激活供应商自动接管和路由引用清理
+- 常见连接问题会转成可读提示：API Key 错误、模型不存在、额度不足、Base URL 填错、返回非 JSON 或非 OpenAI-compatible 聊天格式
 
-### 6. 学习工具集
+### 7. 学习工具集
 - **番茄钟**：计时、统计、任务关联、离线同步；停止时记录原因（提前完成 / 临时中断 / 状态不好），自动纳入画像分析
 - **间隔复习**：艾宾浩斯遗忘曲线调度
 - **错题本**：知识点归类、薄弱点追踪
@@ -144,29 +160,29 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **掌握度地图**：章节级学习进度可视化
 - **笔记系统**：关联资料章节，支持 Obsidian 导入
 
-### 7. 自定义 Prompt 管理
+### 8. 自定义 Prompt 管理
 - 10 种学习场景独立 prompt：AI 教练、费曼学习法、苏格拉底提问、出题、错题分析、复习引导、走神关怀等
 - `/prompts` 页面可视化编辑，一键恢复默认
 - 聊天时按场景自动切换对应 prompt，用户自定义优先
 
-### 8. 用户画像可视化
+### 9. 用户画像可视化
 - 四维雷达图：自控力 / 专注度 / 坚持度 / 计划执行
 - 24 小时学习热力图：直观显示你的高效时段
 - 薄弱知识点 Tag 展示
 - 一键刷新重新计算画像
 
-### 9. 学习行为 EDA 报告
+### 10. 学习行为 EDA 报告
 - `/eda` 页面提供最近 7 / 30 / 90 天学习趋势分析
 - pandas + scipy 聚合学习时长、番茄钟完成率、任务完成率、时段效率
 - ECharts 展示日趋势、小时分布、周内热力图、停止原因占比、能力雷达
 - 自动生成图表解读、关键洞察和建议动作，便于复盘学习节奏
 
-### 10. AI 主动干预
+### 11. AI 主动干预
 - `/intervention` 页面生成每日学习报告和推送文案
 - 根据今日学习时长、待办积压、到期复习、任务完成率评估风险等级
 - AI 失败时使用模板兜底，确保干预报告稳定可用
 
-### 11. 自主学习 Agent
+### 12. 自主学习 Agent
 - `/agent` 页面聚合画像、长期记忆、今日任务、过期任务、到期复习、错题薄弱点和番茄钟状态
 - 输出 `autonomy_level`、`readiness_score`、`risk_level`、`current_focus` 和下一步行动建议
 - 支持三层稳妥自主路径：先生成行动草案，再由用户确认执行，最后把执行反馈写入记忆用于后续规划
@@ -179,14 +195,15 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 聊天里的自然语言写入会先生成草稿，再确认后真正写入笔记或目标任务；重复内容会自动标记并跳过
 - 确认后的 Agent 写入会同步落到聊天历史里，方便后续切换会话、回看记录和分支编辑
 
-### 12. Anki 风格记忆卡
+### 13. Anki 风格记忆卡
 - `/anki` 页面支持手动创建、CSV 导入导出、AI 批量生成卡片
 - 使用 SM-2 风格调度字段：到期时间、间隔天数、简易系数、复习评分
 - 已接入 IndexedDB 离线缓存和同步适配器
 
-### 13. 个性化界面与系统设置
-- 新增设置面板：主题、背景图、AI 供应商、激励语录、提示词、系统更新
+### 14. 个性化界面与系统设置
+- 设置面板：主题、背景图、AI 供应商、激励语录、提示词、系统更新
 - 支持跟随系统 / 暖色 / 深色主题，自定义背景图和透明度
+- 左右侧栏支持折叠和宽度调整；聊天区、会话侧栏、账户入口、设置弹窗和 AI 设置抽屉已统一为当前视觉风格
 - 支持应用版本检查与自动检查间隔配置
 
 ---
@@ -245,7 +262,21 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 ## 此次更新说明
 
-更新日期：2026-05-01
+更新日期：2026-05-30
+
+本次文档同步了最近几轮围绕聊天、AI 设置、桌面发布和界面体验的修复：
+
+- **OpenAI 联网搜索**：聊天输入区新增“联网搜索”开关；开启后，官方 OpenAI Provider 会通过 Responses API 调用内置 Web Search，默认关闭以避免额外延迟和费用。
+- **供应商边界提示**：DeepSeek、Qwen、Claude、Gemini 和 OpenAI-compatible 中转不会误走 OpenAI 内置联网搜索；不支持时会通过 SSE 返回明确提示，提醒切换到官方 OpenAI。
+- **AI 错误信息优化**：API Key 错误、模型不存在、额度不足、Base URL 填错、返回 HTML/非 JSON、非 OpenAI-compatible 聊天格式等问题，会在聊天流、模型搜索和连接测试里显示更容易理解的中文提示。
+- **AI Provider 管理修复**：默认供应商也可以删除；删除激活供应商时会自动选择剩余可用供应商接管，并清理场景路由引用，避免数据库外键失败或设置页卡死。
+- **流式聊天持久化增强**：聊天内容保存与摘要、记忆、反思、错题检测、事件追踪分阶段提交，后处理失败不会连带回滚已经保存的用户消息和 AI 回复。
+- **学习会话记录修复**：流式聊天同时绑定普通对话和学习会话时，会先校验当前用户拥有对应学习会话，再写入学习会话聊天记录。
+- **多用户隔离测试补强**：新增 AI Provider 删除、路由清理、学习计划写入隔离等测试覆盖，继续收敛多人环境下的越权风险。
+- **聊天工作区体验升级**：左侧会话栏、项目筛选、折叠窄栏、账户入口、设置弹窗和 AI 设置抽屉统一视觉样式；聊天主区域高度和滚动行为更稳定。
+- **桌面发布记录同步**：v1.0.4 修复桌面端番茄钟恢复和历史对话路由；v1.0.5 增加 OpenAI 联网搜索，并同步后端、桌面端、发布脚本和更新清单版本。
+
+上一轮更新日期：2026-05-01
 
 本次更新重点提升了公开试用前的稳定性、安全性和 Agent 个性化能力：
 
@@ -527,6 +558,13 @@ Mnemox/
 
 ### 已完成
 
+- [x] OpenAI 联网搜索：官方 OpenAI Provider 可在聊天中手动开启 Web Search，其他供应商返回清晰边界提示
+- [x] AI 设置增强：供应商场景路由、RAG Embedding 配置、自定义中转、模型搜索、连接测试、供应商删除和路由清理
+- [x] AI 错误提示优化：常见 Key、模型、额度、Base URL、JSON 格式和 OpenAI-compatible 响应异常会转成可读中文提示
+- [x] 聊天工作区升级：会话路由、历史搜索、项目筛选、项目资料管理、左侧折叠栏、模型覆盖和流式回复
+- [x] 流式聊天持久化增强：聊天内容、学习会话记录、摘要、记忆、反思、错题检测和事件追踪分阶段提交
+- [x] 桌面体验修复：番茄钟记录恢复、历史对话直达路由、应用内更新检查和发布清单同步
+- [x] 多用户隔离测试补强：覆盖 AI Provider 配置、供应商删除、路由清理和 Agent 写入等关键路径
 - [x] 公开试用前稳定性增强：RAG embedding 异常降级、资料搜索关键词 fallback、Agent Planner 超时兜底、上传安全限制、生产 SECRET_KEY 校验
 - [x] AI 多轮对话（流式输出、会话持久化、项目分组）
 - [x] 多 AI 提供商运行时切换
@@ -552,11 +590,11 @@ Mnemox/
 
 ### 接下来计划
 
-- [ ] 多用户越权审计：系统性检查所有详情、更新、删除接口是否严格绑定 `current_user.id`
+- [ ] 继续扩大多用户越权审计：系统性检查所有详情、更新、删除接口是否严格绑定 `current_user.id`
 - [ ] Prompt injection 防护：把资料内容、笔记内容和工具返回统一标记为不可信上下文，避免资料中的恶意指令影响系统提示
 - [ ] 前端 RAG 状态提示：展示语义检索是否可用、是否正在使用关键词 fallback、最近 embedding 错误
-- [ ] AI Provider 连接测试增强：区分 chat、embedding、streaming 能力是否可用
-- [ ] pytest 自动化测试：覆盖 auth、多用户隔离、RAG fallback、上传限制、Agent feedback、Planner timeout
+- [ ] AI Provider 连接测试增强：进一步区分 chat、embedding、streaming、Responses API / Web Search 能力是否可用
+- [ ] pytest 自动化测试扩面：继续覆盖 auth、RAG fallback、上传限制、Agent feedback、Planner timeout 和前端关键交互
 - [ ] 聊天框场景模式选择器（费曼 / 苏格拉底 / 教练 快速切换）
 - [ ] 多人共同学习 / 好友监督：支持学习伙伴、学习房间、共同番茄钟、好友提醒和轻量打卡监督；默认以用户授权、低打扰和隐私可控为前提
 - [ ] Demo 数据 / 一键体验模式，方便论坛用户无需大量配置即可看到完整效果
