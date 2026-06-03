@@ -60,6 +60,7 @@ interface EditState {
   base_url: string
   model: string
   available_models: string[]
+  test_model: string
 }
 
 interface ProviderFeedback {
@@ -84,15 +85,30 @@ function modelOptions(models: string[], model?: string) {
   return withDefaultModel(models, model).map((item) => ({ label: item, value: item }))
 }
 
+function resolveValidationModel(
+  testModel: string | undefined,
+  model: string | undefined,
+  availableModels: string[],
+) {
+  const candidates = withDefaultModel(availableModels, model)
+  const preferred = (testModel || '').trim()
+  if (preferred && candidates.includes(preferred)) {
+    return preferred
+  }
+  return candidates[0] || ''
+}
+
 function buildProviderEditStates(data: AIProvider[]): Record<string, EditState> {
   const states: Record<string, EditState> = {}
   for (const p of data) {
+    const availableModels = normalizeModels(p.available_models || [])
     states[p.provider_name] = {
       api_key: '',
       clear_api_key: false,
       base_url: p.base_url,
       model: p.model,
-      available_models: normalizeModels(p.available_models || []),
+      available_models: availableModels,
+      test_model: resolveValidationModel(p.model, p.model, availableModels),
     }
   }
   return states
@@ -247,6 +263,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           base_url: result.base_url,
           model: result.model,
           available_models: savedModels,
+          test_model: resolveValidationModel(edit.test_model, result.model, savedModels),
         },
       }))
       notifyAIProvidersUpdated({
@@ -281,17 +298,26 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
   const handleTest = async (providerName: string) => {
     const edit = editStates[providerName]
+    if (!edit) return
+
+    const selectedTestModel =
+      edit.test_model.trim() || edit.model.trim() || edit.available_models[0] || ''
+    if (!selectedTestModel) {
+      message.error('请先点击“搜索模型”，再选择一个模型进行验证')
+      return
+    }
+
     setTestingProvider(providerName)
     try {
-      const apiKeyForTest = edit?.clear_api_key
+      const apiKeyForTest = edit.clear_api_key
         ? ''
-        : edit?.api_key.trim()
+        : edit.api_key.trim()
           ? edit.api_key.trim()
           : undefined
       const result = await testProvider(providerName, {
         api_key: apiKeyForTest,
-        base_url: edit?.base_url.trim() || undefined,
-        model: edit?.model.trim() || undefined,
+        base_url: edit.base_url.trim() || undefined,
+        model: selectedTestModel,
       })
       if (result.success) {
         setProviderResult(providerName, {
@@ -299,8 +325,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           title: '测试通过',
           detail: result.message,
           providerName: result.provider_name || providerName,
-          model: result.model || edit?.model,
-          baseUrl: edit?.base_url,
+          model: result.model || selectedTestModel,
+          baseUrl: edit.base_url,
         })
         message.success(result.message)
       } else {
@@ -309,8 +335,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           title: '测试失败',
           detail: result.message,
           providerName: result.provider_name || providerName,
-          model: result.model || edit?.model,
-          baseUrl: edit?.base_url,
+          model: result.model || selectedTestModel,
+          baseUrl: edit.base_url,
         })
         message.error(result.message)
       }
@@ -320,8 +346,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         title: '测试请求失败',
         detail: getApiErrorMessage(error, '测试请求失败，请检查后端是否运行'),
         providerName,
-        model: edit?.model,
-        baseUrl: edit?.base_url,
+        model: selectedTestModel,
+        baseUrl: edit.base_url,
       })
       showApiError(error, '测试请求失败，请检查后端是否运行')
     } finally {
@@ -349,6 +375,21 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         [providerName]: {
           ...current,
           model,
+          test_model: resolveValidationModel(current.test_model, model, current.available_models),
+        },
+      }
+    })
+  }
+
+  const updateProviderTestModel = (providerName: string, testModel: string) => {
+    setEditStates((prev) => {
+      const current = prev[providerName]
+      if (!current) return prev
+      return {
+        ...prev,
+        [providerName]: {
+          ...current,
+          test_model: testModel,
         },
       }
     })
@@ -362,13 +403,14 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
       const nextModel =
         current.model && availableModels.includes(current.model)
           ? current.model
-          : current.model
+          : availableModels[0] || current.model
       return {
         ...prev,
         [providerName]: {
           ...current,
           available_models: availableModels,
           model: nextModel,
+          test_model: resolveValidationModel(current.test_model, nextModel, availableModels),
         },
       }
     })
@@ -397,21 +439,26 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           ...prev[providerName],
           available_models: discoveredModels,
           model: prev[providerName]?.model || discoveredModels[0] || '',
+          test_model: resolveValidationModel(
+            prev[providerName]?.test_model,
+            prev[providerName]?.model || discoveredModels[0] || '',
+            discoveredModels,
+          ),
         },
       }))
       setProviderResult(providerName, {
         type: 'success',
-        title: '模型发现成功',
-        detail: `已发现 ${result.models.length} 个模型，可勾选后再保存。`,
+        title: '模型搜索成功',
+        detail: `已发现 ${discoveredModels.length} 个模型。请先选择“验证模型”，确认可用后再保存。`,
         providerName,
-        model: edit.model || result.models[0],
+        model: edit.model || discoveredModels[0],
         baseUrl: edit.base_url,
       })
-      message.success(`已发现 ${result.models.length} 个模型，可在下拉框勾选后保存`)
+      message.success(`已发现 ${discoveredModels.length} 个模型，请先选择模型进行验证`)
     } catch (error) {
       setProviderResult(providerName, {
         type: 'error',
-        title: '模型发现失败',
+        title: '模型搜索失败',
         detail: getApiErrorMessage(error, '搜索模型失败，请检查 API Key 和 Base URL'),
         providerName,
         model: edit.model,
@@ -525,6 +572,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           base_url: result.base_url,
           model: result.model,
           available_models: savedModels,
+          test_model: resolveValidationModel(result.model, result.model, savedModels),
         },
       }))
       setNewProvider({
@@ -1101,17 +1149,37 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                         可用模型（会出现在对话模型切换中）
                       </div>
+                      <Select
+                        mode="tags"
+                        style={{ width: '100%' }}
+                        tokenSeparators={[',', '，', ' ']}
+                        placeholder="搜索后会自动填充，也可以手动补充模型名"
+                        value={edit.available_models}
+                        options={modelOptions(edit.available_models || [], edit.model)}
+                        onChange={(models) => {
+                          updateProviderAvailableModels(provider.provider_name, models)
+                        }}
+                        popupMatchSelectWidth={false}
+                      />
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                        验证模型
+                      </div>
                       <Space.Compact style={{ width: '100%' }}>
                         <Select
-                          mode="tags"
                           style={{ width: '100%' }}
-                          tokenSeparators={[',', '，', ' ']}
-                          placeholder="输入模型名后回车，或点击右侧搜索"
-                          value={edit.available_models}
+                          showSearch
+                          placeholder={
+                            edit.available_models.length > 0
+                              ? '从已搜索的模型中选择一个进行验证'
+                              : '先点击“搜索模型”获取当前供应商支持的模型'
+                          }
+                          value={edit.test_model || undefined}
                           options={modelOptions(edit.available_models || [], edit.model)}
-                          onChange={(models) => {
-                            updateProviderAvailableModels(provider.provider_name, models)
-                          }}
+                          onChange={(value) => updateProviderTestModel(provider.provider_name, value)}
+                          optionFilterProp="label"
                           popupMatchSelectWidth={false}
                         />
                         <Button
@@ -1119,9 +1187,19 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                           loading={searchingProvider === provider.provider_name}
                           onClick={() => void handleSearchModels(provider.provider_name)}
                         >
-                          发现模型
+                          搜索模型
+                        </Button>
+                        <Button
+                          icon={<ApiOutlined />}
+                          loading={testingProvider === provider.provider_name}
+                          onClick={() => handleTest(provider.provider_name)}
+                        >
+                          验证
                         </Button>
                       </Space.Compact>
+                      <div style={{ marginTop: 6, fontSize: 12, color: '#999' }}>
+                        模型搜索、验证和联网搜索默认都使用当前供应商的 API Key，不需要单独配置搜索 Key。
+                      </div>
                     </div>
 
                     <Space>
@@ -1132,13 +1210,6 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                         onClick={() => handleSave(provider.provider_name)}
                       >
                         保存
-                      </Button>
-                      <Button
-                        icon={<ApiOutlined />}
-                        loading={testingProvider === provider.provider_name}
-                        onClick={() => handleTest(provider.provider_name)}
-                      >
-                        测试当前配置
                       </Button>
                       <Button
                         danger
