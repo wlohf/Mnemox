@@ -61,6 +61,7 @@ interface PomodoroState {
   startedAt: number | null
   pausedAt: number | null
   pausedTotalMs: number
+  backgroundImage: string | null
 
   // Records
   records: PomodoroRecord[]
@@ -79,6 +80,7 @@ interface PomodoroState {
   resetTimer: (durationOverride?: number) => void
   tick: () => void
   addRecord: (taskName: string, duration: number) => void
+  setBackgroundImage: (backgroundImage: string | null) => void
 
   // Sync actions
   syncPendingRecords: () => Promise<void>
@@ -201,6 +203,7 @@ export const usePomodoroStore = create<PomodoroState>()(
       startedAt: null,
       pausedAt: null,
       pausedTotalMs: 0,
+      backgroundImage: null,
       records: [],
       backendOnline: false,
       migrated: false,
@@ -353,6 +356,7 @@ export const usePomodoroStore = create<PomodoroState>()(
             isRunning: false,
             isPaused: false,
             remainingTime: focusDuration * 60,
+            currentTask: '',
             currentTaskId: null,
             duration: focusDuration,
             timerMode: 'focus',
@@ -417,6 +421,10 @@ export const usePomodoroStore = create<PomodoroState>()(
         set((state) => ({
           records: [newRecord, ...state.records].slice(0, MAX_RECORDS),
         }))
+      },
+
+      setBackgroundImage: (backgroundImage: string | null) => {
+        set({ backgroundImage })
       },
 
       syncPendingRecords: async () => {
@@ -711,6 +719,7 @@ export const usePomodoroStore = create<PomodoroState>()(
         startedAt: state.startedAt,
         pausedAt: state.pausedAt,
         pausedTotalMs: state.pausedTotalMs,
+        backgroundImage: state.backgroundImage,
         records: state.records,
         migrated: state.migrated,
         focusDuration: state.focusDuration,

@@ -1,13 +1,24 @@
-import { useState, useEffect, useMemo } from 'react'
-import { Alert, Card, List, Button, Modal, Input, Tag, Empty, Segmented, message, DatePicker, Timeline, Calendar, Space, Typography } from 'antd'
-import { CalendarOutlined, PlusOutlined, EditOutlined, UnorderedListOutlined, ClockCircleOutlined, QuestionCircleOutlined, BulbOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Alert, Button, Calendar, DatePicker, Empty, List, Segmented, Space, Tag, Timeline, Typography, message } from 'antd'
+import {
+  BulbOutlined,
+  CalendarOutlined,
+  ClockCircleOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  PlusOutlined,
+  QuestionCircleOutlined,
+  RobotOutlined,
+  SaveOutlined,
+  UnorderedListOutlined,
+} from '@ant-design/icons'
 import dayjs, { Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
-import { apiFetch } from '../services/apiClient'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { apiFetch, getApiErrorMessage } from '../services/apiClient'
 import { generateDailyPlan } from '../services/learningApi'
-import { getApiErrorMessage } from '../services/apiClient'
 import { generateFeynmanProbe, type FeynmanProbeResult } from '../services/feynmanProbeApi'
-import { useNavigate } from 'react-router-dom'
+import { MarkdownLiveEditor } from '../components/MarkdownLiveEditor'
 import { PageShell } from '../components/PageShell'
 
 dayjs.extend(isoWeek)
@@ -19,13 +30,44 @@ interface Plan {
   content: string
 }
 
+interface ChecklistItem {
+  id: string
+  title: string
+  done: boolean
+}
+
+function normalizeDateParam(value: string | null | undefined) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return dayjs().format('YYYY-MM-DD')
+  const parsed = dayjs(value)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD')
+}
+
 function getStats(content: string) {
-  let total = 0, completed = 0
+  let total = 0
+  let completed = 0
   for (const line of content.split('\n')) {
-    if (/^- \[ \] /.test(line)) total++
-    else if (/^- \[x\] /.test(line)) { total++; completed++ }
+    if (/^- \[ \] /.test(line)) total += 1
+    else if (/^- \[x\] /i.test(line)) {
+      total += 1
+      completed += 1
+    }
   }
   return { total, completed }
+}
+
+function extractChecklistItems(content: string): ChecklistItem[] {
+  return content
+    .split('\n')
+    .map((line, index) => {
+      const matched = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.+)$/)
+      if (!matched) return null
+      return {
+        id: `${index}-${matched[2]}`,
+        done: matched[1].toLowerCase() === 'x',
+        title: matched[2].trim(),
+      }
+    })
+    .filter((item): item is ChecklistItem => Boolean(item))
 }
 
 type ViewMode = 'list' | 'timeline'
@@ -41,9 +83,12 @@ function getRangeForQuick(q: QuickRange): [Dayjs, Dayjs] {
 
 export function PlansPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const routeDate = normalizeDateParam(searchParams.get('date'))
+
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(false)
-  const [editingPlan, setEditingPlan] = useState<Plan | null>(null)
+  const [activeDate, setActiveDate] = useState(routeDate)
   const [editContent, setEditContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -53,44 +98,74 @@ export function PlansPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [quickRange, setQuickRange] = useState<QuickRange>('this_week')
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(90, 'day'), dayjs()])
-  const [calendarValue, setCalendarValue] = useState<Dayjs>(dayjs())
+  const [calendarValue, setCalendarValue] = useState<Dayjs>(dayjs(routeDate))
 
   const [rangeStart, rangeEnd] = quickRange === 'custom' ? customRange : getRangeForQuick(quickRange)
 
-  const loadPlans = async () => {
+  const loadPlans = useCallback(async () => {
     setLoading(true)
     try {
-      const end = dayjs().format('YYYY-MM-DD')
-      const start = dayjs().subtract(90, 'day').format('YYYY-MM-DD')
-      const data = await apiFetch<Plan[]>(`/api/plans/?start=${start}&end=${end}`)
-      setPlans((data || []).reverse())
+      const today = dayjs()
+      const selected = dayjs(activeDate)
+      const defaultStart = today.subtract(90, 'day')
+      const start = selected.isBefore(defaultStart, 'day') ? selected : defaultStart
+      const end = selected.isAfter(today, 'day') ? selected : today
+      const data = await apiFetch<Plan[]>(`/api/plans/?start=${start.format('YYYY-MM-DD')}&end=${end.format('YYYY-MM-DD')}`)
+      setPlans((data || []).sort((a, b) => b.date.localeCompare(a.date)))
     } finally {
       setLoading(false)
     }
+  }, [activeDate])
+
+  useEffect(() => {
+    void loadPlans()
+  }, [loadPlans])
+
+  useEffect(() => {
+    if (searchParams.get('date') !== routeDate) {
+      setSearchParams({ date: routeDate }, { replace: true })
+    }
+    if (routeDate !== activeDate) {
+      setActiveDate(routeDate)
+      setCalendarValue(dayjs(routeDate))
+      setProbeResult(null)
+    }
+  }, [activeDate, routeDate, searchParams, setSearchParams])
+
+  const activePlan = useMemo(() => plans.find((p) => p.date === activeDate) || null, [activeDate, plans])
+
+  useEffect(() => {
+    setEditContent(activePlan?.content || '')
+    setProbeResult(null)
+  }, [activeDate, activePlan?.content])
+
+  const openDocument = useCallback((date: Dayjs | string, replace = false) => {
+    const dateStr = typeof date === 'string' ? normalizeDateParam(date) : date.format('YYYY-MM-DD')
+    setActiveDate(dateStr)
+    setCalendarValue(dayjs(dateStr))
+    setProbeResult(null)
+    setSearchParams({ date: dateStr }, { replace })
+  }, [setSearchParams])
+
+  const upsertPlan = (plan: Plan) => {
+    setPlans((prev) => {
+      const exists = prev.some((p) => p.date === plan.date)
+      const next = exists ? prev.map((p) => (p.date === plan.date ? plan : p)) : [plan, ...prev]
+      return next.sort((a, b) => b.date.localeCompare(a.date))
+    })
   }
 
-  useEffect(() => { loadPlans() }, [])
-
   const handleSave = async () => {
-    if (!editingPlan) return
     setSaving(true)
     try {
-      const saved = await apiFetch<Plan>(`/api/plans/${editingPlan.date}`, {
+      const saved = await apiFetch<Plan>(`/api/plans/${activeDate}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: editContent }),
       })
-      const nextPlan = saved || { ...editingPlan, content: editContent }
-      setPlans(prev => {
-        const exists = prev.some(p => p.date === nextPlan.date)
-        const next = exists
-          ? prev.map(p => p.date === nextPlan.date ? nextPlan : p)
-          : [nextPlan, ...prev]
-        return next.sort((a, b) => b.date.localeCompare(a.date))
-      })
-      await loadPlans()
-      setEditingPlan(null)
-      setProbeResult(null)
+      const nextPlan = saved || { date: activeDate, content: editContent }
+      upsertPlan(nextPlan)
+      setEditContent(nextPlan.content)
       message.success('已保存')
     } finally {
       setSaving(false)
@@ -101,8 +176,11 @@ export function PlansPage() {
     setGenerating(true)
     try {
       const result = await generateDailyPlan(date)
+      const generatedPlan = { date: result.date || date, content: result.content || '' }
+      upsertPlan(generatedPlan)
+      openDocument(generatedPlan.date)
+      setEditContent(generatedPlan.content)
       message.success(`已生成计划，共 ${result.item_count} 项`)
-      await loadPlans()
     } catch (error) {
       message.error(getApiErrorMessage(error, '生成计划失败'))
     } finally {
@@ -111,20 +189,19 @@ export function PlansPage() {
   }
 
   const handleFeynmanProbe = async () => {
-    if (!editingPlan) return
     if (editContent.trim().length < 12) {
-      message.warning('请先写一段今日复盘或总结，再生成明镜追问')
+      message.warning('请先写一段今日复盘或总结')
       return
     }
     setProbing(true)
     try {
-      const result = await generateFeynmanProbe(editingPlan.date, editContent, 4)
+      const result = await generateFeynmanProbe(activeDate, editContent, 4)
       if (!result) {
         message.error('明镜追问生成失败，请稍后重试')
         return
       }
       setProbeResult(result)
-      message.success(result.fallback ? '已生成基础追问（AI 未配置时的兜底结果）' : '已生成明镜追问')
+      message.success(result.fallback ? '已生成基础追问' : '已生成明镜追问')
     } finally {
       setProbing(false)
     }
@@ -147,26 +224,12 @@ export function PlansPage() {
       `**下一步最小补缺口：** ${probeResult.next_focus}`,
       '',
     ].join('\n')
-    setEditContent(prev => `${prev.trimEnd()}\n${block}`)
-    message.success('已追加到今日计划')
-  }
-
-  const handleNewPlan = async () => {
-    const today = dayjs().format('YYYY-MM-DD')
-    const existing = plans.find(p => p.date === today)
-    if (existing) {
-      setEditingPlan(existing)
-      setEditContent(existing.content)
-      setProbeResult(null)
-    } else {
-      setEditingPlan({ date: today, content: '' })
-      setEditContent('')
-      setProbeResult(null)
-    }
+    setEditContent((prev) => `${prev.trimEnd()}\n${block}`)
+    message.success('已追加到计划')
   }
 
   const filtered = useMemo(() => {
-    return plans.filter(p => {
+    return plans.filter((p) => {
       const d = dayjs(p.date)
       const inRange = !d.isBefore(rangeStart, 'day') && !d.isAfter(rangeEnd, 'day')
       if (!inRange) return false
@@ -186,40 +249,29 @@ export function PlansPage() {
     )
   }, [plans])
 
-  const openEdit = (plan: Plan) => { setEditingPlan(plan); setEditContent(plan.content); setProbeResult(null) }
+  const activeStats = getStats(editContent)
+  const activeTasks = useMemo(() => extractChecklistItems(editContent), [editContent])
+  const isToday = activeDate === dayjs().format('YYYY-MM-DD')
+  const isDirty = editContent !== (activePlan?.content || '')
 
-  const planCard = (plan: Plan, compact = false) => {
+  const planRow = (plan: Plan) => {
     const { total, completed } = getStats(plan.content)
-    const isToday = plan.date === dayjs().format('YYYY-MM-DD')
-    const firstLine = plan.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || ''
+    const firstLine = plan.content.split('\n').find((line) => line.trim() && !line.startsWith('#')) || ''
+    const selected = plan.date === activeDate
     return (
-      <Card
-        size="small"
-        style={{
-          marginBottom: compact ? 0 : 8,
-          borderLeft: isToday ? '3px solid var(--accent-600)' : '3px solid transparent',
-          background: isToday ? 'var(--accent-50)' : 'var(--bg-secondary)',
-        }}
-        bodyStyle={{ padding: '10px 14px' }}
+      <button
+        type="button"
+        className={`mnemox-plan-file${selected ? ' is-active' : ''}`}
+        onClick={() => openDocument(plan.date)}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{plan.date}</span>
-              {isToday && <Tag color="orange" style={{ fontSize: 11 }}>今天</Tag>}
-              {total > 0 && (
-                <Tag color={completed === total ? 'green' : 'blue'} style={{ fontSize: 11 }}>
-                  {completed}/{total} 完成
-                </Tag>
-              )}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 480 }}>
-              {firstLine || '（空白计划）'}
-            </div>
-          </div>
-          <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(plan)} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-        </div>
-      </Card>
+        <span className="mnemox-plan-file-title">
+          <FileTextOutlined />
+          <span>{plan.date}</span>
+          {plan.date === dayjs().format('YYYY-MM-DD') && <Tag color="orange">今天</Tag>}
+        </span>
+        <span className="mnemox-plan-file-preview">{firstLine || '空白计划'}</span>
+        {total > 0 && <span className="mnemox-plan-file-meta">{completed}/{total} 完成</span>}
+      </button>
     )
   }
 
@@ -233,195 +285,197 @@ export function PlansPage() {
       )}
       onBack={() => navigate('/')}
       rightExtra={(
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Button icon={<PlusOutlined />} size="small" loading={generating} onClick={() => handleGenerate(dayjs().format('YYYY-MM-DD'))}>
-            AI 生成今日计划
+        <Space wrap>
+          <Button icon={<PlusOutlined />} onClick={() => openDocument(dayjs())}>今天</Button>
+          <Button icon={<RobotOutlined />} loading={generating} onClick={() => handleGenerate(activeDate)}>
+            AI 生成当前计划
           </Button>
-          <Button icon={<EditOutlined />} size="small" onClick={handleNewPlan}>手动新建</Button>
-        </div>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+            保存
+          </Button>
+        </Space>
       )}
-      maxWidth={760}
+      maxWidth={1540}
     >
-
-      <Card size="small" title="计划日历" style={{ marginBottom: 16 }}>
-        <Calendar
-          fullscreen={false}
-          value={calendarValue}
-          onPanelChange={(value) => setCalendarValue(value)}
-          onSelect={(value) => {
-            const selectedDate = value.format('YYYY-MM-DD')
-            const existing = plans.find((p) => p.date === selectedDate)
-            if (existing) {
-              setEditingPlan(existing)
-              setEditContent(existing.content)
-              setProbeResult(null)
-            } else {
-              setEditingPlan({ date: selectedDate, content: '' })
-              setEditContent('')
-              setProbeResult(null)
-            }
-          }}
-          cellRender={(current, info) => {
-            if (info.type !== 'date') {
-              return null
-            }
-            const hasPlan = planDateSet.has(current.format('YYYY-MM-DD'))
-            if (!hasPlan) return null
-            return (
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 2 }}>
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    background: 'var(--text-primary)',
-                    border: '1px solid var(--bg-secondary)',
-                    opacity: 0.9,
-                    display: 'inline-block',
-                  }}
-                />
-              </div>
-            )
-          }}
-        />
-      </Card>
-
-      {/* Range selector */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <Segmented
-          value={quickRange}
-          onChange={v => setQuickRange(v as QuickRange)}
-          options={[
-            { label: '本周', value: 'this_week' },
-            { label: '上周', value: 'last_week' },
-            { label: '本月', value: 'this_month' },
-            { label: '自定义', value: 'custom' },
-          ]}
-          size="small"
-        />
-        {quickRange === 'custom' && (
-          <DatePicker.RangePicker
-            size="small"
-            value={customRange}
-            onChange={v => v && setCustomRange([v[0]!, v[1]!])}
+      <div className="mnemox-plan-workbench">
+        <aside className="mnemox-plan-sidebar">
+          <div className="mnemox-panel-heading">
+            <span>计划日历</span>
+            <Tag>{plans.length}</Tag>
+          </div>
+          <Calendar
+            className="mnemox-plan-calendar"
+            fullscreen={false}
+            value={calendarValue}
+            onPanelChange={(value) => setCalendarValue(value)}
+            onSelect={(value) => openDocument(value)}
+            cellRender={(current, info) => {
+              if (info.type !== 'date') return null
+              const hasPlan = planDateSet.has(current.format('YYYY-MM-DD'))
+              return hasPlan ? <span className="mnemox-plan-calendar-dot" /> : null
+            }}
           />
-        )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
-          <Button size="small" type={viewMode === 'list' ? 'primary' : 'default'} icon={<UnorderedListOutlined />} onClick={() => setViewMode('list')} />
-          <Button size="small" type={viewMode === 'timeline' ? 'primary' : 'default'} icon={<ClockCircleOutlined />} onClick={() => setViewMode('timeline')} />
-        </div>
-      </div>
 
-      {/* Task filter */}
-      <Segmented
-        value={filter}
-        onChange={v => setFilter(v as typeof filter)}
-        options={[
-          { label: '全部', value: 'all' },
-          { label: '有任务', value: 'has_tasks' },
-          { label: '未完成', value: 'incomplete' },
-        ]}
-        size="small"
-        style={{ marginBottom: 16 }}
-      />
+          <div className="mnemox-plan-sidebar-section">
+            <Segmented
+              value={quickRange}
+              onChange={(v) => setQuickRange(v as QuickRange)}
+              options={[
+                { label: '本周', value: 'this_week' },
+                { label: '上周', value: 'last_week' },
+                { label: '本月', value: 'this_month' },
+                { label: '自定义', value: 'custom' },
+              ]}
+              size="small"
+            />
+            {quickRange === 'custom' && (
+              <DatePicker.RangePicker
+                size="small"
+                value={customRange}
+                onChange={(value) => value && setCustomRange([value[0]!, value[1]!])}
+              />
+            )}
+            <Segmented
+              value={filter}
+              onChange={(v) => setFilter(v as typeof filter)}
+              options={[
+                { label: '全部', value: 'all' },
+                { label: '有任务', value: 'has_tasks' },
+                { label: '未完成', value: 'incomplete' },
+              ]}
+              size="small"
+            />
+          </div>
+        </aside>
 
-      {/* List view */}
-      {viewMode === 'list' && (
-        <List
-          loading={loading}
-          dataSource={filtered}
-          locale={{ emptyText: <Empty description="该时间段暂无计划" /> }}
-          renderItem={(plan) => planCard(plan)}
-        />
-      )}
-
-      {/* Timeline view */}
-      {viewMode === 'timeline' && (
-        loading
-          ? <div style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>加载中...</div>
-          : filtered.length === 0
-            ? <Empty description="该时间段暂无计划" />
-            : <Timeline
-                style={{ marginTop: 8 }}
-                items={filtered.map(plan => {
+        <aside className="mnemox-plan-list-pane">
+          <div className="mnemox-panel-heading">
+            <span>计划文件</span>
+            <Space size={4}>
+              <Button size="small" type={viewMode === 'list' ? 'primary' : 'text'} icon={<UnorderedListOutlined />} onClick={() => setViewMode('list')} />
+              <Button size="small" type={viewMode === 'timeline' ? 'primary' : 'text'} icon={<ClockCircleOutlined />} onClick={() => setViewMode('timeline')} />
+            </Space>
+          </div>
+          {viewMode === 'list' ? (
+            <List
+              loading={loading}
+              dataSource={filtered}
+              locale={{ emptyText: <Empty description="该时间段暂无计划" /> }}
+              renderItem={(plan) => <List.Item>{planRow(plan)}</List.Item>}
+            />
+          ) : (
+            loading ? (
+              <div className="mnemox-pane-empty">加载中...</div>
+            ) : filtered.length === 0 ? (
+              <Empty description="该时间段暂无计划" />
+            ) : (
+              <Timeline
+                className="mnemox-plan-timeline"
+                items={filtered.map((plan) => {
                   const { total, completed } = getStats(plan.content)
-                  const isToday = plan.date === dayjs().format('YYYY-MM-DD')
                   return {
-                    color: isToday ? 'orange' : completed === total && total > 0 ? 'green' : 'blue',
-                    children: planCard(plan, true),
+                    color: plan.date === activeDate ? 'orange' : completed === total && total > 0 ? 'green' : 'blue',
+                    children: planRow(plan),
                   }
                 })}
               />
-      )}
+            )
+          )}
+        </aside>
 
-      <Modal
-        open={!!editingPlan}
-        title={editingPlan ? `${editingPlan.date} 的计划` : ''}
-        onOk={handleSave}
-        onCancel={() => { setEditingPlan(null); setProbeResult(null) }}
-        confirmLoading={saving}
-        width={600}
-        okText="保存"
-      >
-        <div style={{ marginBottom: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Button size="small" loading={generating} onClick={() => editingPlan && handleGenerate(editingPlan.date)}>
-            ✨ AI 重新生成
-          </Button>
-          <Button size="small" icon={<QuestionCircleOutlined />} loading={probing} onClick={handleFeynmanProbe}>
-            明镜追问
-          </Button>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: '24px' }}>
-            写完复盘后，让 AI 站在“小白听众”角度追问你
-          </span>
-        </div>
-        <Input.TextArea
-          value={editContent}
-          onChange={e => setEditContent(e.target.value)}
-          autoSize={{ minRows: 10, maxRows: 20 }}
-          placeholder={`输入今日计划...\n例如：\n- [ ] 复习第一章\n\n## 晚间费曼复盘\n今天我真正理解的是...\n如果讲给一个没学过的人，我会这样说...`}
-        />
+        <main className="mnemox-plan-document">
+          <div className="mnemox-doc-breadcrumb">学习计划 / 日志 / {activeDate}</div>
+          <div className="mnemox-doc-header">
+            <h1>{activeDate}</h1>
+            <Space wrap>
+              {isToday && <Tag color="orange">今天</Tag>}
+              {isDirty && <Tag color="gold">未保存</Tag>}
+              <Tag>{activeStats.completed}/{activeStats.total} 任务</Tag>
+            </Space>
+          </div>
+          <div className="mnemox-doc-toolbar">
+            <Button size="small" icon={<RobotOutlined />} loading={generating} onClick={() => handleGenerate(activeDate)}>
+              AI 生成
+            </Button>
+            <Button size="small" icon={<QuestionCircleOutlined />} loading={probing} onClick={handleFeynmanProbe}>
+              明镜追问
+            </Button>
+            <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
+              保存
+            </Button>
+          </div>
+          <MarkdownLiveEditor
+            value={editContent}
+            onChange={setEditContent}
+            height="calc(100vh - 330px)"
+            className="mnemox-plan-editor"
+            placeholder={`# ${activeDate}\n\n- [ ] `}
+          />
+          {probeResult && (
+            <div className="mnemox-probe-panel">
+              <div className="mnemox-probe-title">
+                <Space>
+                  <BulbOutlined style={{ color: 'var(--accent-600)' }} />
+                  <span>{probeResult.name}</span>
+                  {probeResult.fallback && <Tag color="orange">基础追问</Tag>}
+                </Space>
+                <Button size="small" onClick={appendProbeToPlan}>追加到计划</Button>
+              </div>
+              <Alert type="info" showIcon message={probeResult.tagline} style={{ marginBottom: 12 }} />
+              <Paragraph style={{ marginBottom: 8 }}>
+                <Text strong>讲得比较清楚：</Text>{probeResult.strongest_part}
+              </Paragraph>
+              <List
+                size="small"
+                dataSource={probeResult.questions}
+                renderItem={(q, idx) => (
+                  <List.Item style={{ display: 'block', paddingLeft: 0, paddingRight: 0 }}>
+                    <Space size={6} wrap style={{ marginBottom: 4 }}>
+                      <Tag color="purple">{idx + 1}</Tag>
+                      <Tag>{q.type}</Tag>
+                    </Space>
+                    <Paragraph style={{ marginBottom: 4 }}>{q.question}</Paragraph>
+                    <Text type="secondary" style={{ fontSize: 12 }}>为什么问：{q.why}</Text>
+                  </List.Item>
+                )}
+              />
+            </div>
+          )}
+        </main>
 
-        {probeResult && (
-          <Card
-            size="small"
-            title={(
-              <Space>
-                <BulbOutlined style={{ color: 'var(--accent-600)' }} />
-                <span>{probeResult.name}</span>
-                {probeResult.fallback && <Tag color="orange">基础追问</Tag>}
-              </Space>
-            )}
-            extra={<Button size="small" onClick={appendProbeToPlan}>追加到计划</Button>}
-            style={{ marginTop: 12, background: 'var(--bg-secondary)' }}
-          >
-            <Alert type="info" showIcon message={probeResult.tagline} style={{ marginBottom: 12 }} />
-            <Paragraph style={{ marginBottom: 8 }}>
-              <Text strong>讲得比较清楚：</Text>{probeResult.strongest_part}
-            </Paragraph>
-            <List
-              size="small"
-              dataSource={probeResult.questions}
-              renderItem={(q, idx) => (
-                <List.Item style={{ display: 'block', paddingLeft: 0, paddingRight: 0 }}>
-                  <Space size={6} wrap style={{ marginBottom: 4 }}>
-                    <Tag color="purple">{idx + 1}</Tag>
-                    <Tag>{q.type}</Tag>
-                  </Space>
-                  <Paragraph style={{ marginBottom: 4 }}>{q.question}</Paragraph>
-                  <Text type="secondary" style={{ fontSize: 12 }}>为什么问：{q.why}</Text>
-                </List.Item>
-              )}
-            />
-            <Alert
-              type="success"
-              showIcon
-              message="下一步最小补缺口"
-              description={probeResult.next_focus}
-              style={{ marginTop: 8 }}
-            />
-          </Card>
-        )}
-      </Modal>
+        <aside className="mnemox-plan-context-pane">
+          <div className="mnemox-panel-heading">
+            <span>当天任务</span>
+            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openDocument(activeDate)} />
+          </div>
+          {activeTasks.length === 0 ? (
+            <div className="mnemox-pane-empty">暂无任务</div>
+          ) : (
+            <div className="mnemox-task-list">
+              {activeTasks.map((task) => (
+                <div key={task.id} className={`mnemox-task-row${task.done ? ' is-done' : ''}`}>
+                  <span className="mnemox-task-check">{task.done ? '✓' : ''}</span>
+                  <span>{task.title}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mnemox-plan-inspector">
+            <div>
+              <span>日期</span>
+              <strong>{dayjs(activeDate).format('YYYY年MM月DD日')}</strong>
+            </div>
+            <div>
+              <span>字数</span>
+              <strong>{editContent.trim().length}</strong>
+            </div>
+            <div>
+              <span>完成率</span>
+              <strong>{activeStats.total ? Math.round((activeStats.completed / activeStats.total) * 100) : 0}%</strong>
+            </div>
+          </div>
+        </aside>
+      </div>
     </PageShell>
   )
 }

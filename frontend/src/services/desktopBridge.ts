@@ -23,6 +23,8 @@ export interface MnemoxDesktopBridge {
   getSavedLogin?: () => Promise<SavedLogin | null>
   saveLogin?: (payload: SavedLogin) => Promise<void>
   clearSavedLogin?: () => Promise<void>
+  getPreference?: <T = unknown>(key: string) => Promise<T | null>
+  setPreference?: <T = unknown>(key: string, value: T) => Promise<T | null>
   setPomodoroReminder?: (payload: PomodoroReminderPayload) => Promise<void>
   clearPomodoroReminder?: () => Promise<void>
   onReminderTriggered?: (callback: (payload: PomodoroReminderPayload) => void) => () => void

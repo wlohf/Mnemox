@@ -91,7 +91,6 @@ interface GlobalNavRailProps {
   isPaused: boolean
   remainingTimeLabel: string
   onNavigate: (path: string) => void
-  onOpenPomodoro: () => void
   onOpenOnboarding: () => void
   onOpenSettings: () => void
   beginnerMode: boolean
@@ -104,7 +103,6 @@ export function GlobalNavRail({
   isPaused,
   remainingTimeLabel,
   onNavigate,
-  onOpenPomodoro,
   onOpenOnboarding,
   onOpenSettings,
   beginnerMode,
@@ -199,7 +197,7 @@ export function GlobalNavRail({
         <Tooltip title={timerTitle} placement="right">
           <button
             type="button"
-            onClick={onOpenPomodoro}
+            onClick={() => onNavigate('/pomodoro')}
             className={`mnemox-nav-item mnemox-utility-item${isRunning ? ' is-timer-running' : isPaused ? ' is-timer-paused' : ''}`}
             aria-label={timerTitle}
             style={{

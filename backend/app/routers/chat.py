@@ -30,10 +30,12 @@ from app.services.memory_service import (
     upsert_conversation_summary,
     upsert_user_memories_from_turn,
 )
+from app.services.web_search import WebSearchResult, search_web
 
 from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
+from app.utils.ai_errors import format_ai_provider_error
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
@@ -633,6 +635,8 @@ async def _persist_streamed_chat_turn_once(
 ) -> None:
     async with sessionmaker() as save_db:
         try:
+            conv = None
+            sess = None
             if body.conversation_id:
                 conv_result = await save_db.execute(
                     select(ChatConversation).where(
@@ -642,6 +646,16 @@ async def _persist_streamed_chat_turn_once(
                 )
                 conv = conv_result.scalar_one_or_none()
 
+            if body.study_session_id:
+                sess_result = await save_db.execute(
+                    select(StudySession).where(
+                        StudySession.id == body.study_session_id,
+                        StudySession.user_id == user_id,
+                    )
+                )
+                sess = sess_result.scalar_one_or_none()
+
+            if body.conversation_id:
                 save_db.add(
                     ChatMessageModel(
                         conversation_id=body.conversation_id,
@@ -663,31 +677,23 @@ async def _persist_streamed_chat_turn_once(
                         conv.title = body.message[:50]
                     conv.updated_at = datetime.now()
 
-            if body.study_session_id:
-                sess_result = await save_db.execute(
-                    select(StudySession).where(
-                        StudySession.id == body.study_session_id,
-                        StudySession.user_id == user_id,
+            if sess:
+                save_db.add(
+                    StudyConversation(
+                        session_id=sess.id,
+                        role="user",
+                        content=body.message,
+                        message_type="chat",
                     )
                 )
-                sess = sess_result.scalar_one_or_none()
-                if sess:
-                    save_db.add(
-                        StudyConversation(
-                            session_id=sess.id,
-                            role="user",
-                            content=body.message,
-                            message_type="chat",
-                        )
+                save_db.add(
+                    StudyConversation(
+                        session_id=sess.id,
+                        role="assistant",
+                        content=full_reply,
+                        message_type="chat",
                     )
-                    save_db.add(
-                        StudyConversation(
-                            session_id=sess.id,
-                            role="assistant",
-                            content=full_reply,
-                            message_type="chat",
-                        )
-                    )
+                )
 
             await save_db.commit()
         except Exception:
@@ -745,6 +751,8 @@ async def _persist_streamed_chat_turn(
     async with sessionmaker() as enrich_db:
         try:
             await upsert_conversation_summary(body.conversation_id, enrich_db, user_id=user_id)
+            await enrich_db.commit()
+
             await upsert_user_memories_from_turn(
                 body.conversation_id,
                 body.message,
@@ -752,11 +760,14 @@ async def _persist_streamed_chat_turn(
                 enrich_db,
                 user_id=user_id,
             )
+            await enrich_db.commit()
 
             try:
                 from app.services.memory_service import run_conversation_reflection
                 await run_conversation_reflection(body.conversation_id, enrich_db, user_id=user_id)
+                await enrich_db.commit()
             except Exception as e:
+                await enrich_db.rollback()
                 logger.warning("对话反思失败: %s", e)
 
             try:
@@ -767,7 +778,9 @@ async def _persist_streamed_chat_turn(
                     enrich_db,
                     user_id=user_id,
                 )
+                await enrich_db.commit()
             except Exception as e:
+                await enrich_db.rollback()
                 logger.warning("错题自动检测失败: %s", e)
 
             try:
@@ -784,10 +797,10 @@ async def _persist_streamed_chat_turn(
                     },
                     session_id=str(body.conversation_id),
                 )
+                await enrich_db.commit()
             except Exception as e:
+                await enrich_db.rollback()
                 logger.warning("学习事件追踪失败: %s", e)
-
-            await enrich_db.commit()
         except Exception:
             await enrich_db.rollback()
             logger.warning(
@@ -813,6 +826,55 @@ def _ai_configuration_error(exc: Exception) -> HTTPException:
             "message": f"AI 提供商未配置或不可用：{str(exc)}。请先在设置中配置并启用 API Key。",
         },
     )
+
+
+def _format_web_search_context(results: list[WebSearchResult]) -> str:
+    lines: list[str] = []
+    for index, item in enumerate(results, start=1):
+        lines.append(
+            "\n".join(
+                [
+                    f"[{index}] {item.title}",
+                    f"URL: {item.url}",
+                    f"摘要: {item.snippet or '无摘要'}",
+                ]
+            )
+        )
+    return "\n\n".join(lines)
+
+
+def _is_hosted_web_search_unsupported(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "当前供应商不支持 openai 内置联网搜索" in text
+        or ("does not support" in text and "web_search" in text)
+        or ("unsupported" in text and "web_search" in text)
+    )
+
+
+async def _build_external_web_search_prompt(query: str) -> tuple[str, list[dict]]:
+    results = await search_web(query, limit=5)
+    if not results:
+        return "", []
+
+    payload = _format_web_search_context(results)
+    wrapped = wrap_untrusted_context(
+        "联网搜索结果",
+        payload,
+        source="external_web_search",
+        max_chars=6000,
+    )
+    prompt = (
+        "\n\n用户开启了联网搜索，但当前模型供应商没有内置搜索工具。"
+        "下面是 Mnemox 代为检索到的网页搜索结果。请优先基于这些结果回答；"
+        "如果结果不足或无法支持结论，请明确说明不确定。引用网页信息时请带上对应 URL。\n"
+        f"{wrapped}"
+    )
+    event_results = [
+        {"title": item.title, "url": item.url, "snippet": item.snippet}
+        for item in results
+    ]
+    return prompt, event_results
 
 # ---- SSE streaming endpoint ----
 
@@ -925,29 +987,61 @@ async def chat_send(
             )
             yield f"data: {mem_data}\n\n"
 
-        if body.web_search_enabled and not provider.supports_web_search():
-            error_data = json.dumps(
-                {"error": "当前供应商不支持 OpenAI 内置联网搜索，请切换到官方 OpenAI。"},
-                ensure_ascii=False,
-            )
-            yield f"data: {error_data}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
         try:
-            stream_method = provider.chat_stream
-            if body.web_search_enabled:
-                stream_method = getattr(provider, "chat_stream_with_web_search")
+            effective_system_prompt = system_prompt
+            use_hosted_web_search = False
+            if body.web_search_enabled and provider.supports_web_search():
+                use_hosted_web_search = True
+            elif body.web_search_enabled:
+                try:
+                    web_prompt, web_results = await _build_external_web_search_prompt(body.message)
+                    if web_prompt:
+                        effective_system_prompt = f"{system_prompt or ''}{web_prompt}"
+                        yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'web_search_results', 'results': []}, ensure_ascii=False)}\n\n"
+                except Exception as exc:
+                    logger.warning("外部联网搜索失败，降级为普通聊天: %s", exc)
+                    notice = "联网搜索暂时失败，已降级为普通聊天。请检查网络后重试。"
+                    effective_system_prompt = (
+                        f"{system_prompt or ''}\n\n"
+                        f"注意：用户开启了联网搜索，但应用层网页搜索失败：{format_ai_provider_error(exc)}。"
+                        "请不要声称已经查询了最新网页；如果问题依赖实时信息，请说明无法确认。"
+                    )
+                    yield f"data: {json.dumps({'type': 'web_search_notice', 'message': notice}, ensure_ascii=False)}\n\n"
 
-            async for chunk in stream_method(
-                messages=messages,
-                system_prompt=system_prompt,
-                temperature=0.7,
-            ):
-                collected_reply.append(chunk)
-                # SSE format: data: ...\n\n
-                data = json.dumps({"content": chunk}, ensure_ascii=False)
-                yield f"data: {data}\n\n"
+            try:
+                stream_method = (
+                    getattr(provider, "chat_stream_with_web_search")
+                    if use_hosted_web_search
+                    else provider.chat_stream
+                )
+                async for chunk in stream_method(
+                    messages=messages,
+                    system_prompt=effective_system_prompt,
+                    temperature=0.7,
+                ):
+                    collected_reply.append(chunk)
+                    # SSE format: data: ...\n\n
+                    data = json.dumps({"content": chunk}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
+            except Exception as exc:
+                if not (body.web_search_enabled and use_hosted_web_search and _is_hosted_web_search_unsupported(exc)):
+                    raise
+
+                logger.info("OpenAI 内置联网搜索不可用，切换到应用层网页搜索: %s", exc)
+                collected_reply.clear()
+                web_prompt, web_results = await _build_external_web_search_prompt(body.message)
+                fallback_system_prompt = f"{system_prompt or ''}{web_prompt}" if web_prompt else system_prompt
+                yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
+                async for chunk in provider.chat_stream(
+                    messages=messages,
+                    system_prompt=fallback_system_prompt,
+                    temperature=0.7,
+                ):
+                    collected_reply.append(chunk)
+                    data = json.dumps({"content": chunk}, ensure_ascii=False)
+                    yield f"data: {data}\n\n"
 
             # Detect progress feedback before persistence and final success.
             full_reply = "".join(collected_reply)
@@ -981,7 +1075,7 @@ async def chat_send(
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.exception("流式 AI 回复失败: conversation_id=%s user_id=%s", body.conversation_id, user_id)
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_data = json.dumps({"error": f"AI 回复失败：{format_ai_provider_error(e)}"}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
             return
@@ -1086,4 +1180,4 @@ async def chat_send_sync(
             detected_materials=merged_detected if merged_detected else None,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 回复失败：{str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI 回复失败：{format_ai_provider_error(e)}")

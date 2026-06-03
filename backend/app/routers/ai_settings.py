@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from typing import Optional, List
 import re
@@ -14,6 +15,7 @@ from app.models.ai_routing import AIRoutingSetting
 from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
+from app.utils.ai_errors import format_ai_provider_error
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
 
 router = APIRouter()
@@ -331,8 +333,6 @@ DEFAULT_PROVIDERS = [
     },
 ]
 
-DEFAULT_PROVIDER_NAMES = {p["provider_name"] for p in DEFAULT_PROVIDERS}
-
 ROUTING_SCENARIOS = {
     "chat_main": "主对话",
     "wrong_detect": "错题检测",
@@ -534,7 +534,7 @@ async def search_provider_models(
     try:
         discovered = await _fetch_model_catalog(row.provider_name, api_key, base_url, model_hint)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"搜索模型失败：{str(e)}")
+        raise HTTPException(status_code=400, detail=f"搜索模型失败：{format_ai_provider_error(e)}")
 
     models = _merge_available_models(row.available_models, discovered, model_hint)
     return ModelSearchResult(provider_name=row.provider_name, models=models)
@@ -546,10 +546,7 @@ async def delete_provider(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """删除自定义 AI 提供商"""
-    if provider_name in DEFAULT_PROVIDER_NAMES:
-        raise HTTPException(status_code=400, detail="内置提供商不可删除")
-
+    """删除当前用户的 AI 提供商。"""
     result = await db.execute(
         select(AIProviderSetting).where(
             AIProviderSetting.provider_name == provider_name,
@@ -560,19 +557,20 @@ async def delete_provider(
     if not row:
         raise HTTPException(status_code=404, detail=f"提供商 {provider_name} 不存在")
 
-    if row.is_active:
-        other_result = await db.execute(
-            select(AIProviderSetting)
-            .where(
-                AIProviderSetting.user_id == current_user.id,
-                AIProviderSetting.provider_name != provider_name,
-            )
-            .order_by(AIProviderSetting.id)
+    remaining_result = await db.execute(
+        select(AIProviderSetting)
+        .where(
+            AIProviderSetting.user_id == current_user.id,
+            AIProviderSetting.id != row.id,
         )
-        other = other_result.scalar_one_or_none()
-        if not other:
-            raise HTTPException(status_code=400, detail="不能删除唯一的激活提供商")
-        other.is_active = True
+        .order_by(AIProviderSetting.id)
+    )
+    remaining = remaining_result.scalars().all()
+
+    if remaining and (row.is_active or not any(provider.is_active for provider in remaining)):
+        replacement = next((provider for provider in remaining if provider.enabled), remaining[0])
+        for provider in remaining:
+            provider.is_active = provider.id == replacement.id
 
     routing_result = await db.execute(
         select(AIRoutingSetting).where(
@@ -583,8 +581,15 @@ async def delete_provider(
     for routing in routing_result.scalars().all():
         routing.provider_name = None
 
-    await db.delete(row)
-    await db.commit()
+    try:
+        # Persist route cleanup before deleting the referenced provider row. This
+        # avoids FK failures on databases that enforce referential integrity.
+        await db.flush()
+        await db.delete(row)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="删除失败：该供应商仍被其他配置引用")
     return {"ok": True}
 
 
@@ -664,7 +669,13 @@ async def test_provider(
             return TestResult(success=True, message=f"Chat 连接成功！模型回复：{response[:100]}", capability="chat", provider_name=row.provider_name, model=model)
         return TestResult(success=False, message="Chat 模型返回空响应", capability="chat", provider_name=row.provider_name, model=model)
     except Exception as e:
-        return TestResult(success=False, message=f"Chat 连接失败：{str(e)}", capability="chat", provider_name=row.provider_name, model=model)
+        return TestResult(
+            success=False,
+            message=f"Chat 连接失败：{format_ai_provider_error(e)}",
+            capability="chat",
+            provider_name=row.provider_name,
+            model=model,
+        )
 
 
 @router.get("/routing", response_model=List[RoutingOut])

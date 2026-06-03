@@ -24,6 +24,12 @@ export interface ProgressFeedback {
   emoji: string
 }
 
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet?: string
+}
+
 /**
  * 通过 SSE 流式发送消息，逐块回调 AI 回复内容
  */
@@ -45,6 +51,8 @@ export async function sendMessageStream(
   providerName?: string,
   model?: string,
   webSearchEnabled?: boolean,
+  onWebSearchResults?: (results: WebSearchResult[]) => void,
+  onWebSearchNotice?: (notice: string) => void,
 ): Promise<void> {
   try {
     const payload: any = {
@@ -133,6 +141,14 @@ export async function sendMessageStream(
           }
           if (parsed.type === 'progress_feedback' && parsed.feedback) {
             onProgressFeedback?.(parsed.feedback as ProgressFeedback)
+            continue
+          }
+          if (parsed.type === 'web_search_results') {
+            onWebSearchResults?.((parsed.results || []) as WebSearchResult[])
+            continue
+          }
+          if (parsed.type === 'web_search_notice' && parsed.message) {
+            onWebSearchNotice?.(String(parsed.message))
             continue
           }
           if (parsed.error) {

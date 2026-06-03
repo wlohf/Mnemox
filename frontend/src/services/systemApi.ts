@@ -20,6 +20,7 @@ export interface SystemUpdateInfo {
 export interface OnboardingStatus {
   has_content: boolean
   demo_seeded: boolean
+  auto_show_seen: boolean
   counts: Record<string, number>
   suggested_next_steps: string[]
   stage?: string
@@ -44,6 +45,10 @@ export async function checkSystemUpdate(): Promise<SystemUpdateInfo> {
 
 export async function getOnboardingStatus(): Promise<OnboardingStatus> {
   return await apiFetch<OnboardingStatus>('/api/system/onboarding-status')
+}
+
+export async function dismissOnboarding(): Promise<{ ok: boolean }> {
+  return await apiFetch<{ ok: boolean }>('/api/system/onboarding-dismissed', { method: 'POST' })
 }
 
 export async function seedDemoWorkspace(): Promise<DemoSeedResult> {

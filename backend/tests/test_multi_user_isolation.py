@@ -10,15 +10,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.database import Base
 from app.models.chat import ChatConversation
 from app.models.daily_plan import DailyPlan
+from app.models.ai_routing import AIRoutingSetting
 from app.models.ai_settings import AIProviderSetting
 from app.models.material import Material
+from app.models.memory import UserMemory
 from app.models.note import Note
 from app.models.user import User
-from app.routers.ai_settings import ProviderCreate, create_provider, list_providers
+from app.routers.ai_settings import ProviderCreate, create_provider, delete_provider, list_providers
 from app.routers.agent import AgentWriteExecuteRequest, execute_agent_write
 from app.routers.conversations import delete_conversation
 from app.routers.materials import delete_material, get_material, search_materials
 from app.routers.notes import delete_note, get_note
+from app.routers.system import dismiss_onboarding, get_onboarding_status
 from app.utils.secret_crypto import is_encrypted_secret
 
 
@@ -149,6 +152,110 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessionmaker() as session:
             intruder_providers = await list_providers(db=session, current_user=intruder)
             self.assertFalse(any(row.display_name == "Private OpenAI" for row in intruder_providers))
+
+    async def test_default_ai_provider_can_be_deleted_and_routes_are_cleared(self):
+        owner = await self._create_user("delete_default_owner")
+        async with self.sessionmaker() as session:
+            openai = AIProviderSetting(
+                user_id=owner.id,
+                provider_name="openai",
+                display_name="OpenAI",
+                api_key="",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4",
+                is_active=True,
+                enabled=True,
+            )
+            backup = AIProviderSetting(
+                user_id=owner.id,
+                provider_name="openai-backup",
+                display_name="OpenAI Backup",
+                api_key="",
+                base_url="https://proxy.example/v1",
+                model="gpt-4.1",
+                is_active=False,
+                enabled=True,
+            )
+            route = AIRoutingSetting(user_id=owner.id, scenario="chat_main", provider_name="openai")
+            session.add_all([openai, backup, route])
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            result = await delete_provider("openai", db=session, current_user=owner)
+            self.assertEqual(result, {"ok": True})
+
+        async with self.sessionmaker() as session:
+            providers = (
+                await session.execute(
+                    select(AIProviderSetting).where(AIProviderSetting.user_id == owner.id)
+                )
+            ).scalars().all()
+            self.assertEqual([provider.provider_name for provider in providers], ["openai-backup"])
+            self.assertTrue(providers[0].is_active)
+
+            route = (
+                await session.execute(
+                    select(AIRoutingSetting).where(AIRoutingSetting.user_id == owner.id)
+                )
+            ).scalar_one()
+            self.assertIsNone(route.provider_name)
+
+    async def test_delete_ai_provider_allows_deleting_last_provider(self):
+        owner = await self._create_user("delete_only_provider_owner")
+        async with self.sessionmaker() as session:
+            session.add(
+                AIProviderSetting(
+                    user_id=owner.id,
+                    provider_name="openai",
+                    display_name="OpenAI",
+                    api_key="",
+                    base_url="https://api.openai.com/v1",
+                    model="gpt-4",
+                    is_active=True,
+                    enabled=True,
+                )
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            result = await delete_provider("openai", db=session, current_user=owner)
+            self.assertEqual(result, {"ok": True})
+
+        async with self.sessionmaker() as session:
+            providers = (
+                await session.execute(
+                    select(AIProviderSetting).where(AIProviderSetting.user_id == owner.id)
+                )
+            ).scalars().all()
+            self.assertEqual(providers, [])
+
+    async def test_onboarding_auto_show_marker_is_persisted_per_user(self):
+        owner = await self._create_user("onboarding_owner")
+        other = await self._create_user("onboarding_other")
+
+        async with self.sessionmaker() as session:
+            owner_status = await get_onboarding_status(db=session, current_user=owner)
+            other_status = await get_onboarding_status(db=session, current_user=other)
+            self.assertFalse(owner_status.auto_show_seen)
+            self.assertFalse(other_status.auto_show_seen)
+
+        async with self.sessionmaker() as session:
+            result = await dismiss_onboarding(db=session, current_user=owner)
+            self.assertEqual(result, {"ok": True})
+
+        async with self.sessionmaker() as session:
+            owner_status = await get_onboarding_status(db=session, current_user=owner)
+            other_status = await get_onboarding_status(db=session, current_user=other)
+            self.assertTrue(owner_status.auto_show_seen)
+            self.assertFalse(other_status.auto_show_seen)
+
+            markers = (
+                await session.execute(
+                    select(UserMemory).where(UserMemory.memory_key == "onboarding_auto_shown")
+                )
+            ).scalars().all()
+            self.assertEqual(len(markers), 1)
+            self.assertEqual(markers[0].user_id, owner.id)
 
     async def test_agent_daily_plan_execute_cannot_modify_other_users_plan(self):
         owner = await self._create_user("plan_owner")

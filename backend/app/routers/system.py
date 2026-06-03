@@ -51,6 +51,7 @@ class UpdateInfoOut(BaseModel):
 class OnboardingStatusOut(BaseModel):
     has_content: bool
     demo_seeded: bool
+    auto_show_seen: bool
     counts: dict[str, int]
     suggested_next_steps: list[str]
     stage: str
@@ -66,6 +67,7 @@ class DemoSeedOut(BaseModel):
 
 
 _DEMO_MARKER_KEY = "demo_mnemox_seeded"
+_ONBOARDING_AUTO_SHOWN_KEY = "onboarding_auto_shown"
 _DEMO_MATERIAL_TITLE = "Demo：主动学习与记忆方法速览"
 
 
@@ -96,6 +98,32 @@ async def _is_demo_seeded(db: AsyncSession, user_id: int) -> bool:
         select(Material.id).where(Material.user_id == user_id, Material.title == _DEMO_MATERIAL_TITLE)
     )
     return material_result.scalar_one_or_none() is not None
+
+
+async def _has_system_memory(db: AsyncSession, user_id: int, key: str) -> bool:
+    result = await db.execute(
+        select(UserMemory.id).where(UserMemory.user_id == user_id, UserMemory.memory_key == key)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _mark_system_memory(db: AsyncSession, user_id: int, key: str, value: str | None = None) -> None:
+    if await _has_system_memory(db, user_id, key):
+        return
+    now = datetime.now(timezone.utc)
+    db.add(
+        UserMemory(
+            user_id=user_id,
+            memory_key=key,
+            memory_value=value or now.isoformat(),
+            category="system",
+            confidence=1.0,
+            status="ignored",
+            memory_type="semantic",
+            last_seen_at=now,
+            is_locked=1,
+        )
+    )
 
 
 def _build_onboarding_stage(counts: dict[str, int]) -> tuple[str, str, list[str], list[str]]:
@@ -262,18 +290,31 @@ async def get_onboarding_status(
     user_id = int(current_user.id)
     counts = await _get_onboarding_counts(db, user_id)
     demo_seeded = await _is_demo_seeded(db, user_id)
+    auto_show_seen = await _has_system_memory(db, user_id, _ONBOARDING_AUTO_SHOWN_KEY)
     has_content = any(counts[key] > 0 for key in ("materials", "goals", "notes", "pomodoros", "wrong_questions", "anki_cards"))
     stage, stage_label, completed_steps, steps = _build_onboarding_stage(counts)
 
     return OnboardingStatusOut(
         has_content=has_content,
         demo_seeded=demo_seeded,
+        auto_show_seen=auto_show_seen,
         counts=counts,
         suggested_next_steps=steps,
         stage=stage,
         stage_label=stage_label,
         completed_steps=completed_steps,
     )
+
+
+@router.post("/onboarding-dismissed")
+async def dismiss_onboarding(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """记录当前安装/用户已看过自动新手引导，避免每次启动都弹出。"""
+    await _mark_system_memory(db, int(current_user.id), _ONBOARDING_AUTO_SHOWN_KEY)
+    await db.commit()
+    return {"ok": True}
 
 
 @router.post("/demo-seed", response_model=DemoSeedOut)

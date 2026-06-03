@@ -19,10 +19,16 @@ const {
   getFrontendDistDir,
 } = require('./runtimePaths')
 const { createDesktopAuthStore } = require('./desktopAuth')
+const { createDesktopPreferenceStore } = require('./desktopPreferences')
 const { createReminderManager } = require('./desktopReminder')
 const { createTrayIcon } = require('./trayIcon')
 
 app.setName('Mnemox')
+
+const singleInstanceLock = app.requestSingleInstanceLock()
+if (!singleInstanceLock) {
+  app.quit()
+}
 
 let backendProcess = null
 let mainWindow = null
@@ -30,9 +36,12 @@ let backendPort = null
 let autoUpdateManager = null
 let updateSettingsPath = null
 let desktopAuthStore = null
+let desktopPreferenceStore = null
 let reminderManager = null
 let tray = null
 let isQuitting = false
+let startupReady = false
+let pendingShowMainWindow = false
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -158,6 +167,10 @@ function createWindow() {
 }
 
 function showMainWindow() {
+  if (!startupReady) {
+    pendingShowMainWindow = true
+    return
+  }
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow()
     return
@@ -245,6 +258,15 @@ function registerDesktopAuth() {
   ipcMain.handle('desktop-auth:clear-saved-login', () => desktopAuthStore.clearSavedLogin())
 }
 
+function registerDesktopPreferences() {
+  desktopPreferenceStore = createDesktopPreferenceStore({
+    fs,
+    preferencesPath: path.join(app.getPath('userData'), 'desktop-preferences.json'),
+  })
+  ipcMain.handle('desktop-preferences:get', (_event, key) => desktopPreferenceStore.get(key))
+  ipcMain.handle('desktop-preferences:set', (_event, key, value) => desktopPreferenceStore.set(key, value))
+}
+
 function registerDesktopReminder() {
   reminderManager = createReminderManager({
     notify: ({ title, body }) => {
@@ -293,39 +315,49 @@ function stopBackend() {
   backendProcess = null
 }
 
-app.whenReady().then(async () => {
-  try {
-    updateSettingsPath = path.join(app.getPath('userData'), 'desktop-update-settings.json')
-    await startBackend()
-    registerAutoUpdater()
-    registerDesktopAuth()
-    registerDesktopReminder()
-    createWindow()
-    createTraySafely()
-    void maybeAutoCheckForUpdates()
-  } catch (error) {
-    await dialog.showMessageBox({
-      type: 'error',
-      title: 'Mnemox 启动失败',
-      message: 'Mnemox 启动失败',
-      detail: String(error && error.stack ? error.stack : error),
-    })
+if (singleInstanceLock) {
+  app.whenReady().then(async () => {
+    try {
+      updateSettingsPath = path.join(app.getPath('userData'), 'desktop-update-settings.json')
+      await startBackend()
+      registerAutoUpdater()
+      registerDesktopAuth()
+      registerDesktopPreferences()
+      registerDesktopReminder()
+      createWindow()
+      startupReady = true
+      createTraySafely()
+      if (pendingShowMainWindow) {
+        pendingShowMainWindow = false
+        showMainWindow()
+      }
+      void maybeAutoCheckForUpdates()
+    } catch (error) {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Mnemox 启动失败',
+        message: 'Mnemox 启动失败',
+        detail: String(error && error.stack ? error.stack : error),
+      })
+      app.quit()
+    }
+  })
+
+  app.on('second-instance', showMainWindow)
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin' && tray) {
+      // Keep the tray process alive so desktop reminders still fire.
+      return
+    }
     app.quit()
-  }
-})
+  })
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin' && tray) {
-    // Keep the tray process alive so desktop reminders still fire.
-    return
-  }
-  app.quit()
-})
-
-app.on('before-quit', () => {
-  isQuitting = true
-  if (reminderManager) {
-    reminderManager.clearReminder()
-  }
-  stopBackend()
-})
+  app.on('before-quit', () => {
+    isQuitting = true
+    if (reminderManager) {
+      reminderManager.clearReminder()
+    }
+    stopBackend()
+  })
+}

@@ -206,16 +206,26 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         open={open}
         onCancel={onClose}
         footer={null}
-        title={<span><SettingOutlined style={{ marginRight: 8 }} />设置</span>}
-        width={520}
-        styles={{ body: { padding: '8px 0 0' } }}
+        title={null}
+        width={760}
+        className="mnemox-settings-modal"
+        styles={{ body: { padding: 0 } }}
       >
-        <Tabs
-          items={tabs}
-          size="small"
-          tabPosition="left"
-          style={{ minHeight: 320 }}
-        />
+        <div className="mnemox-settings-shell">
+          <div className="mnemox-settings-header">
+            <div>
+              <div className="mnemox-settings-eyebrow">Settings</div>
+              <h2>设置</h2>
+            </div>
+            <p>调整主题、模型、提示词和系统偏好。</p>
+          </div>
+          <Tabs
+            items={tabs}
+            size="small"
+            tabPosition="left"
+            className="mnemox-settings-tabs"
+          />
+        </div>
       </Modal>
       <AISettingsDrawer open={aiDrawerOpen} onClose={() => setAiDrawerOpen(false)} />
     </>
@@ -419,12 +429,12 @@ function SystemSettings() {
   const canDownloadUpdate = hasDownloadableUpdate(updateInfo, desktopUpdateState)
 
   const row = (label: string, desc: string, control: React.ReactNode) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-light)' }}>
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{label}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{desc}</div>
+    <div className="mnemox-settings-row">
+      <div className="mnemox-settings-row-copy">
+        <div>{label}</div>
+        <span>{desc}</span>
       </div>
-      {control}
+      <div className="mnemox-settings-row-control">{control}</div>
     </div>
   )
 

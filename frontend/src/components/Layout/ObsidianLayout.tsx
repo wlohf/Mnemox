@@ -25,9 +25,9 @@ import {
   Checkbox,
   Tabs,
   Select,
-  Spin,
   Tooltip,
   Space,
+  Dropdown,
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -47,13 +47,12 @@ import {
   PictureOutlined,
   CloseCircleFilled,
   LogoutOutlined,
-  UserOutlined,
   CheckSquareOutlined,
   MenuOutlined,
   DoubleLeftOutlined,
   DoubleRightOutlined,
   SendOutlined,
-  GlobalOutlined,
+  EditOutlined,
 } from '@ant-design/icons'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
@@ -87,11 +86,11 @@ import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { BackendLoadingOverlay } from './BackendLoadingOverlay'
 import { GlobalNavRail } from './GlobalNavRail'
-import type { MarkdownLiveEditorHandle } from '../MarkdownLiveEditor'
-import { getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
+import { dismissOnboarding, getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
 import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
 import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
 import { getProviderModels, getSelectableChatProviders } from './chatModelOptions'
+import { getDesktopPreference, setDesktopPreference } from '../../services/desktopPreferences'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
@@ -101,8 +100,63 @@ const SettingsModal = lazy(() => import('../SettingsModal').then(m => ({ default
 const StatsModal = lazy(() => import('./StatsModal').then(m => ({ default: m.StatsModal })))
 const MotivationModal = lazy(() => import('./MotivationModal').then(m => ({ default: m.MotivationModal })))
 const ProjectSettingsModal = lazy(() => import('../ProjectSettingsModal').then(m => ({ default: m.ProjectSettingsModal })))
-const MarkdownLiveEditor = lazy(() => import('../MarkdownLiveEditor').then(m => ({ default: m.MarkdownLiveEditor })))
 const OnboardingModal = lazy(() => import('../OnboardingModal').then(m => ({ default: m.OnboardingModal })))
+
+const LEGACY_ONBOARDING_DISMISSED_PREFIX = 'mnemox_onboarding_dismissed_'
+const DEFAULT_RIGHT_CARD_ORDER = ['current', 'review', 'progress', 'pomodoro', 'calendar', 'motivation']
+const RIGHT_SIDEBAR_CARDS = [
+  { id: 'motivation', label: '每日格言' },
+  { id: 'calendar', label: '今天与计划' },
+  { id: 'current', label: '近期任务' },
+  { id: 'review', label: '复习与错题' },
+  { id: 'progress', label: '学习数据' },
+  { id: 'pomodoro', label: '番茄工作法' },
+]
+const RIGHT_CARD_ID_SET = new Set(RIGHT_SIDEBAR_CARDS.map(card => card.id))
+const RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY = 'layout.rightSidebar'
+
+interface RightSidebarLayoutPreference {
+  cardOrder: string[]
+  visibleCards: string[]
+  collapsed: boolean
+  width: number
+}
+
+function normalizeRightCardOrder(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return DEFAULT_RIGHT_CARD_ORDER
+  const knownIds = ids.filter((id, index) => typeof id === 'string' && RIGHT_CARD_ID_SET.has(id) && ids.indexOf(id) === index)
+  const missingIds = DEFAULT_RIGHT_CARD_ORDER.filter(id => !knownIds.includes(id))
+  return [...knownIds, ...missingIds]
+}
+
+function normalizeRightVisibleCards(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return DEFAULT_RIGHT_CARD_ORDER
+  return ids.filter((id, index) => typeof id === 'string' && RIGHT_CARD_ID_SET.has(id) && ids.indexOf(id) === index)
+}
+
+function clampRightSidebarWidth(value: unknown): number {
+  const width = Number(value)
+  if (!Number.isFinite(width)) return 320
+  return Math.min(480, Math.max(200, width))
+}
+
+function readJsonLocalStorage(key: string): unknown {
+  try {
+    const saved = localStorage.getItem(key)
+    return saved ? JSON.parse(saved) : null
+  } catch {
+    return null
+  }
+}
+
+function readBooleanLocalStorage(key: string, fallback: boolean): boolean {
+  try {
+    const saved = localStorage.getItem(key)
+    return saved === null ? fallback : saved === 'true'
+  } catch {
+    return fallback
+  }
+}
 
 
 interface PomodoroConfig {
@@ -150,6 +204,28 @@ interface WrongQuestionPreview {
   mastery_status: 'not_mastered' | 'partial' | 'mastered'
 }
 
+interface TodayTaskItem {
+  id?: number
+  title: string
+  status: string
+  task_type?: string
+  source: 'dashboard' | 'plan'
+}
+
+const TASK_STATUS_LABEL: Record<string, string> = {
+  pending: '待办',
+  in_progress: '进行中',
+  completed: '已完成',
+}
+
+const TASK_TYPE_LABEL: Record<string, string> = {
+  learn: '学习',
+  review: '复习',
+  practice: '练习',
+  output: '输出',
+  milestone: '里程碑',
+}
+
 interface QuoteNoteDraft {
   sourceContent: string
   title: string
@@ -187,7 +263,6 @@ export function ObsidianLayout() {
     resumeTimer,
     completeTimer,
     resetTimer,
-    tick,
     getStats,
     getTaskDistribution,
     getCumulativeStats,
@@ -211,8 +286,6 @@ export function ObsidianLayout() {
     return saved === null ? true : saved === 'true'
   })
   const [statsRange, setStatsRange] = useState<DateRange>('week')
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const timerNotifiedRef = useRef(false)
 
   // 获取统计数据
   const stats = getStats()
@@ -242,12 +315,8 @@ export function ObsidianLayout() {
 
   // 日历相关（计划持久化到后端）
   const [calendarExpanded, setCalendarExpanded] = useState(false)
-  const [selectedDate, setSelectedDate] = useState<Dayjs | null>(null)
-  const [showPlanModal, setShowPlanModal] = useState(false)
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
-  const [currentPlan, setCurrentPlan] = useState('')
   const [, setWeeklyPlans] = useState<DailyPlan[]>([])
-  const planEditorRef = useRef<MarkdownLiveEditorHandle | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [motivationQuote, setMotivationQuote] = useState<MotivationQuote | null>(null)
   const [refreshOffset, setRefreshOffset] = useState(0)
@@ -282,50 +351,18 @@ export function ObsidianLayout() {
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
   }, [])
-  const DEFAULT_CARD_ORDER = ['current', 'review', 'progress', 'pomodoro', 'calendar', 'motivation']
-  const ALL_CARDS = [
-    { id: 'motivation', label: '每日格言' },
-    { id: 'calendar', label: '今天与计划' },
-    { id: 'current', label: '近期任务' },
-    { id: 'review', label: '复习与错题' },
-    { id: 'progress', label: '学习数据' },
-    { id: 'pomodoro', label: '番茄工作法' }
-  ]
-  const CARD_ID_SET = new Set(ALL_CARDS.map(card => card.id))
-  const normalizeCardOrder = (ids: string[]) => {
-    const knownIds = ids.filter((id, index) => CARD_ID_SET.has(id) && ids.indexOf(id) === index)
-    const missingIds = DEFAULT_CARD_ORDER.filter(id => !knownIds.includes(id))
-    return [...knownIds, ...missingIds]
-  }
-  const normalizeVisibleCards = (ids: string[]) => ids.filter((id, index) => CARD_ID_SET.has(id) && ids.indexOf(id) === index)
-  const [cardOrder, setCardOrder] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('right_card_order')
-      if (saved) {
-        const parsed = JSON.parse(saved) as string[]
-        if (parsed.join(',') !== 'motivation,calendar,current,review,progress,pomodoro') return normalizeCardOrder(parsed)
-      }
-    } catch { /* ignore */ }
-    return DEFAULT_CARD_ORDER
-  })
-  const [visibleCards, setVisibleCards] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('right_visible_cards')
-      if (saved) return normalizeVisibleCards(JSON.parse(saved) as string[])
-    } catch { /* ignore */ }
-    return DEFAULT_CARD_ORDER
-  })
+  const [rightSidebarPreferencesReady, setRightSidebarPreferencesReady] = useState(false)
+  const [cardOrder, setCardOrder] = useState<string[]>(() => normalizeRightCardOrder(readJsonLocalStorage('right_card_order')))
+  const [visibleCards, setVisibleCards] = useState<string[]>(() => normalizeRightVisibleCards(readJsonLocalStorage('right_visible_cards')))
   const [sortMode, setSortMode] = useState(false)
   const [customizeOpen, setCustomizeOpen] = useState(false)
   const dragCardRef = useRef<string | null>(null)
   const updateCardVisibility = (cardId: string, checked: boolean) => {
-    setVisibleCards(prev => {
-      const next = checked
-        ? normalizeVisibleCards([...prev, cardId])
+    setVisibleCards(prev => (
+      checked
+        ? normalizeRightVisibleCards([...prev, cardId])
         : prev.filter(id => id !== cardId)
-      localStorage.setItem('right_visible_cards', JSON.stringify(next))
-      return next
-    })
+    ))
   }
 
   // Chat store
@@ -359,7 +396,7 @@ export function ObsidianLayout() {
   const [agentWriteExecuting, setAgentWriteExecuting] = useState(false)
   const [chatProviders, setChatProviders] = useState<AIProvider[]>([])
   const [selectedChatModel, setSelectedChatModel] = useState<string>(() => localStorage.getItem('chat_model_override') || '__route__')
-  const [webSearchEnabled, setWebSearchEnabled] = useState(() => localStorage.getItem('chat_web_search_enabled') === 'true')
+  const webSearchEnabled = true
   const [quoteNoteDraft, setQuoteNoteDraft] = useState<QuoteNoteDraft | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -377,7 +414,7 @@ export function ObsidianLayout() {
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('layout_left_collapsed') === 'true')
   const [leftExpandTarget, setLeftExpandTarget] = useState<'default' | 'search' | 'categories' | 'history' | null>(null)
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false)
-  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('layout_right_collapsed') === 'true')
+  const [rightCollapsed, setRightCollapsed] = useState(() => readBooleanLocalStorage('layout_right_collapsed', false))
 
   // Draggable panel splitter state
   const [leftWidth, setLeftWidth] = useState<number>(() => {
@@ -386,7 +423,7 @@ export function ObsidianLayout() {
   })
   const [rightWidth, setRightWidth] = useState<number>(() => {
     const saved = localStorage.getItem('layout_right_width')
-    return saved ? Number(saved) : 320
+    return clampRightSidebarWidth(saved)
   })
   const [dragging, setDragging] = useState<'left' | 'right' | null>(null)
   const effectiveLeftWidth = leftCollapsed ? 72 : leftWidth
@@ -425,6 +462,7 @@ export function ObsidianLayout() {
       return true
     }
   })
+  const hasChatContent = chatMessages.length > 0 || streamingContent.trim().length > 0
 
   // 加载资料列表
   const loadMaterials = useCallback(async () => {
@@ -683,6 +721,47 @@ export function ObsidianLayout() {
   }, [rightCollapsed])
 
   useEffect(() => {
+    let cancelled = false
+    const loadRightSidebarPreferences = async () => {
+      const saved = await getDesktopPreference<Partial<RightSidebarLayoutPreference>>(RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY)
+      if (cancelled) return
+
+      if (saved) {
+        setCardOrder(normalizeRightCardOrder(saved.cardOrder))
+        setVisibleCards(normalizeRightVisibleCards(saved.visibleCards))
+        setRightCollapsed(saved.collapsed === true)
+        setRightWidth(clampRightSidebarWidth(saved.width))
+      }
+      setRightSidebarPreferencesReady(true)
+    }
+
+    void loadRightSidebarPreferences()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!rightSidebarPreferencesReady) return
+
+    try {
+      localStorage.setItem('right_card_order', JSON.stringify(cardOrder))
+      localStorage.setItem('right_visible_cards', JSON.stringify(visibleCards))
+      localStorage.setItem('layout_right_collapsed', String(rightCollapsed))
+      localStorage.setItem('layout_right_width', String(rightWidth))
+    } catch {
+      // ignore
+    }
+
+    void setDesktopPreference<RightSidebarLayoutPreference>(RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY, {
+      cardOrder,
+      visibleCards,
+      collapsed: rightCollapsed,
+      width: rightWidth,
+    })
+  }, [cardOrder, visibleCards, rightCollapsed, rightSidebarPreferencesReady, rightWidth])
+
+  useEffect(() => {
     try {
       localStorage.setItem('materials_project_only', String(projectMaterialsOnly))
     } catch {
@@ -828,10 +907,6 @@ export function ObsidianLayout() {
   }, [selectedChatModel])
 
   useEffect(() => {
-    localStorage.setItem('chat_web_search_enabled', String(webSearchEnabled))
-  }, [webSearchEnabled])
-
-  useEffect(() => {
     if (chatProviders.length === 0) return
     if (!chatModelValues.has(selectedChatModel)) {
       setSelectedChatModel('__route__')
@@ -845,9 +920,21 @@ export function ObsidianLayout() {
       const status = await getOnboardingStatus()
       if (cancelled || !status) return
       setOnboardingStatus(status)
-      const dismissedKey = `mnemox_onboarding_dismissed_${user.id}`
-      const dismissed = localStorage.getItem(dismissedKey) === 'true'
-      if (!dismissed && status.stage !== 'loop_ready') {
+      const legacyDismissed = localStorage.getItem(`${LEGACY_ONBOARDING_DISMISSED_PREFIX}${user.id}`) === 'true'
+      if ((legacyDismissed || status.stage === 'loop_ready') && !status.auto_show_seen) {
+        try {
+          await dismissOnboarding()
+        } catch {
+          // Best effort: the old local marker or completed workspace already prevents auto-opening here.
+        }
+        return
+      }
+      if (!status.auto_show_seen && status.stage !== 'loop_ready') {
+        try {
+          await dismissOnboarding()
+        } catch {
+          // Still show the guide if persistence fails; the next successful close will retry.
+        }
         setShowOnboarding(true)
       }
     }
@@ -859,10 +946,15 @@ export function ObsidianLayout() {
     localStorage.setItem('learner_view_mode', beginnerMode ? 'beginner' : 'advanced')
   }, [beginnerMode])
 
-  const closeOnboarding = () => {
+  const markOnboardingDismissed = () => {
     if (user?.id) {
-      localStorage.setItem(`mnemox_onboarding_dismissed_${user.id}`, 'true')
+      localStorage.setItem(`${LEGACY_ONBOARDING_DISMISSED_PREFIX}${user.id}`, 'true')
     }
+    void dismissOnboarding().catch(() => undefined)
+  }
+
+  const closeOnboarding = () => {
+    markOnboardingDismissed()
     setShowOnboarding(false)
   }
 
@@ -895,6 +987,7 @@ export function ObsidianLayout() {
   }
 
   const openOnboardingMaterials = () => {
+    markOnboardingDismissed()
     setLeftCollapsed(false)
     setLeftSidebarTab('materials')
     setShowOnboarding(false)
@@ -1170,6 +1263,16 @@ export function ObsidianLayout() {
       selectedChatModelConfig.providerName,
       selectedChatModelConfig.model,
       webSearchEnabled,
+      (results) => {
+        if (results.length > 0) {
+          message.info(`已检索到 ${results.length} 条网页结果，并作为上下文提供给模型`)
+        } else {
+          message.warning('没有检索到可用网页结果，已继续普通聊天')
+        }
+      },
+      (notice) => {
+        message.warning(notice)
+      },
     )
   }
 
@@ -1271,8 +1374,6 @@ export function ObsidianLayout() {
     const onMouseUp = () => {
       if (dragging === 'left') {
         localStorage.setItem('layout_left_width', String(leftWidthRef.current))
-      } else {
-        localStorage.setItem('layout_right_width', String(rightWidthRef.current))
       }
       setDragging(null)
     }
@@ -1481,54 +1582,6 @@ export function ObsidianLayout() {
       setQuoteNoteDraft((prev) => prev ? { ...prev, saving: false } : prev)
     }
   }
-
-  // 番茄钟倒计时
-  useEffect(() => {
-    // Clear any existing interval first
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-
-    if (isRunning && remainingTime > 0) {
-      timerNotifiedRef.current = false
-      timerRef.current = setInterval(() => {
-        tick()
-      }, 1000)
-    } else if (isRunning && remainingTime <= 0 && !timerNotifiedRef.current) {
-      timerNotifiedRef.current = true
-      notification.success({
-        message: '番茄钟完成！',
-        description: `恭喜完成任务：${currentTask}`,
-        duration: 0,
-      })
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('番茄钟完成！', {
-          body: `任务：${currentTask}`,
-          icon: '/favicon.ico',
-        })
-      }
-    }
-
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-  }, [isRunning, remainingTime, tick, currentTask])
-
-  // 标签页可见性变化时同步倒计时（避免后台节流导致的时间不准）
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden && isRunning) {
-        tick()
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [isRunning, tick])
 
   // 请求通知权限
   useEffect(() => {
@@ -1773,50 +1826,10 @@ export function ObsidianLayout() {
   }
 
   // 日历相关
-  const onDateSelect = (date: Dayjs) => {
-    setSelectedDate(date)
-    const dateStr = date.format('YYYY-MM-DD')
-      ; (async () => {
-        try {
-          const j = await apiFetch<any>(`/api/plans/${dateStr}`)
-          setCurrentPlan(j.content || '')
-          setDailyPlans((prev) => ({ ...prev, [dateStr]: j.content || '' }))
-        } catch {
-          setCurrentPlan(dailyPlans[dateStr] || '')
-        } finally {
-          setShowPlanModal(true)
-        }
-      })()
+  const openPlanDocument = (date: Dayjs | string) => {
+    const dateStr = typeof date === 'string' ? date : date.format('YYYY-MM-DD')
+    navigate(`/plans?date=${dateStr}`)
   }
-
-  const savePlan = () => {
-    if (selectedDate) {
-      const dateStr = selectedDate.format('YYYY-MM-DD')
-        ; (async () => {
-          try {
-            await apiFetch(`/api/plans/${dateStr}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ content: currentPlan }),
-            })
-            setDailyPlans((prev) => ({ ...prev, [dateStr]: currentPlan }))
-            message.success('计划已保存')
-            setShowPlanModal(false)
-            await loadWeeklyPlans()
-          } catch (e: any) {
-            message.error(e?.message || '保存失败（请确认后端已启动）')
-          }
-        })()
-    }
-  }
-
-  useEffect(() => {
-    if (!showPlanModal) return
-    const timer = window.setTimeout(() => {
-      planEditorRef.current?.focus()
-    }, 100)
-    return () => window.clearTimeout(timer)
-  }, [showPlanModal])
 
   const renderDateBadge = (value: Dayjs) => {
     const dateStr = value.format('YYYY-MM-DD')
@@ -1825,6 +1838,45 @@ export function ObsidianLayout() {
       <Badge status="success" text="" />
     ) : null
   }
+
+  const todayTaskItems = useMemo<TodayTaskItem[]>(() => {
+    const today = dayjs().format('YYYY-MM-DD')
+    const seen = new Set<string>()
+    const result: TodayTaskItem[] = []
+
+    for (const task of dashboardData?.today_tasks || []) {
+      const title = String(task.title || '').trim()
+      if (!title) continue
+      const key = title.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({
+        id: task.id,
+        title,
+        status: task.status || 'pending',
+        task_type: task.task_type,
+        source: 'dashboard',
+      })
+    }
+
+    const planContent = dailyPlans[today] || ''
+    for (const line of planContent.split('\n')) {
+      const match = line.match(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.+?)\s*$/)
+      if (!match) continue
+      const title = match[2].replace(/[*_`#]/g, '').trim()
+      if (!title) continue
+      const key = title.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({
+        title,
+        status: match[1].toLowerCase() === 'x' ? 'completed' : 'pending',
+        source: 'plan',
+      })
+    }
+
+    return result.slice(0, 8)
+  }, [dashboardData?.today_tasks, dailyPlans])
 
   // Feature 1: Show loading overlay while waiting for backend
   if (!backendReady) {
@@ -1842,7 +1894,6 @@ export function ObsidianLayout() {
         isPaused={isPaused}
         remainingTimeLabel={formatTime(remainingTime)}
         onNavigate={navigate}
-        onOpenPomodoro={() => setShowPomodoroModal(true)}
         onOpenOnboarding={() => setShowOnboarding(true)}
         onOpenSettings={() => setShowSettings(true)}
         beginnerMode={beginnerMode}
@@ -2270,65 +2321,57 @@ export function ObsidianLayout() {
             ]}
           />
         )}
-        {/* User info + logout */}
-        <div style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: '10px 14px',
-          borderTop: '1px solid var(--border-color)',
-          background: 'var(--bg-secondary)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-        }}>
-          {leftCollapsed ? (
-            <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-              <Tooltip title={user?.username || '用户'} placement="right" mouseEnterDelay={0.25}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<UserOutlined />}
-                  onClick={() => setLeftCollapsed(false)}
-                  style={{ color: 'var(--text-tertiary)' }}
-                />
-              </Tooltip>
-            </div>
-          ) : (
-            <>
-              <span style={{ color: 'var(--text-secondary)', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: 'var(--radius-full)',
-                  background: 'linear-gradient(135deg, var(--accent-200), var(--primary-200))',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: 'var(--accent-700)',
-                  flexShrink: 0,
-                }}>
-                  {(user?.username || '用')[0]}
-                </div>
-                {user?.username || ''}
-              </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <SyncStatusIndicator />
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<LogoutOutlined />}
-                  onClick={() => { logout(); navigate('/login') }}
-                  style={{ color: 'var(--text-tertiary)' }}
-                  title="退出登录"
-                />
-              </span>
-            </>
-          )}
+        <div className="mnemox-account-dock">
+          <Dropdown
+            trigger={['click']}
+            placement={leftCollapsed ? 'topRight' : 'topLeft'}
+            menu={{
+              items: [
+                {
+                  key: 'settings',
+                  icon: <SettingOutlined />,
+                  label: '设置',
+                },
+                { type: 'divider' },
+                {
+                  key: 'logout',
+                  danger: true,
+                  icon: <LogoutOutlined />,
+                  label: '退出登录',
+                },
+              ],
+              onClick: ({ key }) => {
+                if (key === 'settings') {
+                  setShowSettings(true)
+                  return
+                }
+                if (key === 'logout') {
+                  logout()
+                  navigate('/login')
+                }
+              },
+            }}
+          >
+            <button
+              type="button"
+              className={`mnemox-account-button${leftCollapsed ? ' is-collapsed' : ''}`}
+              aria-label="账户和设置"
+            >
+              <span className="mnemox-account-avatar">{(user?.username || '用')[0]}</span>
+              {!leftCollapsed && (
+                <>
+                  <span className="mnemox-account-meta">
+                    <strong>{user?.username || '用户'}</strong>
+                    <small>账户、同步与设置</small>
+                  </span>
+                  <span className="mnemox-account-status">
+                    <SyncStatusIndicator />
+                    <SettingOutlined />
+                  </span>
+                </>
+              )}
+            </button>
+          </Dropdown>
         </div>
       </Sider>
 
@@ -2368,11 +2411,14 @@ export function ObsidianLayout() {
         style={{
           marginLeft: effectiveLeftWidth + 64,
           marginRight: effectiveRightWidth,
+          height: '100vh',
+          minHeight: 0,
+          overflow: 'hidden',
           background: 'transparent',
           transition: 'margin var(--duration-normal) var(--ease-out)',
         }}
       >
-        <Content style={{ padding: '0', background: 'transparent', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <Content style={{ padding: '0', background: 'transparent', height: '100vh', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <div className={`mnemox-chat-frame${isChatEmpty ? ' is-empty' : ' has-messages'}`}>
             {/* Top toolbar removed, replaced by PageShell global nav */}
             <div style={{ height: 16 }} />
@@ -2392,11 +2438,8 @@ export function ObsidianLayout() {
                     if (result) {
                       message.success(`已生成今日计划，共 ${result.item_count} 项`)
                       await loadWeeklyPlans()
-                      // Open the plan modal for today
-                      setSelectedDate(dayjs())
-                      setCurrentPlan(result.content)
                       setDailyPlans((prev) => ({ ...prev, [today]: result.content }))
-                      setShowPlanModal(true)
+                      openPlanDocument(today)
                     } else {
                       message.warning('生成计划失败')
                     }
@@ -2633,7 +2676,7 @@ export function ObsidianLayout() {
                   }}
                 />
                 <div className="mnemox-input-actions">
-                  {!autoScrollEnabled && (
+                  {!autoScrollEnabled && hasChatContent && (
                     <Button
                       size="middle"
                       onClick={() => {
@@ -2655,16 +2698,6 @@ export function ObsidianLayout() {
                     popupMatchSelectWidth={false}
                     aria-label="聊天模型"
                   />
-                  <Tooltip title="使用 OpenAI 内置网页搜索">
-                    <Switch
-                      size="small"
-                      checked={webSearchEnabled}
-                      onChange={setWebSearchEnabled}
-                      checkedChildren={<GlobalOutlined />}
-                      unCheckedChildren={<GlobalOutlined />}
-                      aria-label="联网搜索"
-                    />
-                  </Tooltip>
                   {chatLoading ? (
                     <Button
                       type="primary"
@@ -2788,7 +2821,7 @@ export function ObsidianLayout() {
                   {sortMode ? '完成排序' : '开启排序模式'}
                 </Button>
                 <div style={{ height: 1, background: 'var(--border-light)', margin: '4px 0 6px' }} />
-                {ALL_CARDS.map(card => (
+                {RIGHT_SIDEBAR_CARDS.map(card => (
                   <div
                     key={card.id}
                     style={{
@@ -2826,7 +2859,6 @@ export function ObsidianLayout() {
                 if (fi < 0 || ti < 0) return prev
                 next.splice(fi, 1)
                 next.splice(ti, 0, from)
-                localStorage.setItem('right_card_order', JSON.stringify(next))
                 return next
               })
               dragCardRef.current = null
@@ -2872,7 +2904,7 @@ export function ObsidianLayout() {
                 <div className="compact-calendar">
                   <Calendar
                     fullscreen={false}
-                    onSelect={onDateSelect}
+                    onSelect={openPlanDocument}
                     cellRender={(current, info) => (
                       info.type === 'date' ? renderDateBadge(current) : null
                     )}
@@ -2887,8 +2919,76 @@ export function ObsidianLayout() {
 
           if (cardId === 'current') return (
             <div key="current" {...dragProps}>
-            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>当前学习</span>} style={{ marginBottom: 12 }}>
-              <p style={{ color: 'var(--text-tertiary)', fontSize: 13, margin: 0 }}>暂未选择章节</p>
+            <Card
+              size="small"
+              title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日任务</span>}
+              extra={<Button type="link" size="small" icon={<EditOutlined />} onClick={() => openPlanDocument(dayjs())} style={{ fontSize: 12 }}>编辑</Button>}
+              style={{ marginBottom: 12 }}
+            >
+              <List
+                size="small"
+                dataSource={todayTaskItems}
+                locale={{
+                  emptyText: (
+                    <button
+                      type="button"
+                      onClick={() => openPlanDocument(dayjs())}
+                      style={{
+                        width: '100%',
+                        border: '1px dashed var(--border-color)',
+                        borderRadius: 8,
+                        padding: '12px 10px',
+                        background: 'transparent',
+                        color: 'var(--text-tertiary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      今天还没有具体任务，点击新建计划
+                    </button>
+                  ),
+                }}
+                renderItem={(task) => {
+                  const done = task.status === 'completed'
+                  return (
+                    <List.Item style={{ padding: '7px 0', cursor: 'pointer' }} onClick={() => openPlanDocument(dayjs())}>
+                      <div style={{ width: '100%', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                          <span
+                            style={{
+                              flex: '0 0 auto',
+                              width: 16,
+                              height: 16,
+                              borderRadius: 4,
+                              border: `1px solid ${done ? 'var(--success)' : 'var(--border-color)'}`,
+                              background: done ? 'var(--success)' : 'transparent',
+                              marginTop: 2,
+                            }}
+                          />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: done ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                                textDecoration: done ? 'line-through' : 'none',
+                                lineHeight: 1.45,
+                              }}
+                            >
+                              {task.title}
+                            </div>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                              <Tag style={{ margin: 0, fontSize: 10 }}>{TASK_STATUS_LABEL[task.status] || task.status || '待办'}</Tag>
+                              {task.task_type && <Tag style={{ margin: 0, fontSize: 10 }}>{TASK_TYPE_LABEL[task.task_type] || task.task_type}</Tag>}
+                              <Tag color={task.source === 'dashboard' ? 'blue' : 'default'} style={{ margin: 0, fontSize: 10 }}>
+                                {task.source === 'dashboard' ? '任务' : '计划'}
+                              </Tag>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </List.Item>
+                  )
+                }}
+              />
             </Card>
             </div>
           )
@@ -3073,9 +3173,11 @@ export function ObsidianLayout() {
         open={showPomodoroModal}
         onOk={() => {
           setBreakDuration(pomodoroConfig.breakDuration)
-          resetTimer(pomodoroConfig.duration)
+          if (!isRunning && !isPaused) {
+            resetTimer(pomodoroConfig.duration)
+          }
           setShowPomodoroModal(false)
-          message.success('设置成功')
+          message.success(isRunning || isPaused ? '设置已保存，当前计时保持不变' : '设置成功')
         }}
         onCancel={() => setShowPomodoroModal(false)}
       >
@@ -3181,27 +3283,6 @@ export function ObsidianLayout() {
             确认
           </Button>
         </div>
-      </Modal>
-
-      {/* 日程计划弹窗 */}
-      <Modal
-        title={`${selectedDate?.format('YYYY年MM月DD日')} 的计划`}
-        open={showPlanModal}
-        onOk={savePlan}
-        onCancel={() => { setShowPlanModal(false) }}
-        width={600}
-      >
-        {showPlanModal && (
-          <Suspense fallback={<Spin />}>
-            <MarkdownLiveEditor
-              ref={planEditorRef}
-              value={currentPlan}
-              onChange={setCurrentPlan}
-              height="420px"
-              placeholder={`输入今日计划或学习记录...\n例如：\n- [ ] 复习第一章\n- [ ] 完成10道练习题\n- [ ] 整理笔记`}
-            />
-          </Suspense>
-        )}
       </Modal>
 
       {/* 今日激励管理弹窗 */}

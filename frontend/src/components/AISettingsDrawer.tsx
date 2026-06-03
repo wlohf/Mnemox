@@ -191,7 +191,6 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
   }
 
   const activeProvider = providers.find((p) => p.is_active)
-  const builtInProviders = new Set(['deepseek', 'openai', 'claude', 'gemini', 'qwen'])
   const providerBasePlaceholder =
     newProvider.provider_type === 'anthropic'
       ? 'https://api.ikuncode.cc/v1/messages'
@@ -569,21 +568,28 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
   return (
     <Drawer
-      title="AI 提供商设置"
+      title={null}
       placement="right"
-      width={640}
+      width={560}
       open={open}
       onClose={onClose}
+      className="mnemox-ai-settings-drawer"
     >
+      <div className="mnemox-ai-drawer-header">
+        <div>
+          <div className="mnemox-settings-eyebrow">Model routing</div>
+          <h2>AI 提供商设置</h2>
+        </div>
+        <p>管理默认模型、场景路由、RAG Embedding 和自定义中转。</p>
+      </div>
       {loading ? (
         <div style={{ textAlign: 'center', padding: '60px 0' }}>
           <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} />} />
         </div>
       ) : (
         <>
-          {/* 激活提供商选择 */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
+          <div className="mnemox-ai-section mnemox-ai-section-primary">
+            <div className="mnemox-ai-field-label">
               默认提供商（路由未指定时使用）
             </div>
             <Select
@@ -599,7 +605,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
           <Collapse
             size="small"
-            style={{ marginBottom: 12 }}
+            className="mnemox-ai-collapse"
             items={[{
               key: 'routing',
               label: '按场景路由',
@@ -648,7 +654,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
           <Collapse
             size="small"
-            style={{ marginBottom: 12 }}
+            className="mnemox-ai-collapse"
             items={[{
               key: 'create-provider',
               label: '添加自定义提供商',
@@ -792,7 +798,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           {/* RAG 知识库 Embedding 设置 */}
           <Collapse
             size="small"
-            style={{ marginBottom: 12 }}
+            className="mnemox-ai-collapse"
             items={[{
               key: 'rag',
               label: (
@@ -898,7 +904,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
             </div>
             </div>
 
-            <div style={{ marginBottom: 12 }}>
+            <div className="mnemox-ai-collapse">
               <Space>
                 <Button
                   type="primary"
@@ -940,7 +946,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           <Collapse
             size="small"
             defaultActiveKey={['providers']}
-            style={{ marginBottom: 12 }}
+            className="mnemox-ai-collapse"
             items={[{
               key: 'providers',
               label: '供应商配置',
@@ -949,19 +955,13 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           {providers.map((provider) => {
             const isExpanded = expandedProvider === provider.provider_name
             const edit = editStates[provider.provider_name]
-            const isCustom = !builtInProviders.has(provider.provider_name)
             const feedback = providerFeedback[provider.provider_name]
 
             return (
               <Card
                 key={provider.provider_name}
                 size="small"
-                style={{
-                  marginBottom: 12,
-                  border: provider.is_active
-                    ? '1px solid #1890ff'
-                    : '1px solid #f0f0f0',
-                }}
+                className={`mnemox-provider-card${provider.is_active ? ' is-active' : ''}`}
                 bodyStyle={{
                   display: isExpanded ? undefined : 'none',
                 }}
@@ -994,7 +994,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               >
                 {isExpanded && edit && (
                   <div>
-                    <div style={{ marginBottom: 12 }}>
+                    <div className="mnemox-ai-collapse">
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                         API Key
                         {provider.api_key_masked && (
@@ -1040,7 +1040,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       )}
                     </div>
 
-                    <div style={{ marginBottom: 12 }}>
+                    <div className="mnemox-ai-collapse">
                       <Space>
                         <Switch
                           checked={provider.enabled}
@@ -1066,7 +1066,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       </Space>
                     </div>
 
-                    <div style={{ marginBottom: 12 }}>
+                    <div className="mnemox-ai-collapse">
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                         Base URL
                       </div>
@@ -1079,7 +1079,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       />
                     </div>
 
-                    <div style={{ marginBottom: 12 }}>
+                    <div className="mnemox-ai-collapse">
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                         默认模型（不限制对话切换）
                       </div>
@@ -1140,14 +1140,12 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       >
                         测试当前配置
                       </Button>
-                      {isCustom && (
-                        <Button
-                          danger
-                          onClick={() => void handleDeleteProvider(provider.provider_name)}
-                        >
-                          删除
-                        </Button>
-                      )}
+                      <Button
+                        danger
+                        onClick={() => void handleDeleteProvider(provider.provider_name)}
+                      >
+                        删除
+                      </Button>
                     </Space>
 
                     {feedback && (

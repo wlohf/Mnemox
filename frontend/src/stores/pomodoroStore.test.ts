@@ -39,6 +39,7 @@ describe('pomodoro desktop reminder sync', () => {
       startedAt: null,
       pausedAt: null,
       pausedTotalMs: 0,
+      backgroundImage: null,
       records: [],
       backendOnline: false,
       migrated: false,
@@ -144,5 +145,33 @@ describe('pomodoro desktop reminder sync', () => {
       pausedAt: null,
       pausedTotalMs: 0,
     })
+  })
+
+  it('clears the current task when a focus timer is stopped without starting a break', () => {
+    usePomodoroStore.getState().startTimer('Deep Work', 25)
+
+    usePomodoroStore.getState().completeTimer(undefined, { startBreak: false })
+
+    expect(usePomodoroStore.getState()).toMatchObject({
+      isRunning: false,
+      isPaused: false,
+      currentTask: '',
+      currentTaskId: null,
+      timerMode: 'focus',
+    })
+  })
+
+  it('persists a custom background image and can reset it', () => {
+    const backgroundImage = 'data:image/png;base64,cG9tb2Rvcm8='
+
+    usePomodoroStore.getState().setBackgroundImage(backgroundImage)
+
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    expect(stored.state.backgroundImage).toBe(backgroundImage)
+
+    usePomodoroStore.getState().setBackgroundImage(null)
+
+    const resetStored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    expect(resetStored.state.backgroundImage).toBeNull()
   })
 })

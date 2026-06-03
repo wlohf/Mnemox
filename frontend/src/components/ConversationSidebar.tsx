@@ -17,10 +17,19 @@ import { useChatStore } from '../stores/chatStore'
 import { getApiErrorMessage } from '../services/apiClient'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
+import utc from 'dayjs/plugin/utc'
 import 'dayjs/locale/zh-cn'
 
 dayjs.extend(relativeTime)
+dayjs.extend(utc)
 dayjs.locale('zh-cn')
+
+const TIMEZONE_SUFFIX_RE = /(Z|[+-]\d{2}:?\d{2})$/i
+
+function parseServerTime(value: string) {
+  if (!value) return dayjs()
+  return TIMEZONE_SUFFIX_RE.test(value) ? dayjs(value) : dayjs.utc(value).local()
+}
 
 interface ConversationSidebarProps {
   onOpenProjectSettings: (projectId?: number) => void
@@ -240,14 +249,7 @@ export function ConversationSidebar({
         }}
         onMouseEnter={() => setHoveredId(conv.id)}
         onMouseLeave={() => setHoveredId(null)}
-        style={{
-          padding: '10px 12px',
-          cursor: 'pointer',
-          background: isActive ? 'var(--gray-100)' : isHovered ? 'var(--gray-50)' : 'transparent',
-          borderRadius: 'var(--radius-md)',
-          marginBottom: 2,
-          transition: 'all var(--duration-fast) var(--ease-out)',
-        }}
+        className={`mnemox-conversation-item${isActive ? ' is-active' : ''}${isHovered ? ' is-hovered' : ''}`}
       >
         {isRenaming ? (
           <Input
@@ -261,28 +263,18 @@ export function ConversationSidebar({
             style={{ borderRadius: 'var(--radius-sm)' }}
           />
         ) : (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{
-                fontSize: 13.5,
-                fontWeight: isActive ? 500 : 400,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-                color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-              }}>
-                {conv.is_pinned && <PushpinFilled style={{ fontSize: 10, color: 'var(--accent-500)' }} />}
-                <MessageOutlined style={{ fontSize: 11, color: 'var(--gray-400)', flexShrink: 0 }} />
+          <div className="mnemox-conversation-row">
+            <div className="mnemox-conversation-main">
+              <div className="mnemox-conversation-title">
+                {conv.is_pinned && <PushpinFilled className="mnemox-conversation-pin" />}
+                <MessageOutlined className="mnemox-conversation-icon" />
                 {highlightTitle(conv.title)}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                {loadingConversationId === conv.id ? '加载中...' : dayjs(conv.updated_at).fromNow()}
+              <div className="mnemox-conversation-time">
+                {loadingConversationId === conv.id ? '加载中...' : parseServerTime(conv.updated_at).fromNow()}
               </div>
               {searchQuery.trim() && conv.matched_preview && (
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <div className="mnemox-conversation-preview">
                   {highlightText(conv.matched_preview)}
                 </div>
               )}
@@ -366,17 +358,7 @@ export function ConversationSidebar({
                   type="text"
                   size="small"
                   onClick={(e) => e.stopPropagation()}
-                  style={{
-                    opacity: 0.6,
-                    fontSize: 12,
-                    width: 24,
-                    height: 24,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderRadius: 'var(--radius-sm)',
-                    color: 'var(--text-tertiary)',
-                  }}
+                  className="mnemox-conversation-more"
                 >
                   ···
                 </Button>
@@ -394,7 +376,7 @@ export function ConversationSidebar({
     const week: typeof conversations = []
     const earlier: typeof conversations = []
     for (const c of list) {
-      const t = dayjs(c.updated_at)
+      const t = parseServerTime(c.updated_at)
       if (t.isSame(now, 'day')) today.push(c)
       else if (t.isAfter(now.subtract(7, 'day'))) week.push(c)
       else earlier.push(c)
@@ -416,15 +398,8 @@ export function ConversationSidebar({
         {sections.map((s) => {
           if (s.data.length === 0) return null
           return (
-            <div key={s.key} style={{ marginBottom: 6 }}>
-              <div style={{
-                padding: '6px 14px 4px',
-                fontSize: 11,
-                fontWeight: 600,
-                color: 'var(--text-tertiary)',
-                letterSpacing: '0.5px',
-                textTransform: 'uppercase',
-              }}>
+            <div key={s.key} className="mnemox-conversation-section">
+              <div className="mnemox-conversation-section-title">
                 {s.label}
               </div>
               {s.data.map(renderConversationItem)}
@@ -432,14 +407,13 @@ export function ConversationSidebar({
           )
         })}
         {hasMore && (
-          <div
-            style={{ textAlign: 'center', padding: '6px 0 10px', cursor: 'pointer' }}
+          <button
+            type="button"
+            className="mnemox-sidebar-more"
             onClick={() => setDisplayLimit((prev) => prev + 9)}
           >
-            <span style={{ fontSize: 12, color: 'var(--accent-500)', userSelect: 'none' }}>
-              展开更多（剩余 {list.length - displayLimit} 条）
-            </span>
-          </div>
+            展开更多（剩余 {list.length - displayLimit} 条）
+          </button>
         )}
       </>
     )
@@ -460,28 +434,15 @@ export function ConversationSidebar({
     }
 
     return (
-      <div style={{
-        textAlign: 'center',
-        padding: '48px 20px',
-      }}>
-        <div style={{
-          width: 48,
-          height: 48,
-          borderRadius: 'var(--radius-lg)',
-          background: 'linear-gradient(135deg, var(--accent-100), var(--primary-100))',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          margin: '0 auto 16px',
-          fontSize: 20,
-        }}>
-          💬
+      <div className="mnemox-sidebar-empty">
+        <div className="mnemox-sidebar-empty-icon">
+          <MessageOutlined />
         </div>
-        <div style={{ color: 'var(--text-primary)', fontSize: 14, fontWeight: 500, marginBottom: 6 }}>还没有学习记录</div>
-        <div style={{ color: 'var(--text-tertiary)', fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>
-          开始你的第一次学习对话吧
+        <div className="mnemox-sidebar-empty-title">还没有学习记录</div>
+        <div className="mnemox-sidebar-empty-copy">
+          新建一次对话，Mnemox 会把上下文和资料自动串起来。
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleNewChat} style={{ borderRadius: 'var(--radius-md)' }}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={handleNewChat}>
           开始学习
         </Button>
       </div>
@@ -490,22 +451,8 @@ export function ConversationSidebar({
 
   const renderCollapsedRail = () => {
     return (
-      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 0', gap: 6 }}>
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 'var(--radius-lg)',
-            background: 'linear-gradient(135deg, var(--accent-100), var(--primary-100))',
-            color: 'var(--accent-700)',
-            fontSize: 14,
-            fontWeight: 700,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginBottom: 8,
-          }}
-        >
+      <div className="mnemox-sidebar-rail">
+        <div className="mnemox-sidebar-rail-mark">
           学
         </div>
 
@@ -518,7 +465,7 @@ export function ConversationSidebar({
               onExpandSidebar?.('default')
               void handleNewChat()
             }}
-            style={{ width: 36, height: 36, color: 'var(--accent-600)' }}
+            className="mnemox-sidebar-rail-button is-primary"
           />
         </Tooltip>
 
@@ -528,7 +475,7 @@ export function ConversationSidebar({
             shape="circle"
             icon={<SearchOutlined />}
             onClick={() => onExpandSidebar?.('search')}
-            style={{ width: 36, height: 36, color: 'var(--text-tertiary)' }}
+            className="mnemox-sidebar-rail-button"
           />
         </Tooltip>
 
@@ -538,7 +485,7 @@ export function ConversationSidebar({
             shape="circle"
             icon={<AppstoreOutlined />}
             onClick={() => onExpandSidebar?.('categories')}
-            style={{ width: 36, height: 36, color: 'var(--text-tertiary)' }}
+            className="mnemox-sidebar-rail-button"
           />
         </Tooltip>
 
@@ -548,7 +495,7 @@ export function ConversationSidebar({
             shape="circle"
             icon={<HistoryOutlined />}
             onClick={() => onExpandSidebar?.('history')}
-            style={{ width: 36, height: 36, color: 'var(--text-tertiary)' }}
+            className="mnemox-sidebar-rail-button"
           />
         </Tooltip>
       </div>
@@ -560,29 +507,20 @@ export function ConversationSidebar({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', color: 'var(--text-primary)' }}>
-      {/* New chat button */}
-      <div style={{ padding: '14px 14px 10px' }}>
+    <div className="mnemox-sidebar-shell">
+      <div className="mnemox-sidebar-action">
         <Button
           type="primary"
           icon={<PlusOutlined />}
           block
           onClick={handleNewChat}
-          style={{
-            borderRadius: 'var(--radius-md)',
-            height: 38,
-            fontSize: 13.5,
-            fontWeight: 500,
-            background: 'var(--primary-600)',
-            borderColor: 'var(--primary-600)',
-          }}
+          className="mnemox-new-chat-button"
         >
           新对话
         </Button>
       </div>
 
-      {/* Search */}
-      <div ref={searchSectionRef} style={{ padding: '0 14px 10px' }}>
+      <div ref={searchSectionRef} className="mnemox-sidebar-search">
         <Input
           id="conversation-search"
           name="conversation-search"
@@ -594,29 +532,14 @@ export function ConversationSidebar({
           allowClear
           value={searchQuery}
           onChange={(e) => handleSearch(e.target.value)}
-          style={{
-            borderRadius: 'var(--radius-md)',
-            background: 'var(--gray-50)',
-            borderColor: 'transparent',
-            height: 32,
-          }}
+          className="mnemox-sidebar-search-input"
           styles={{ input: { background: 'transparent', color: 'var(--text-primary)' } }}
         />
       </div>
 
-      {/* Project filter tabs */}
-      <div ref={categorySectionRef} style={{ padding: '0 14px 10px', display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+      <div ref={categorySectionRef} className="mnemox-sidebar-projects">
         <Tag
-          style={{
-            cursor: 'pointer',
-            margin: 0,
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 12,
-            fontWeight: activeProjectId === null ? 600 : 400,
-            background: activeProjectId === null ? 'var(--primary-600)' : (dropTargetKey === getDropKey(null) ? 'var(--accent-50)' : undefined),
-            color: activeProjectId === null ? '#fff' : undefined,
-            borderColor: activeProjectId === null ? 'var(--primary-600)' : (dropTargetKey === getDropKey(null) ? 'var(--accent-500)' : undefined),
-          }}
+          className={`mnemox-project-chip${activeProjectId === null ? ' is-active' : ''}${dropTargetKey === getDropKey(null) ? ' is-drop-target' : ''}`}
           onClick={() => handleProjectFilter(null)}
           onDragOver={(e) => {
             if (draggingConversationId === null) return
@@ -639,15 +562,11 @@ export function ConversationSidebar({
           return (
             <Tag
               key={p.id}
+              className={`mnemox-project-chip${isActive ? ' is-active' : ''}${isDrop ? ' is-drop-target' : ''}`}
               style={{
-                cursor: 'pointer',
-                margin: 0,
-                borderRadius: 'var(--radius-sm)',
-                fontSize: 12,
-                fontWeight: isActive ? 600 : 400,
-                background: isActive ? p.color : (isDrop ? 'var(--accent-50)' : undefined),
+                background: isActive ? p.color : undefined,
+                borderColor: isActive || isDrop ? p.color : undefined,
                 color: isActive ? '#fff' : undefined,
-                borderColor: isActive ? p.color : (isDrop ? p.color : undefined),
               }}
               onClick={() => handleProjectFilter(p.id)}
               onDragOver={(e) => {
@@ -664,21 +583,14 @@ export function ConversationSidebar({
               }}
             >
               {!isActive && (
-                <span style={{
-                  display: 'inline-block',
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  background: p.color,
-                  marginRight: 4,
-                }} />
+                <span className="mnemox-project-dot" style={{ background: p.color }} />
               )}
               {p.name}
             </Tag>
           )
         })}
         <Tag
-          style={{ cursor: 'pointer', borderStyle: 'dashed', margin: 0, borderRadius: 'var(--radius-sm)', fontSize: 12 }}
+          className="mnemox-project-chip is-add"
           onClick={() => onOpenProjectSettings()}
         >
           <PlusOutlined /> 项目
@@ -686,37 +598,25 @@ export function ConversationSidebar({
       </div>
 
       {draggingConversationId !== null && (
-        <div style={{
-          padding: '4px 14px 8px',
-          fontSize: 11,
-          color: 'var(--accent-600)',
-          background: 'var(--accent-50)',
-          textAlign: 'center',
-        }}>
+        <div className="mnemox-sidebar-drag-hint">
           拖拽到上方项目标签即可移动该对话
         </div>
       )}
 
       {activeProjectId !== null && (
-        <div style={{ padding: '0 14px 8px' }}>
+        <div className="mnemox-sidebar-materials-action">
           <Button
             size="small"
             icon={<FileOutlined />}
             onClick={onOpenProjectMaterials}
-            style={{
-              width: '100%',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--text-secondary)',
-              borderColor: 'var(--border-color)',
-            }}
+            className="mnemox-sidebar-secondary-button"
           >
             打开项目资料库
           </Button>
         </div>
       )}
 
-      {/* Conversation list */}
-      <div ref={historySectionRef} style={{ flex: 1, overflow: 'auto', padding: '0 6px' }}>
+      <div ref={historySectionRef} className="mnemox-sidebar-history">
         {conversations.length === 0 ? (
           renderEmptyState()
         ) : (

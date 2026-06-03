@@ -25,6 +25,12 @@
 - UI 优化方案：`/docs/ui-optimization-plan.md`
 - UI 优化方案 V2：`/docs/ui-optimization-plan-v2.md`
 
+## 🗂 功能更新维护（持续记录）
+
+- 更新维护说明：`/docs/updates/README.md`
+- 更新文档模板：`/docs/updates/_template.md`
+- 本周更新记录：`/docs/updates/2026/2026-06-01_to_2026-06-07.md`
+
 ## ⚠️ 安全与配置
 
 - 请勿在文档或脚本中存放真实 API Key，统一使用占位符。

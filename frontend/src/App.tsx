@@ -14,6 +14,7 @@ import { useAuthStore } from './stores/authStore'
 import { usePomodoroStore } from './stores/pomodoroStore'
 import { checkSystemUpdate } from './services/systemApi'
 import { getToken } from './services/apiClient'
+import { PomodoroTicker } from './components/PomodoroTicker'
 
 const ObsidianLayout = lazy(() => import('./components/Layout/ObsidianLayout').then(m => ({ default: m.ObsidianLayout })))
 const PomodoroPage = lazy(() => import('./pages/PomodoroPage').then(m => ({ default: m.PomodoroPage })))
@@ -235,6 +236,7 @@ function App() {
       theme={antdTheme}
     >
       <AntdApp>
+        <PomodoroTicker />
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Suspense fallback={<PageSpinner />}>
             <Routes>

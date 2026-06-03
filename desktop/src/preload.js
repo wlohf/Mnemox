@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('mnemoxDesktop', {
   getSavedLogin: () => ipcRenderer.invoke('desktop-auth:get-saved-login'),
   saveLogin: (payload) => ipcRenderer.invoke('desktop-auth:save-login', payload),
   clearSavedLogin: () => ipcRenderer.invoke('desktop-auth:clear-saved-login'),
+  getPreference: (key) => ipcRenderer.invoke('desktop-preferences:get', key),
+  setPreference: (key, value) => ipcRenderer.invoke('desktop-preferences:set', key, value),
   setPomodoroReminder: (payload) => ipcRenderer.invoke('desktop-reminder:set', payload),
   clearPomodoroReminder: () => ipcRenderer.invoke('desktop-reminder:clear'),
   onUpdateState: (callback) => {

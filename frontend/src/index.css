@@ -485,6 +485,29 @@ body {
   box-shadow: -10px 0 28px rgba(0, 0, 0, 0.04);
 }
 
+.mnemox-left-sidebar {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 86%, var(--bg-elevated)), var(--bg-surface)) !important;
+}
+
+.mnemox-left-sidebar .ant-tabs {
+  height: 100%;
+}
+
+.mnemox-left-sidebar .ant-tabs-content,
+.mnemox-left-sidebar .ant-tabs-tabpane {
+  height: 100%;
+  min-height: 0;
+}
+
+.mnemox-left-sidebar .ant-tabs-nav {
+  margin-bottom: 6px !important;
+}
+
+.mnemox-left-sidebar .ant-tabs-tab {
+  padding: 9px 0 !important;
+}
+
 .mnemox-right-sidebar.is-collapsed {
   border-left-color: transparent !important;
 }
@@ -554,6 +577,382 @@ body {
   to { opacity: 1; transform: translateX(0); }
 }
 
+.mnemox-sidebar-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--text-primary);
+}
+
+.mnemox-sidebar-action {
+  padding: 14px 12px 10px;
+}
+
+.mnemox-new-chat-button.ant-btn {
+  height: 40px !important;
+  border-radius: 14px !important;
+  justify-content: flex-start;
+  padding-inline: 14px !important;
+  background: var(--text-primary) !important;
+  color: var(--bg-primary) !important;
+  box-shadow: none !important;
+}
+
+.mnemox-new-chat-button.ant-btn:hover,
+.mnemox-new-chat-button.ant-btn:focus-visible {
+  background: color-mix(in srgb, var(--text-primary) 90%, var(--brand-500)) !important;
+  color: var(--bg-primary) !important;
+  transform: translateY(-1px) !important;
+}
+
+.mnemox-sidebar-search {
+  padding: 0 12px 10px;
+}
+
+.mnemox-sidebar-search-input.ant-input-affix-wrapper {
+  height: 34px;
+  border-radius: 12px !important;
+  background: color-mix(in srgb, var(--bg-input) 86%, transparent) !important;
+  border-color: transparent !important;
+}
+
+.mnemox-sidebar-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+
+.mnemox-project-chip.ant-tag {
+  margin: 0;
+  cursor: pointer;
+  border-radius: 999px !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  line-height: 24px;
+  height: 26px;
+  padding: 0 10px;
+}
+
+.mnemox-project-chip.ant-tag:hover,
+.mnemox-project-chip.is-drop-target.ant-tag {
+  background: var(--primary-50) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.mnemox-project-chip.is-active.ant-tag {
+  background: var(--text-primary) !important;
+  border-color: var(--text-primary) !important;
+  color: var(--bg-primary) !important;
+  font-weight: 650 !important;
+}
+
+.mnemox-project-chip.is-add.ant-tag {
+  border: 1px dashed var(--border-strong) !important;
+}
+
+.mnemox-project-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 999px;
+}
+
+.mnemox-sidebar-drag-hint {
+  margin: 0 12px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  background: var(--primary-50);
+  text-align: center;
+  font-size: 11px;
+}
+
+.mnemox-sidebar-materials-action {
+  padding: 0 12px 10px;
+}
+
+.mnemox-sidebar-secondary-button.ant-btn {
+  width: 100%;
+  height: 34px;
+  border-radius: 12px !important;
+  color: var(--text-secondary) !important;
+  border-color: var(--border-color) !important;
+  background: transparent !important;
+}
+
+.mnemox-sidebar-history {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 6px 12px;
+}
+
+.mnemox-conversation-section {
+  margin-bottom: 8px;
+}
+
+.mnemox-conversation-section-title {
+  padding: 8px 12px 5px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mnemox-conversation-item {
+  margin-bottom: 2px;
+  padding: 9px 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.mnemox-conversation-item.is-hovered {
+  background: var(--primary-50);
+}
+
+.mnemox-conversation-item.is-active {
+  background: color-mix(in srgb, var(--bg-elevated) 82%, var(--brand-500));
+  border-color: var(--border-strong);
+}
+
+.mnemox-conversation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mnemox-conversation-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.mnemox-conversation-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-conversation-item.is-active .mnemox-conversation-title {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.mnemox-conversation-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.mnemox-conversation-pin {
+  flex: 0 0 auto;
+  color: var(--accent-500);
+  font-size: 10px;
+}
+
+.mnemox-conversation-time,
+.mnemox-conversation-preview {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-conversation-more.ant-btn {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  opacity: 0.72;
+  color: var(--text-tertiary) !important;
+}
+
+.mnemox-sidebar-more {
+  width: calc(100% - 24px);
+  margin: 4px 12px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-500);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.mnemox-sidebar-empty {
+  padding: 46px 20px;
+  text-align: center;
+}
+
+.mnemox-sidebar-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  color: var(--text-secondary);
+  background: var(--primary-50);
+}
+
+.mnemox-sidebar-empty-title {
+  margin-bottom: 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.mnemox-sidebar-empty-copy {
+  margin-bottom: 16px;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.mnemox-sidebar-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 12px 0;
+}
+
+.mnemox-sidebar-rail-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.mnemox-sidebar-rail-button.ant-btn {
+  width: 38px !important;
+  height: 38px !important;
+  color: var(--text-tertiary) !important;
+}
+
+.mnemox-sidebar-rail-button.is-primary.ant-btn {
+  color: var(--text-primary) !important;
+  background: var(--primary-100) !important;
+}
+
+.mnemox-account-dock {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 10px 10px 12px;
+  border-top: 1px solid var(--border-light);
+  background: linear-gradient(to top, var(--bg-surface) 86%, transparent);
+}
+
+.mnemox-account-button {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.mnemox-account-button:hover,
+.mnemox-account-button:focus-visible {
+  outline: none;
+  background: var(--primary-50);
+  border-color: var(--border-strong);
+}
+
+.mnemox-account-button.is-collapsed {
+  justify-content: center;
+  min-height: 44px;
+}
+
+.mnemox-account-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 11px;
+  color: var(--bg-primary);
+  background: var(--text-primary);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.mnemox-account-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.mnemox-account-meta strong,
+.mnemox-account-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-account-meta strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mnemox-account-meta small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.mnemox-account-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mnemox-utility-item.is-timer-running,
   .mnemox-right-sidebar-content,
@@ -575,16 +974,18 @@ body {
   max-width: 920px;
   margin: 0 auto;
   width: 100%;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   padding: 0 clamp(16px, 4vw, 36px);
   display: flex;
   flex-direction: column;
   flex: 1;
+  overflow: hidden;
 }
 
 .mnemox-chat-frame.is-empty {
-  justify-content: center;
-  padding-bottom: clamp(96px, 15vh, 180px);
+  justify-content: flex-start;
+  padding-bottom: 22px;
 }
 
 .mnemox-chat-frame.has-messages {
@@ -595,6 +996,11 @@ body {
   text-align: center;
   padding: clamp(80px, 18vh, 180px) 0 0;
   animation: fadeInUp var(--duration-normal) var(--ease-out);
+}
+
+.mnemox-chat-frame.is-empty .mnemox-start-screen {
+  margin-top: auto;
+  padding-top: 0;
 }
 
 .mnemox-start-title {
@@ -609,13 +1015,13 @@ body {
 .mnemox-chat-stage {
   flex: 1;
   min-height: 0;
-  max-height: calc(100vh - 196px);
   margin-top: 12px;
   padding: 22px 4px 18px;
   background: transparent;
   border: 0;
   border-radius: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .mnemox-streaming-status {
@@ -649,13 +1055,12 @@ body {
 
 .mnemox-chat-composer {
   width: 100%;
+  flex: 0 0 auto;
   margin-top: 18px;
   padding: 0 0 22px;
 }
 
 .mnemox-chat-frame.has-messages .mnemox-chat-composer {
-  position: sticky;
-  bottom: 0;
   margin-top: 8px;
   padding: 16px 0 22px;
   background: linear-gradient(to top, var(--bg-primary) 74%, rgba(0, 0, 0, 0));
@@ -663,6 +1068,7 @@ body {
 
 .mnemox-chat-frame.is-empty .mnemox-chat-composer {
   margin-top: 28px;
+  margin-bottom: auto;
   animation: fadeInUp var(--duration-slow) var(--ease-out);
 }
 
@@ -696,12 +1102,12 @@ body {
   align-items: flex-start;
   gap: 10px;
   min-height: 48px;
-  padding-right: 262px;
+  padding-right: 218px;
 }
 
 .mnemox-model-select {
-  width: 180px;
-  flex: 0 0 180px;
+  width: 136px;
+  flex: 0 0 136px;
 }
 
 .mnemox-model-select .ant-select-selector {
@@ -794,12 +1200,12 @@ body {
 
 @media (max-width: 760px) {
   .mnemox-chat-frame {
-    min-height: 100dvh;
+    height: 100dvh;
     padding: 0 14px;
   }
 
   .mnemox-chat-frame.is-empty {
-    padding-bottom: 64px;
+    padding-bottom: 18px;
   }
 
   .mnemox-start-screen {
@@ -819,8 +1225,8 @@ body {
   }
 
   .mnemox-model-select {
-    width: min(54vw, 180px);
-    flex: 0 1 min(54vw, 180px);
+    width: min(46vw, 136px);
+    flex: 0 1 min(46vw, 136px);
   }
 
   .mnemox-image-preview-strip {
@@ -1022,6 +1428,181 @@ body {
   border-radius: var(--radius-xl) 0 0 var(--radius-xl) !important;
 }
 
+.mnemox-settings-modal .ant-modal-content {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-strong);
+}
+
+.mnemox-settings-shell {
+  min-height: 520px;
+  color: var(--text-primary);
+}
+
+.mnemox-settings-header,
+.mnemox-ai-drawer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--border-light);
+  background:
+    radial-gradient(circle at 12% 0%, var(--primary-100), transparent 34%),
+    var(--bg-surface);
+}
+
+.mnemox-settings-header h2,
+.mnemox-ai-drawer-header h2 {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.mnemox-settings-header p,
+.mnemox-ai-drawer-header p {
+  max-width: 300px;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.mnemox-settings-eyebrow {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.mnemox-settings-tabs.ant-tabs {
+  min-height: 420px;
+}
+
+.mnemox-settings-tabs > .ant-tabs-nav {
+  width: 190px;
+  margin: 0 !important;
+  padding: 14px 10px;
+  background: color-mix(in srgb, var(--bg-surface) 76%, var(--bg-elevated));
+  border-right: 1px solid var(--border-light);
+}
+
+.mnemox-settings-tabs .ant-tabs-tab {
+  margin: 0 0 4px !important;
+  padding: 10px 12px !important;
+  border-radius: 12px;
+}
+
+.mnemox-settings-tabs .ant-tabs-tab-active {
+  background: var(--primary-100);
+}
+
+.mnemox-settings-tabs .ant-tabs-content-holder {
+  padding: 18px 24px 24px;
+}
+
+.mnemox-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: center;
+  min-height: 58px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-settings-row-copy div {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mnemox-settings-row-copy span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mnemox-settings-row-control {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mnemox-ai-settings-drawer .ant-drawer-body {
+  padding: 0 !important;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+.mnemox-ai-settings-drawer .ant-drawer-close {
+  color: var(--text-secondary) !important;
+}
+
+.mnemox-ai-settings-drawer .ant-drawer-body > :not(.mnemox-ai-drawer-header) {
+  margin-right: 18px;
+  margin-left: 18px;
+}
+
+.mnemox-ai-section {
+  margin-top: 18px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  background: var(--surface-info);
+}
+
+.mnemox-ai-section-primary {
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
+}
+
+.mnemox-ai-field-label {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mnemox-ai-collapse.ant-collapse {
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 16px !important;
+  border-color: var(--border-light) !important;
+  background: var(--surface-info) !important;
+}
+
+.mnemox-ai-collapse .ant-collapse-header {
+  align-items: center !important;
+  padding: 13px 14px !important;
+  color: var(--text-primary) !important;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mnemox-ai-collapse .ant-collapse-content-box {
+  padding: 2px 14px 16px !important;
+}
+
+.mnemox-provider-card.ant-card {
+  margin-bottom: 12px;
+  border-radius: 14px !important;
+  background: var(--bg-surface) !important;
+}
+
+.mnemox-provider-card.is-active.ant-card {
+  border-color: var(--brand-400) !important;
+  box-shadow: inset 0 0 0 1px var(--primary-200) !important;
+}
+
+.mnemox-provider-card .ant-card-head {
+  min-height: 44px !important;
+}
+
 /* Modern progress bar */
 .ant-progress-bg {
   border-radius: var(--radius-full) !important;
@@ -1161,4 +1742,634 @@ html .ant-notification-notice {
 .ant-list-item {
   transition: background var(--duration-fast) var(--ease-out) !important;
   border-radius: var(--radius-md) !important;
+}
+
+/* Dedicated Pomodoro page */
+.mnemox-pomodoro-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mnemox-pomodoro-stage {
+  position: relative;
+  min-height: 640px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background-image:
+    linear-gradient(180deg, rgba(24, 31, 48, 0.16), rgba(88, 62, 103, 0.22) 43%, rgba(13, 19, 32, 0.5)),
+    var(--mnemox-pomodoro-background, url('/pomodoro-sky.jpg'));
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 26px 70px rgba(12, 18, 28, 0.28);
+  color: #fff;
+}
+
+.mnemox-pomodoro-stage::after {
+  position: absolute;
+  inset: auto 0 0;
+  height: 36%;
+  content: '';
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.18));
+  pointer-events: none;
+}
+
+.mnemox-pomodoro-quote {
+  position: absolute;
+  top: 44px;
+  left: 52px;
+  z-index: 1;
+  width: min(460px, calc(100% - 80px));
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.22);
+}
+
+.mnemox-pomodoro-quote-mark {
+  display: block;
+  height: 38px;
+  font-family: Georgia, serif;
+  font-size: 72px;
+  line-height: 0.8;
+  opacity: 0.92;
+}
+
+.mnemox-pomodoro-quote p {
+  margin: 14px 0 0;
+  font-size: 22px;
+  line-height: 1.55;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.mnemox-pomodoro-quote small {
+  display: block;
+  margin-top: 12px;
+  font-size: 13px;
+  opacity: 0.86;
+}
+
+.mnemox-pomodoro-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: min(360px, 52vw);
+  aspect-ratio: 1;
+  transform: translate(-50%, -40%);
+}
+
+.mnemox-pomodoro-ring svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 14px 24px rgba(24, 20, 34, 0.22));
+  transform: rotate(-90deg);
+}
+
+.mnemox-pomodoro-ring-track,
+.mnemox-pomodoro-ring-progress {
+  fill: transparent;
+  stroke-width: 8;
+}
+
+.mnemox-pomodoro-ring-track {
+  stroke: rgba(255, 255, 255, 0.2);
+}
+
+.mnemox-pomodoro-ring-progress {
+  stroke: rgba(255, 255, 255, 0.95);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.35s linear;
+}
+
+.mnemox-pomodoro-time {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 3px 20px rgba(0, 0, 0, 0.24);
+}
+
+.mnemox-pomodoro-time strong {
+  font-size: clamp(56px, 6vw, 88px);
+  line-height: 1;
+  font-weight: 750;
+  letter-spacing: 0;
+}
+
+.mnemox-pomodoro-time span {
+  font-size: 15px;
+  font-weight: 650;
+  opacity: 0.92;
+}
+
+.mnemox-pomodoro-task {
+  position: absolute;
+  top: calc(50% + 170px);
+  left: 50%;
+  z-index: 1;
+  width: min(680px, calc(100% - 48px));
+  transform: translateX(-50%);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 750;
+  text-align: center;
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.25);
+}
+
+.mnemox-pomodoro-setup {
+  position: absolute;
+  right: 38px;
+  bottom: 112px;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) 150px;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(24, 28, 42, 0.2);
+  backdrop-filter: blur(10px);
+}
+
+.mnemox-pomodoro-setup .ant-input,
+.mnemox-pomodoro-setup .ant-input-number,
+.mnemox-pomodoro-controls .ant-input-number {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  color: #fff !important;
+}
+
+.mnemox-pomodoro-setup .ant-input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.mnemox-pomodoro-controls {
+  position: absolute;
+  right: 38px;
+  bottom: 38px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mnemox-pomodoro-controls .ant-btn {
+  border-color: rgba(255, 255, 255, 0.38);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  backdrop-filter: blur(12px);
+}
+
+.mnemox-pomodoro-controls .ant-btn-primary {
+  border-color: rgba(255, 255, 255, 0.92) !important;
+  background: #fff !important;
+  color: #2a3150 !important;
+}
+
+.mnemox-pomodoro-controls .ant-btn-dangerous {
+  border-color: rgba(255, 255, 255, 0.5) !important;
+  color: #fff !important;
+}
+
+/* Obsidian-like planning workspace */
+.mnemox-plan-workbench,
+.mnemox-notes-workbench {
+  display: grid;
+  min-height: calc(100vh - 148px);
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.mnemox-plan-workbench {
+  grid-template-columns: 300px 320px minmax(0, 1fr) 280px;
+}
+
+.mnemox-notes-workbench {
+  grid-template-columns: 260px 320px minmax(0, 1fr);
+}
+
+.mnemox-plan-sidebar,
+.mnemox-plan-list-pane,
+.mnemox-plan-context-pane,
+.mnemox-notes-folder-pane,
+.mnemox-notes-file-pane {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--bg-elevated) 62%, var(--bg-surface));
+}
+
+.mnemox-plan-context-pane {
+  border-right: 0;
+  border-left: 1px solid var(--border-light);
+}
+
+.mnemox-plan-document,
+.mnemox-notes-document {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 28px 36px 34px;
+  background: var(--bg-input);
+}
+
+.mnemox-panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 46px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--bg-elevated) 84%, transparent);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.mnemox-plan-calendar {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-plan-calendar .ant-picker-calendar-header {
+  padding-inline: 0;
+}
+
+.mnemox-plan-calendar .ant-picker-panel {
+  background: transparent;
+}
+
+.mnemox-plan-calendar-dot {
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin: 1px auto 0;
+  border-radius: 50%;
+  background: var(--accent-600);
+}
+
+.mnemox-plan-sidebar-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.mnemox-plan-file,
+.mnemox-note-file,
+.mnemox-folder-item {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mnemox-plan-list-pane .ant-list-item {
+  display: block;
+  padding: 0 !important;
+}
+
+.mnemox-plan-file,
+.mnemox-note-file {
+  display: grid;
+  gap: 5px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-plan-file:hover,
+.mnemox-note-file:hover,
+.mnemox-folder-item:hover {
+  background: var(--primary-50);
+  color: var(--text-primary);
+}
+
+.mnemox-plan-file.is-active,
+.mnemox-note-file.is-active,
+.mnemox-folder-item.is-active {
+  background: var(--primary-100);
+  color: var(--text-primary);
+}
+
+.mnemox-plan-file-title,
+.mnemox-note-file-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.mnemox-plan-file-title span:not(.anticon),
+.mnemox-note-file-title span:not(.anticon) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-plan-file-preview,
+.mnemox-note-file-preview {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-plan-file-meta,
+.mnemox-note-file-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.mnemox-plan-timeline {
+  padding: 14px 14px 0;
+}
+
+.mnemox-plan-timeline .mnemox-plan-file {
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+}
+
+.mnemox-doc-breadcrumb {
+  margin-bottom: 20px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.mnemox-doc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.mnemox-doc-header h1 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 34px;
+  line-height: 1.2;
+  font-weight: 780;
+  letter-spacing: 0;
+}
+
+.mnemox-doc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-plan-editor,
+.mnemox-notes-editor {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+}
+
+.mnemox-probe-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.mnemox-probe-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.mnemox-pane-empty,
+.mnemox-notes-empty {
+  padding: 28px 16px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.mnemox-task-list {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.mnemox-task-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mnemox-task-row.is-done {
+  opacity: 0.62;
+  text-decoration: line-through;
+}
+
+.mnemox-task-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--accent-600);
+  font-size: 11px;
+}
+
+.mnemox-plan-inspector {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid var(--border-light);
+}
+
+.mnemox-plan-inspector div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.mnemox-plan-inspector strong {
+  color: var(--text-primary);
+}
+
+/* Obsidian-like notes workspace */
+.mnemox-folder-list {
+  display: grid;
+  gap: 2px;
+  padding: 10px 8px;
+}
+
+.mnemox-folder-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.mnemox-folder-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-folder-item small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.mnemox-notes-search {
+  padding: 10px 12px;
+}
+
+.mnemox-file-list {
+  border-top: 1px solid var(--border-light);
+}
+
+.mnemox-note-title-input.ant-input {
+  height: auto !important;
+  margin-bottom: 10px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+  font-size: 34px;
+  line-height: 1.2;
+  font-weight: 780;
+}
+
+.mnemox-note-tags-input.ant-input {
+  margin-bottom: 12px;
+  border-color: transparent !important;
+  background: var(--bg-surface) !important;
+}
+
+.mnemox-notes-empty {
+  display: grid;
+  min-height: 520px;
+  place-items: center;
+}
+
+@media (max-width: 1320px) {
+  .mnemox-plan-workbench {
+    grid-template-columns: 280px minmax(0, 1fr) 260px;
+  }
+
+  .mnemox-plan-list-pane {
+    display: none;
+  }
+
+  .mnemox-notes-workbench {
+    grid-template-columns: 230px 300px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 980px) {
+  .mnemox-pomodoro-header-actions {
+    justify-content: flex-start;
+  }
+
+  .mnemox-pomodoro-stage {
+    min-height: 720px;
+  }
+
+  .mnemox-pomodoro-quote {
+    top: 32px;
+    left: 28px;
+  }
+
+  .mnemox-pomodoro-quote p {
+    font-size: 18px;
+  }
+
+  .mnemox-pomodoro-ring {
+    width: min(340px, 74vw);
+    transform: translate(-50%, -32%);
+  }
+
+  .mnemox-pomodoro-task {
+    top: calc(50% + 158px);
+    font-size: 20px;
+  }
+
+  .mnemox-pomodoro-setup,
+  .mnemox-pomodoro-controls {
+    right: 24px;
+    left: 24px;
+    justify-content: center;
+  }
+
+  .mnemox-pomodoro-setup {
+    grid-template-columns: minmax(0, 1fr);
+    bottom: 118px;
+  }
+
+  .mnemox-plan-workbench,
+  .mnemox-notes-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .mnemox-plan-sidebar,
+  .mnemox-plan-list-pane,
+  .mnemox-plan-context-pane,
+  .mnemox-notes-folder-pane,
+  .mnemox-notes-file-pane {
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+
+  .mnemox-plan-context-pane {
+    border-left: 0;
+  }
+
+  .mnemox-plan-document,
+  .mnemox-notes-document {
+    padding: 22px 18px 28px;
+  }
 }

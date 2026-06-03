@@ -1,12 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import { useNavigate } from 'react-router-dom'
-import { Card, Row, Col, Input, List, Button, Space, Tag, Modal, message, Select, Upload, Typography, Tabs } from 'antd'
-import { PlusOutlined, SaveOutlined, DeleteOutlined, PictureOutlined, ImportOutlined, RobotOutlined, CopyOutlined } from '@ant-design/icons'
+import { Button, Empty, Input, Modal, Select, Space, Tag, Tabs, Typography, Upload, message } from 'antd'
+import {
+  CopyOutlined,
+  DeleteOutlined,
+  FileTextOutlined,
+  FolderOpenOutlined,
+  ImportOutlined,
+  PictureOutlined,
+  PlusOutlined,
+  RobotOutlined,
+  SaveOutlined,
+} from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useOfflineNotes, type OfflineNoteItem } from '../hooks/useOfflineNotes'
 import { uploadImage } from '../services/imageApi'
@@ -25,23 +35,42 @@ const NOTE_AI_ACTIONS: Array<{ key: NoteAIAssistAction; label: string; descripti
   { key: 'summarize', label: '摘要', description: '提炼摘要、关键词和三句话总结' },
 ]
 
+type FolderKey = 'all' | 'untagged' | 'pending' | `tag:${string}`
+
+function getNoteExcerpt(content: string) {
+  const line = content
+    .split('\n')
+    .map((item) => item.trim())
+    .find((item) => item && !item.startsWith('#'))
+  return line?.replace(/^[-*]\s+/, '').replace(/\[( |x)\]\s*/i, '') || '空白笔记'
+}
+
+function getWordCount(content: string) {
+  const compact = content.replace(/\s/g, '')
+  return compact.length
+}
+
+function getFolderTitle(folderKey: FolderKey) {
+  if (folderKey === 'all') return '全部笔记'
+  if (folderKey === 'untagged') return '未分类'
+  if (folderKey === 'pending') return '待同步'
+  return folderKey.replace(/^tag:/, '')
+}
+
 export function NotesPage() {
   const navigate = useNavigate()
   const [q, setQ] = useState('')
-  const [filterTag, setFilterTag] = useState<string | undefined>(undefined)
-  const { notes, createNote, updateNote, deleteNote } = useOfflineNotes({ q: q.trim() || undefined, tag: filterTag })
+  const [folderKey, setFolderKey] = useState<FolderKey>('all')
+  const { notes, createNote, updateNote, deleteNote } = useOfflineNotes()
 
   const [active, setActive] = useState<OfflineNoteItem | null>(null)
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [tagsText, setTagsText] = useState('')
   const [saving, setSaving] = useState(false)
-
-  // Image upload state
   const [uploading, setUploading] = useState(false)
   const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
 
-  // AI assist state
   const [aiOpen, setAiOpen] = useState(false)
   const [aiAction, setAiAction] = useState<NoteAIAssistAction>('continue')
   const [aiInstruction, setAiInstruction] = useState('')
@@ -50,46 +79,62 @@ export function NotesPage() {
   const [aiPreviewMode, setAiPreviewMode] = useState<'preview' | 'edit'>('preview')
   const [aiLoading, setAiLoading] = useState(false)
 
-  // Obsidian import modal state
   const [importOpen, setImportOpen] = useState(false)
   const [importMdFiles, setImportMdFiles] = useState<File[]>([])
   const [importAttachments, setImportAttachments] = useState<File[]>([])
   const [importing, setImporting] = useState(false)
 
-  // Auto-select first note when notes change and no active note
-  useEffect(() => {
-    if (notes.length > 0 && !active) {
-      openNote(notes[0])
-    } else if (notes.length === 0) {
-      setActive(null)
-      setTitle('')
-      setContent('')
-      setTagsText('')
-    } else if (active) {
-      // Refresh active note data if it still exists
-      const latest = notes.find((n) => n._localId === active._localId)
-      if (!latest) {
-        // Active note was deleted
-        if (notes.length > 0) {
-          openNote(notes[0])
-        } else {
-          setActive(null)
-          setTitle('')
-          setContent('')
-          setTagsText('')
-        }
+  const tagStats = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const note of notes) {
+      for (const tag of note.tags || []) {
+        counts.set(tag, (counts.get(tag) || 0) + 1)
       }
     }
-  }, [notes.length])
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
+      .map(([tag, count]) => ({ tag, count }))
+  }, [notes])
 
-  const openNote = (n: OfflineNoteItem) => {
-    setActive(n)
-    setTitle(n.title || '')
-    setContent(n.content || '')
-    setTagsText((n.tags || []).join(', '))
+  const visibleNotes = useMemo(() => {
+    const query = q.trim().toLowerCase()
+    return notes.filter((note) => {
+      const tags = note.tags || []
+      if (folderKey === 'untagged' && tags.length > 0) return false
+      if (folderKey === 'pending' && note._syncStatus === 'synced') return false
+      if (folderKey.startsWith('tag:') && !tags.includes(folderKey.slice(4))) return false
+      if (!query) return true
+      return note.title.toLowerCase().includes(query) || note.content.toLowerCase().includes(query)
+    })
+  }, [folderKey, notes, q])
+
+  const openNote = (note: OfflineNoteItem) => {
+    setActive(note)
+    setTitle(note.title || '')
+    setContent(note.content || '')
+    setTagsText((note.tags || []).join(', '))
   }
 
-  const extractTags = (n: OfflineNoteItem): string[] => n.tags || []
+  const clearActive = () => {
+    setActive(null)
+    setTitle('')
+    setContent('')
+    setTagsText('')
+  }
+
+  useEffect(() => {
+    if (visibleNotes.length === 0) {
+      clearActive()
+      return
+    }
+    if (!active) {
+      openNote(visibleNotes[0])
+      return
+    }
+    if (!visibleNotes.some((note) => note._localId === active._localId)) {
+      openNote(visibleNotes[0])
+    }
+  }, [active?._localId, notes.length, visibleNotes.length, folderKey, q])
 
   const doUploadImage = async (file: File) => {
     setUploading(true)
@@ -126,7 +171,6 @@ export function NotesPage() {
     message.success('图片已插入')
   }
 
-  // Obsidian import handler (still uses online API for the import itself)
   const handleObsidianImport = async () => {
     if (importMdFiles.length === 0) {
       message.warning('请选择 Markdown 文件，可一次选择多个')
@@ -139,9 +183,7 @@ export function NotesPage() {
     try {
       for (const mdFile of importMdFiles) {
         const result = await importObsidianNote(mdFile, importAttachments)
-        if (!result) {
-          continue
-        }
+        if (!result) continue
         warningCount += result.warnings.length
         const created = await createNote({
           title: result.title,
@@ -172,11 +214,12 @@ export function NotesPage() {
   }
 
   const handleCreate = async () => {
+    const selectedTag = folderKey.startsWith('tag:') ? folderKey.slice(4) : ''
     const created = await createNote({
       title: '新笔记',
       content: '',
       note_type: 'general',
-      tags: [],
+      tags: selectedTag ? [selectedTag] : [],
     })
     message.success('已创建笔记')
     openNote(created)
@@ -189,7 +232,7 @@ export function NotesPage() {
     }
     const tags = tagsText
       .split(',')
-      .map((s) => s.trim())
+      .map((item) => item.trim())
       .filter(Boolean)
       .slice(0, 12)
     setSaving(true)
@@ -200,7 +243,7 @@ export function NotesPage() {
       return
     }
     message.success('已保存')
-    setActive(saved)
+    openNote(saved)
   }
 
   const openAIAssist = () => {
@@ -214,7 +257,7 @@ export function NotesPage() {
     }
     const latestEditorContent = editorRef.current?.getMarkdown() ?? content
     if (latestEditorContent !== active.content) {
-      message.warning('当前编辑区有未保存修改，请先保存后再使用 AI 辅助，避免 AI 读取到旧内容')
+      message.warning('当前编辑区有未保存修改，请先保存后再使用 AI 辅助')
       return
     }
     setAiSelectedText((editorRef.current?.getSelectedText() || '').trim().slice(0, 3000))
@@ -262,8 +305,7 @@ export function NotesPage() {
 
   const appendAISuggestion = () => {
     if (!aiSuggestion.trim()) return
-    const next = `${content.trimEnd()}\n\n${aiSuggestion.trim()}\n`
-    setContent(next)
+    setContent((prev) => `${prev.trimEnd()}\n\n${aiSuggestion.trim()}\n`)
     message.success('已追加到笔记末尾，请确认后保存')
   }
 
@@ -304,10 +346,17 @@ export function NotesPage() {
           return
         }
         message.success('已删除')
-        setActive(null)
+        clearActive()
       },
     })
   }
+
+  const folderRows: Array<{ key: FolderKey; label: string; count: number }> = [
+    { key: 'all', label: '全部笔记', count: notes.length },
+    { key: 'untagged', label: '未分类', count: notes.filter((note) => (note.tags || []).length === 0).length },
+    { key: 'pending', label: '待同步', count: notes.filter((note) => note._syncStatus !== 'synced').length },
+    ...tagStats.map((item) => ({ key: `tag:${item.tag}` as FolderKey, label: item.tag, count: item.count })),
+  ]
 
   return (
     <PageShell
@@ -318,113 +367,133 @@ export function NotesPage() {
           <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入 Obsidian</Button>
           <Button icon={<PlusOutlined />} onClick={handleCreate}>新建笔记</Button>
           <Button icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave} disabled={!active}>保存</Button>
           <Button danger icon={<DeleteOutlined />} onClick={handleDelete} disabled={!active}>删除</Button>
         </Space>
       )}
-      maxWidth={1280}
+      maxWidth={1580}
     >
-          <Row gutter={[16, 16]}>
-            <Col xs={24} lg={8}>
-              <Card
-                size="small"
-                title="笔记列表"
-                extra={<Tag color="blue">{notes.length}</Tag>}
+      <div className="mnemox-notes-workbench">
+        <aside className="mnemox-notes-folder-pane">
+          <div className="mnemox-panel-heading">
+            <span>Obsidian</span>
+            <Tag>{notes.length}</Tag>
+          </div>
+          <div className="mnemox-folder-list">
+            {folderRows.map((folder) => (
+              <button
+                key={folder.key}
+                type="button"
+                className={`mnemox-folder-item${folderKey === folder.key ? ' is-active' : ''}`}
+                onClick={() => setFolderKey(folder.key)}
               >
-                <Space direction="vertical" style={{ marginBottom: 10, width: '100%' }}>
-                  <Input.Search
-                    allowClear
-                    placeholder="搜索标题或正文"
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                    onSearch={(v) => setQ(v.trim())}
-                  />
-                  <Select
-                    allowClear
-                    placeholder="按标签筛选"
-                    value={filterTag}
-                    onChange={(v) => setFilterTag(v)}
-                    options={Array.from(new Set(notes.flatMap((n) => n.tags || []))).map((t) => ({ label: t, value: t }))}
-                  />
+                <FolderOpenOutlined />
+                <span>{folder.label}</span>
+                <small>{folder.count}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <aside className="mnemox-notes-file-pane">
+          <div className="mnemox-panel-heading">
+            <span>{getFolderTitle(folderKey)}</span>
+            <Tag>{visibleNotes.length}</Tag>
+          </div>
+          <Input.Search
+            allowClear
+            className="mnemox-notes-search"
+            placeholder="搜索标题或正文"
+            value={q}
+            onChange={(event) => setQ(event.target.value)}
+            onSearch={(value) => setQ(value.trim())}
+          />
+          <div className="mnemox-file-list">
+            {visibleNotes.length === 0 ? (
+              <Empty description="暂无笔记" />
+            ) : (
+              visibleNotes.map((note) => {
+                const selected = active?._localId === note._localId
+                return (
+                  <button
+                    key={note._localId}
+                    type="button"
+                    className={`mnemox-note-file${selected ? ' is-active' : ''}`}
+                    onClick={() => openNote(note)}
+                  >
+                    <span className="mnemox-note-file-title">
+                      <FileTextOutlined />
+                      <span>{note.title || '无标题'}</span>
+                    </span>
+                    <span className="mnemox-note-file-preview">{getNoteExcerpt(note.content)}</span>
+                    <span className="mnemox-note-file-meta">
+                      <span>{note.updated_at ? dayjs(note.updated_at).format('MM-DD HH:mm') : '-'}</span>
+                      {note._syncStatus !== 'synced' && <Tag color="orange">未同步</Tag>}
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </aside>
+
+        <main className="mnemox-notes-document">
+          {active ? (
+            <>
+              <div className="mnemox-doc-breadcrumb">笔记 / {getFolderTitle(folderKey)} / {active.title || '无标题'}</div>
+              <Input
+                className="mnemox-note-title-input"
+                placeholder="笔记标题"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+              <Input
+                className="mnemox-note-tags-input"
+                placeholder="标签，用逗号分隔"
+                value={tagsText}
+                onChange={(event) => setTagsText(event.target.value)}
+              />
+              <div className="mnemox-doc-toolbar">
+                <Space size={6} wrap>
+                  {uploading && <Tag color="blue">上传中</Tag>}
+                  <Button size="small" icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
+                  <Upload
+                    accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      void handleImageUpload(file)
+                      return false
+                    }}
+                  >
+                    <Button size="small" icon={<PictureOutlined />}>插入图片</Button>
+                  </Upload>
+                  <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存</Button>
                 </Space>
-                <List
-                  dataSource={notes}
-                  locale={{ emptyText: '暂无笔记' }}
-                  renderItem={(n) => (
-                    <List.Item
-                      style={{ cursor: 'pointer', background: active?._localId === n._localId ? '#e6f7ff' : 'transparent', borderRadius: 6, paddingInline: 8 }}
-                      onClick={() => openNote(n)}
-                    >
-                      <List.Item.Meta
-                        title={
-                          <Space size={4}>
-                            <span style={{ fontSize: 13 }}>{n.title || '无标题'}</span>
-                            {n._syncStatus !== 'synced' && (
-                              <Tag color="orange" style={{ fontSize: 10 }}>未同步</Tag>
-                            )}
-                          </Space>
-                        }
-                        description={
-                          <Space size={4} wrap>
-                            <span style={{ fontSize: 11, color: '#999' }}>
-                              {n.updated_at ? dayjs(n.updated_at).format('YYYY-MM-DD HH:mm') : '-'}
-                            </span>
-                            {extractTags(n).map((t) => (
-                              <Tag key={`${n._localId}-${t}`} style={{ fontSize: 10 }}>{t}</Tag>
-                            ))}
-                          </Space>
-                        }
-                      />
-                    </List.Item>
-                  )}
-                />
-              </Card>
-            </Col>
+                <Space size={6} wrap>
+                  {(tagsText.split(',').map((item) => item.trim()).filter(Boolean)).map((tag) => (
+                    <Tag key={tag}>{tag}</Tag>
+                  ))}
+                  <Tag>{getWordCount(content)} 字</Tag>
+                </Space>
+              </div>
+              <MarkdownLiveEditor
+                ref={editorRef}
+                value={content}
+                onChange={setContent}
+                height="calc(100vh - 360px)"
+                className="mnemox-notes-editor"
+                onUploadImage={handleEditorImageUpload}
+                placeholder="支持 Markdown；可直接输入、粘贴图片、拖拽图片或点击工具栏图片按钮..."
+              />
+            </>
+          ) : (
+            <div className="mnemox-notes-empty">
+              <Empty description="选择或新建一篇笔记" />
+            </div>
+          )}
+        </main>
+      </div>
 
-            <Col xs={24} lg={16}>
-              <Card size="small" title={active ? '笔记内容' : '笔记内容'}>
-                <Input
-                  placeholder="笔记标题"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  style={{ marginBottom: 10 }}
-                />
-                <Input
-                  placeholder="标签（逗号分隔）"
-                  value={tagsText}
-                  onChange={(e) => setTagsText(e.target.value)}
-                  style={{ marginBottom: 10 }}
-                />
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>实时渲染编辑区</span>
-                  <Space size={4}>
-                    {uploading && <span style={{ color: '#1890ff' }}>上传中...</span>}
-                    <Button size="small" icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
-                    <Upload
-                      accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
-                      showUploadList={false}
-                      beforeUpload={(file) => {
-                        void handleImageUpload(file)
-                        return false
-                      }}
-                    >
-                      <Button size="small" icon={<PictureOutlined />}>插入图片</Button>
-                    </Upload>
-                  </Space>
-                </div>
-                <MarkdownLiveEditor
-                  ref={editorRef}
-                  value={content}
-                  onChange={setContent}
-                  height="620px"
-                  onUploadImage={handleEditorImageUpload}
-                  placeholder="支持 Markdown；可直接输入、粘贴图片、拖拽图片或点击工具栏图片按钮..."
-                />
-              </Card>
-            </Col>
-          </Row>
-
-      {/* AI Assist Modal */}
       <Modal
         title="AI 辅助笔记"
         open={aiOpen}
@@ -439,8 +508,8 @@ export function NotesPage() {
           </Text>
           <Select
             value={aiAction}
-            onChange={(v) => {
-              setAiAction(v)
+            onChange={(value) => {
+              setAiAction(value)
               setAiSuggestion('')
               setAiPreviewMode('preview')
               refreshAISelectedText()
@@ -453,7 +522,7 @@ export function NotesPage() {
           />
           <Input.TextArea
             value={aiInstruction}
-            onChange={(e) => setAiInstruction(e.target.value)}
+            onChange={(event) => setAiInstruction(event.target.value)}
             placeholder="补充要求（可选）：例如更偏考试重点、保持口语化、围绕某一段展开..."
             autoSize={{ minRows: 2, maxRows: 4 }}
             maxLength={500}
@@ -481,7 +550,7 @@ export function NotesPage() {
                 key: 'preview',
                 label: '预览',
                 children: (
-                  <div className="chat-markdown" style={{ minHeight: 260, maxHeight: 520, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 16 }}>
+                  <div className="chat-markdown" style={{ minHeight: 260, maxHeight: 520, overflow: 'auto', border: '1px solid var(--border-light)', borderRadius: 8, padding: 16 }}>
                     {aiSuggestion.trim() ? (
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkMath]}
@@ -502,7 +571,7 @@ export function NotesPage() {
                 children: (
                   <Input.TextArea
                     value={aiSuggestion}
-                    onChange={(e) => setAiSuggestion(e.target.value)}
+                    onChange={(event) => setAiSuggestion(event.target.value)}
                     placeholder="AI 建议会显示在这里，你可以先编辑再追加/替换/复制。"
                     autoSize={{ minRows: 12, maxRows: 22 }}
                   />
@@ -513,7 +582,6 @@ export function NotesPage() {
         </Space>
       </Modal>
 
-      {/* Obsidian Import Modal */}
       <Modal
         title="导入 Obsidian 笔记"
         open={importOpen}
@@ -542,9 +610,9 @@ export function NotesPage() {
                 return false
               }}
               onRemove={(file) => {
-                setImportMdFiles((prev) => prev.filter((f) => f.name !== file.name || f.size !== file.size))
+                setImportMdFiles((prev) => prev.filter((item) => item.name !== file.name || item.size !== file.size))
               }}
-              fileList={importMdFiles.map((f, i) => ({ uid: `md-${i}`, name: f.name, status: 'done' as const }))}
+              fileList={importMdFiles.map((file, index) => ({ uid: `md-${index}`, name: file.name, status: 'done' as const }))}
             >
               <Button>选择 .md 文件（可多选）</Button>
             </Upload>
@@ -560,17 +628,17 @@ export function NotesPage() {
               accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
               multiple
               beforeUpload={(_file, fileList) => {
-                setImportAttachments((prev) => [...prev, ...fileList.filter((f) => !prev.some((p) => p.name === f.name && p.size === f.size))])
+                setImportAttachments((prev) => [...prev, ...fileList.filter((file) => !prev.some((item) => item.name === file.name && item.size === file.size))])
                 return false
               }}
               onRemove={(file) => {
-                setImportAttachments((prev) => prev.filter((f) => f.name !== file.name || f.size !== file.size))
+                setImportAttachments((prev) => prev.filter((item) => item.name !== file.name || item.size !== file.size))
               }}
-              fileList={importAttachments.map((f, i) => ({ uid: String(i), name: f.name, status: 'done' as const }))}
+              fileList={importAttachments.map((file, index) => ({ uid: String(index), name: file.name, status: 'done' as const }))}
             >
               <Button>选择附件图片</Button>
             </Upload>
-            <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
               上传笔记中引用的图片文件（如 ![[image.png]] 引用的图片）
             </div>
           </div>
