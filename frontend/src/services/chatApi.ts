@@ -30,6 +30,24 @@ export interface WebSearchResult {
   snippet?: string
 }
 
+function enhanceChatErrorMessage(error: string) {
+  const text = (error || '').trim()
+  if (!text) return '网络错误，请检查后端是否启动'
+
+  const lower = text.toLowerCase()
+  if (
+    lower.includes('api key 不正确')
+    || lower.includes('没有权限')
+    || lower.includes('api key 未配置')
+    || lower.includes('ai_provider_not_configured')
+    || lower.includes('ai 提供商未配置')
+  ) {
+    return `${text} 请打开“AI 提供商设置”，检查当前供应商的 API Key、Base URL 和验证模型；联网搜索不会单独使用一个搜索 Key。`
+  }
+
+  return text
+}
+
 /**
  * 通过 SSE 流式发送消息，逐块回调 AI 回复内容
  */
@@ -97,7 +115,9 @@ export async function sendMessageStream(
     if (!res.ok) {
       const err = await res.json().catch(() => null)
       const detail = err?.detail
-      onError(typeof detail === 'string' ? detail : detail?.message || `请求失败 (${res.status})`)
+      const rawMessage =
+        typeof detail === 'string' ? detail : detail?.message || `请求失败 (${res.status})`
+      onError(enhanceChatErrorMessage(rawMessage))
       return
     }
 
@@ -152,7 +172,7 @@ export async function sendMessageStream(
             continue
           }
           if (parsed.error) {
-            onError(parsed.error)
+            onError(enhanceChatErrorMessage(parsed.error))
             return
           }
           if (parsed.content) {
@@ -171,6 +191,6 @@ export async function sendMessageStream(
       onDone()
       return
     }
-    onError(e?.message || '网络错误，请检查后端是否启动')
+    onError(enhanceChatErrorMessage(e?.message || '网络错误，请检查后端是否启动'))
   }
 }
