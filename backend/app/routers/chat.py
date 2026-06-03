@@ -823,7 +823,11 @@ def _ai_configuration_error(exc: Exception) -> HTTPException:
         status_code=400,
         detail={
             "code": "AI_PROVIDER_NOT_CONFIGURED",
-            "message": f"AI 提供商未配置或不可用：{str(exc)}。请先在设置中配置并启用 API Key。",
+            "message": (
+                f"AI 提供商未配置或不可用：{str(exc)}。"
+                "请先在设置中检查并启用当前供应商的 API Key、Base URL 和模型配置。"
+                "如果你开启了联网搜索，也不会额外使用单独的搜索 Key。"
+            ),
         },
     )
 
@@ -1075,7 +1079,13 @@ async def chat_send(
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.exception("流式 AI 回复失败: conversation_id=%s user_id=%s", body.conversation_id, user_id)
-            error_data = json.dumps({"error": f"AI 回复失败：{format_ai_provider_error(e)}"}, ensure_ascii=False)
+            error_text = format_ai_provider_error(e)
+            if "API Key 不正确或没有权限" in error_text:
+                error_text = (
+                    f"{error_text} "
+                    "请打开 AI 提供商设置，检查当前供应商的 API Key、Base URL，并先搜索模型后选择一个模型进行验证。"
+                )
+            error_data = json.dumps({"error": f"AI 回复失败：{error_text}"}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
             return
