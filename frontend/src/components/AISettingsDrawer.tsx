@@ -1167,6 +1167,24 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
                         验证模型
                       </div>
+                      <Select
+                        mode="tags"
+                        style={{ width: '100%' }}
+                        tokenSeparators={[',', '，', ' ']}
+                        placeholder="搜索后会自动填充，也可以手动补充模型名"
+                        value={edit.available_models}
+                        options={modelOptions(edit.available_models || [], edit.model)}
+                        onChange={(models) => {
+                          updateProviderAvailableModels(provider.provider_name, models)
+                        }}
+                        popupMatchSelectWidth={false}
+                      />
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                        验证模型
+                      </div>
                       <Space.Compact style={{ width: '100%' }}>
                         <Select
                           style={{ width: '100%' }}
