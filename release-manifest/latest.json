@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.0.6",
-  "release_notes": "优化桌面端单实例启动、右侧边栏布局持久化、默认联网搜索体验，并升级番茄钟、计划页和笔记页工作台。",
-  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.6",
-  "published_at": "2026-06-03T00:00:00+08:00",
+  "latest_version": "1.0.7",
+  "release_notes": "增强 OpenAI-compatible 联网搜索、AI 错误提示、番茄专注任务工作流、右侧边栏布局持久化和今日任务完成状态同步。",
+  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.7",
+  "published_at": "2026-06-06T00:00:00+08:00",
   "downloads": {
-    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.6/Mnemox-Setup-1.0.6.exe"
+    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.7/Mnemox-Setup-1.0.7.exe"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "mnemox-desktop",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Mnemox desktop shell",
   "main": "src/main.js",
   "private": true,
