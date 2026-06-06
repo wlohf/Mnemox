@@ -18,6 +18,14 @@ export function hasDownloadableUpdate(
   return Boolean(systemInfo?.has_update || isDesktopUpdateAvailable(desktopState))
 }
 
+export function hasDirectDownloadUrl(systemInfo?: SystemUpdateInfo | null): boolean {
+  return Boolean(systemInfo?.download_url?.trim())
+}
+
+export function getUpdateOpenUrl(systemInfo?: SystemUpdateInfo | null): string | null {
+  return systemInfo?.download_url?.trim() || systemInfo?.release_page?.trim() || null
+}
+
 export function getDisplayedLatestVersion(
   systemInfo?: SystemUpdateInfo | null,
   desktopState?: DesktopUpdateState | null,

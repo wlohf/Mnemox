@@ -32,7 +32,9 @@ import {
 import {
   getDisplayedLatestVersion,
   getDisplayedReleaseNotes,
+  getUpdateOpenUrl,
   hasDownloadableUpdate,
+  hasDirectDownloadUrl,
   isDesktopUpdateAvailable,
 } from '../services/updateDisplay'
 import { useNavigate } from 'react-router-dom'
@@ -345,7 +347,7 @@ function SystemSettings() {
       }
     }
 
-    const url = updateInfo?.download_url || updateInfo?.release_page
+    const url = getUpdateOpenUrl(updateInfo)
     if (!url) {
       message.warning('当前版本暂无可用下载链接')
       return
@@ -423,6 +425,7 @@ function SystemSettings() {
   const displayedLatestVersion = getDisplayedLatestVersion(updateInfo, desktopUpdateState)
   const displayedReleaseNotes = getDisplayedReleaseNotes(updateInfo, desktopUpdateState)
   const canDownloadUpdate = hasDownloadableUpdate(updateInfo, desktopUpdateState)
+  const hasInstallerDownload = hasDirectDownloadUrl(updateInfo)
 
   const row = (label: string, desc: string, control: React.ReactNode) => (
     <div className="mnemox-settings-row">
@@ -473,7 +476,9 @@ function SystemSettings() {
           </Button>
           {canDownloadUpdate && (
             <Button type="primary" size="small" onClick={handleOpenUpdateLink}>
-              {isDesktopUpdateAvailable(desktopUpdateState) ? '下载并安装更新' : '下载更新'}
+              {isDesktopUpdateAvailable(desktopUpdateState)
+                ? '下载并安装更新'
+                : hasInstallerDownload ? '下载更新' : '查看更新'}
             </Button>
           )}
           {desktopUpdaterAvailable && desktopUpdateState?.phase === 'downloaded' && (
