@@ -11,6 +11,7 @@ import {
   SmileOutlined,
   PictureOutlined,
   DeleteOutlined,
+  RobotOutlined,
 } from '@ant-design/icons'
 import { useThemeStore, type ThemeMode } from '../stores/themeStore'
 import { AISettingsDrawer } from './AISettingsDrawer'
@@ -43,6 +44,11 @@ interface SettingsModalProps {
 
 function showApiError(error: unknown, fallback: string) {
   message.error(getApiErrorMessage(error, fallback))
+}
+
+function parseIntWithDefault(value: string | null, fallback: number) {
+  const parsed = Number.parseInt(value ?? '', 10)
+  return Number.isNaN(parsed) ? fallback : parsed
 }
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
@@ -175,6 +181,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       children: <MotivationSettings />,
     },
     {
+      key: 'agent',
+      label: <span><RobotOutlined /> Agent 设置</span>,
+      children: <AgentSettings />,
+    },
+    {
       key: 'prompts',
       label: <span><FileTextOutlined /> 提示词</span>,
       children: (
@@ -240,11 +251,6 @@ function SystemSettings() {
     return text.split('\n')[0].trim().slice(0, 80)
   }
 
-  const parseIntWithDefault = (value: string | null, fallback: number) => {
-    const parsed = Number.parseInt(value ?? '', 10)
-    return Number.isNaN(parsed) ? fallback : parsed
-  }
-
   const [notifEnabled, setNotifEnabled] = useState(() => {
     return localStorage.getItem('sys_notif') !== 'false'
   })
@@ -262,12 +268,6 @@ function SystemSettings() {
   const [updateCheckIntervalMin, setUpdateCheckIntervalMin] = useState(() => {
     return parseIntWithDefault(localStorage.getItem('sys_update_interval_min'), 360)
   })
-  const [interventionEnabled, setInterventionEnabled] = useState(() =>
-    localStorage.getItem('intervention_enabled') !== 'false'
-  )
-  const [interventionInterval, setInterventionInterval] = useState(() =>
-    parseIntWithDefault(localStorage.getItem('intervention_interval_min'), 30)
-  )
 
   const loadVersion = async () => {
     try {
@@ -408,12 +408,8 @@ function SystemSettings() {
     localStorage.setItem('sys_compact', String(compactMode))
     localStorage.setItem('sys_update_auto_check', String(autoCheckUpdate))
     localStorage.setItem('sys_update_interval_min', String(updateCheckIntervalMin))
-    localStorage.setItem('intervention_enabled', String(interventionEnabled))
-    localStorage.setItem('intervention_interval_min', String(interventionInterval))
     window.dispatchEvent(new StorageEvent('storage', { key: 'sys_update_auto_check', newValue: String(autoCheckUpdate) }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'sys_update_interval_min', newValue: String(updateCheckIntervalMin) }))
-    window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_enabled', newValue: String(interventionEnabled) }))
-    window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_interval_min', newValue: String(interventionInterval) }))
 
     if (desktopUpdaterAvailable) {
       void setDesktopUpdateSettings({
@@ -511,6 +507,42 @@ function SystemSettings() {
         </div>
       )}
       <Divider style={{ margin: '12px 0' }} />
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8 }}>
+        版本：Mnemox v{currentVersion} · 数据存储于本地
+      </div>
+      <Button type="primary" size="small" onClick={save}>保存设置</Button>
+    </div>
+  )
+}
+
+function AgentSettings() {
+  const [interventionEnabled, setInterventionEnabled] = useState(() =>
+    localStorage.getItem('intervention_enabled') !== 'false'
+  )
+  const [interventionInterval, setInterventionInterval] = useState(() =>
+    parseIntWithDefault(localStorage.getItem('intervention_interval_min'), 30)
+  )
+
+  const save = () => {
+    localStorage.setItem('intervention_enabled', String(interventionEnabled))
+    localStorage.setItem('intervention_interval_min', String(interventionInterval))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_enabled', newValue: String(interventionEnabled) }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_interval_min', newValue: String(interventionInterval) }))
+    message.success('Agent 设置已保存')
+  }
+
+  const row = (label: string, desc: string, control: React.ReactNode) => (
+    <div className="mnemox-settings-row">
+      <div className="mnemox-settings-row-copy">
+        <div>{label}</div>
+        <span>{desc}</span>
+      </div>
+      <div className="mnemox-settings-row-control">{control}</div>
+    </div>
+  )
+
+  return (
+    <div style={{ padding: '8px 0' }}>
       <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 10 }}>AI 学习教练提醒</div>
       {row('主动提醒', '学习状态异常时自动弹出建议',
         <Switch size="small" checked={interventionEnabled} onChange={setInterventionEnabled} />
@@ -526,9 +558,6 @@ function SystemSettings() {
         />
       )}
       <Divider style={{ margin: '12px 0' }} />
-      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8 }}>
-        版本：Mnemox v{currentVersion} · 数据存储于本地
-      </div>
       <Button type="primary" size="small" onClick={save}>保存设置</Button>
     </div>
   )

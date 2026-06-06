@@ -47,6 +47,7 @@ import {
   PictureOutlined,
   CloseCircleFilled,
   LogoutOutlined,
+  CheckOutlined,
   CheckSquareOutlined,
   MenuOutlined,
   DoubleLeftOutlined,
@@ -68,6 +69,7 @@ import { useAuthStore } from '../../stores/authStore'
 import { listReviewTasks, getDueReviewCount, type ReviewTaskItem } from '../../services/reviewApi'
 import { createNote, suggestNoteMetadata, type NoteLink } from '../../services/noteApi'
 import { getDashboard, startLearningPipeline, startBatchLearningPipeline, generateDailyPlan, type DashboardData } from '../../services/learningApi'
+import { updateGoalTask } from '../../services/goalApi'
 import { getDailyIntervention } from '../../services/interventionApi'
 import { draftAgentWrite, executeAgentWrite, type AgentWriteDraftResponse } from '../../services/agentApi'
 import { createMemory } from '../../services/memoryApi'
@@ -81,7 +83,7 @@ import {
   type MotivationQuote,
   type MotivationSettings,
 } from '../../services/motivationApi'
-import { apiFetch } from '../../services/apiClient'
+import { apiFetch, getApiErrorMessage } from '../../services/apiClient'
 import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { BackendLoadingOverlay } from './BackendLoadingOverlay'
@@ -90,7 +92,13 @@ import { dismissOnboarding, getOnboardingStatus, seedDemoWorkspace, type Onboard
 import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
 import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
 import { getProviderModels, getSelectableChatProviders } from './chatModelOptions'
-import { getDesktopPreference, setDesktopPreference } from '../../services/desktopPreferences'
+import {
+  loadRightSidebarLayoutPreference,
+  normalizeRightVisibleCards,
+  readLocalRightSidebarLayoutPreference,
+  RIGHT_SIDEBAR_CARDS,
+  saveRightSidebarLayoutPreference,
+} from './rightSidebarLayout'
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
@@ -103,61 +111,6 @@ const ProjectSettingsModal = lazy(() => import('../ProjectSettingsModal').then(m
 const OnboardingModal = lazy(() => import('../OnboardingModal').then(m => ({ default: m.OnboardingModal })))
 
 const LEGACY_ONBOARDING_DISMISSED_PREFIX = 'mnemox_onboarding_dismissed_'
-const DEFAULT_RIGHT_CARD_ORDER = ['current', 'review', 'progress', 'pomodoro', 'calendar', 'motivation']
-const RIGHT_SIDEBAR_CARDS = [
-  { id: 'motivation', label: '每日格言' },
-  { id: 'calendar', label: '今天与计划' },
-  { id: 'current', label: '近期任务' },
-  { id: 'review', label: '复习与错题' },
-  { id: 'progress', label: '学习数据' },
-  { id: 'pomodoro', label: '番茄工作法' },
-]
-const RIGHT_CARD_ID_SET = new Set(RIGHT_SIDEBAR_CARDS.map(card => card.id))
-const RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY = 'layout.rightSidebar'
-
-interface RightSidebarLayoutPreference {
-  cardOrder: string[]
-  visibleCards: string[]
-  collapsed: boolean
-  width: number
-}
-
-function normalizeRightCardOrder(ids: unknown): string[] {
-  if (!Array.isArray(ids)) return DEFAULT_RIGHT_CARD_ORDER
-  const knownIds = ids.filter((id, index) => typeof id === 'string' && RIGHT_CARD_ID_SET.has(id) && ids.indexOf(id) === index)
-  const missingIds = DEFAULT_RIGHT_CARD_ORDER.filter(id => !knownIds.includes(id))
-  return [...knownIds, ...missingIds]
-}
-
-function normalizeRightVisibleCards(ids: unknown): string[] {
-  if (!Array.isArray(ids)) return DEFAULT_RIGHT_CARD_ORDER
-  return ids.filter((id, index) => typeof id === 'string' && RIGHT_CARD_ID_SET.has(id) && ids.indexOf(id) === index)
-}
-
-function clampRightSidebarWidth(value: unknown): number {
-  const width = Number(value)
-  if (!Number.isFinite(width)) return 320
-  return Math.min(480, Math.max(200, width))
-}
-
-function readJsonLocalStorage(key: string): unknown {
-  try {
-    const saved = localStorage.getItem(key)
-    return saved ? JSON.parse(saved) : null
-  } catch {
-    return null
-  }
-}
-
-function readBooleanLocalStorage(key: string, fallback: boolean): boolean {
-  try {
-    const saved = localStorage.getItem(key)
-    return saved === null ? fallback : saved === 'true'
-  } catch {
-    return fallback
-  }
-}
-
 
 interface PomodoroConfig {
   duration: number
@@ -210,6 +163,7 @@ interface TodayTaskItem {
   status: string
   task_type?: string
   source: 'dashboard' | 'plan'
+  planLineIndex?: number
 }
 
 const TASK_STATUS_LABEL: Record<string, string> = {
@@ -224,6 +178,27 @@ const TASK_TYPE_LABEL: Record<string, string> = {
   practice: '练习',
   output: '输出',
   milestone: '里程碑',
+}
+
+function getTodayTaskKey(task: TodayTaskItem): string {
+  if (task.source === 'dashboard' && typeof task.id === 'number') return `dashboard:${task.id}`
+  if (task.source === 'plan' && typeof task.planLineIndex === 'number') return `plan:${task.planLineIndex}:${task.title}`
+  return `${task.source}:${task.title}`
+}
+
+function togglePlanChecklistLine(content: string, lineIndex: number, completed: boolean): string | null {
+  const lines = content.split('\n')
+  const line = lines[lineIndex]
+  if (line === undefined) return null
+
+  const nextLine = line.replace(
+    /^(\s*(?:[-*+]|\d+[.)])\s+\[)[ xX](\]\s+.*)$/,
+    `$1${completed ? 'x' : ' '}$2`,
+  )
+  if (nextLine === line) return null
+
+  lines[lineIndex] = nextLine
+  return lines.join('\n')
 }
 
 interface QuoteNoteDraft {
@@ -285,7 +260,7 @@ export function ObsidianLayout() {
     const saved = localStorage.getItem('layout_focus_mode')
     return saved === null ? true : saved === 'true'
   })
-  const [statsRange, setStatsRange] = useState<DateRange>('week')
+  const [statsRange, setStatsRange] = useState<DateRange>('day')
 
   // 获取统计数据
   const stats = getStats()
@@ -314,7 +289,7 @@ export function ObsidianLayout() {
   const [previewLoading, setPreviewLoading] = useState(false)
 
   // 日历相关（计划持久化到后端）
-  const [calendarExpanded, setCalendarExpanded] = useState(false)
+  const [calendarExpanded, setCalendarExpanded] = useState(() => readLocalRightSidebarLayoutPreference().calendarExpanded)
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
   const [, setWeeklyPlans] = useState<DailyPlan[]>([])
   const [showSettings, setShowSettings] = useState(false)
@@ -352,8 +327,8 @@ export function ObsidianLayout() {
     return () => window.removeEventListener('storage', onStorage)
   }, [])
   const [rightSidebarPreferencesReady, setRightSidebarPreferencesReady] = useState(false)
-  const [cardOrder, setCardOrder] = useState<string[]>(() => normalizeRightCardOrder(readJsonLocalStorage('right_card_order')))
-  const [visibleCards, setVisibleCards] = useState<string[]>(() => normalizeRightVisibleCards(readJsonLocalStorage('right_visible_cards')))
+  const [cardOrder, setCardOrder] = useState<string[]>(() => readLocalRightSidebarLayoutPreference().cardOrder)
+  const [visibleCards, setVisibleCards] = useState<string[]>(() => readLocalRightSidebarLayoutPreference().visibleCards)
   const [sortMode, setSortMode] = useState(false)
   const [customizeOpen, setCustomizeOpen] = useState(false)
   const dragCardRef = useRef<string | null>(null)
@@ -414,17 +389,14 @@ export function ObsidianLayout() {
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('layout_left_collapsed') === 'true')
   const [leftExpandTarget, setLeftExpandTarget] = useState<'default' | 'search' | 'categories' | 'history' | null>(null)
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false)
-  const [rightCollapsed, setRightCollapsed] = useState(() => readBooleanLocalStorage('layout_right_collapsed', false))
+  const [rightCollapsed, setRightCollapsed] = useState(() => readLocalRightSidebarLayoutPreference().collapsed)
 
   // Draggable panel splitter state
   const [leftWidth, setLeftWidth] = useState<number>(() => {
     const saved = localStorage.getItem('layout_left_width')
     return saved ? Number(saved) : 280
   })
-  const [rightWidth, setRightWidth] = useState<number>(() => {
-    const saved = localStorage.getItem('layout_right_width')
-    return clampRightSidebarWidth(saved)
-  })
+  const [rightWidth, setRightWidth] = useState<number>(() => readLocalRightSidebarLayoutPreference().width)
   const [dragging, setDragging] = useState<'left' | 'right' | null>(null)
   const effectiveLeftWidth = leftCollapsed ? 72 : leftWidth
   const effectiveRightWidth = rightCollapsed ? 0 : rightWidth
@@ -433,6 +405,7 @@ export function ObsidianLayout() {
   const [reviewDueCount, setReviewDueCount] = useState(0)
   const [reviewPreviewTasks, setReviewPreviewTasks] = useState<ReviewTaskItem[]>([])
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
+  const [updatingTodayTaskKeys, setUpdatingTodayTaskKeys] = useState<Set<string>>(() => new Set())
   // Backend readiness polling (Feature 1)
   const [backendReady, setBackendReady] = useState(false)
 
@@ -713,25 +686,16 @@ export function ObsidianLayout() {
   }, [leftCollapsed])
 
   useEffect(() => {
-    try {
-      localStorage.setItem('layout_right_collapsed', String(rightCollapsed))
-    } catch {
-      // ignore
-    }
-  }, [rightCollapsed])
-
-  useEffect(() => {
     let cancelled = false
     const loadRightSidebarPreferences = async () => {
-      const saved = await getDesktopPreference<Partial<RightSidebarLayoutPreference>>(RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY)
+      const saved = await loadRightSidebarLayoutPreference()
       if (cancelled) return
 
-      if (saved) {
-        setCardOrder(normalizeRightCardOrder(saved.cardOrder))
-        setVisibleCards(normalizeRightVisibleCards(saved.visibleCards))
-        setRightCollapsed(saved.collapsed === true)
-        setRightWidth(clampRightSidebarWidth(saved.width))
-      }
+      setCardOrder(saved.cardOrder)
+      setVisibleCards(saved.visibleCards)
+      setRightCollapsed(saved.collapsed)
+      setRightWidth(saved.width)
+      setCalendarExpanded(saved.calendarExpanded)
       setRightSidebarPreferencesReady(true)
     }
 
@@ -744,22 +708,14 @@ export function ObsidianLayout() {
   useEffect(() => {
     if (!rightSidebarPreferencesReady) return
 
-    try {
-      localStorage.setItem('right_card_order', JSON.stringify(cardOrder))
-      localStorage.setItem('right_visible_cards', JSON.stringify(visibleCards))
-      localStorage.setItem('layout_right_collapsed', String(rightCollapsed))
-      localStorage.setItem('layout_right_width', String(rightWidth))
-    } catch {
-      // ignore
-    }
-
-    void setDesktopPreference<RightSidebarLayoutPreference>(RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY, {
+    void saveRightSidebarLayoutPreference({
       cardOrder,
       visibleCards,
       collapsed: rightCollapsed,
       width: rightWidth,
+      calendarExpanded,
     })
-  }, [cardOrder, visibleCards, rightCollapsed, rightSidebarPreferencesReady, rightWidth])
+  }, [calendarExpanded, cardOrder, visibleCards, rightCollapsed, rightSidebarPreferencesReady, rightWidth])
 
   useEffect(() => {
     try {
@@ -1860,7 +1816,7 @@ export function ObsidianLayout() {
     }
 
     const planContent = dailyPlans[today] || ''
-    for (const line of planContent.split('\n')) {
+    for (const [lineIndex, line] of planContent.split('\n').entries()) {
       const match = line.match(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.+?)\s*$/)
       if (!match) continue
       const title = match[2].replace(/[*_`#]/g, '').trim()
@@ -1872,11 +1828,69 @@ export function ObsidianLayout() {
         title,
         status: match[1].toLowerCase() === 'x' ? 'completed' : 'pending',
         source: 'plan',
+        planLineIndex: lineIndex,
       })
     }
 
     return result.slice(0, 8)
   }, [dashboardData?.today_tasks, dailyPlans])
+
+  const handleToggleTodayTask = async (task: TodayTaskItem) => {
+    const taskKey = getTodayTaskKey(task)
+    if (updatingTodayTaskKeys.has(taskKey)) return
+
+    const today = dayjs().format('YYYY-MM-DD')
+    const nextStatus = task.status === 'completed' ? 'pending' : 'completed'
+
+    setUpdatingTodayTaskKeys((prev) => {
+      const next = new Set(prev)
+      next.add(taskKey)
+      return next
+    })
+
+    try {
+      if (task.source === 'dashboard' && typeof task.id === 'number') {
+        setDashboardData((prev) => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            today_tasks: prev.today_tasks.map((item) => (
+              item.id === task.id ? { ...item, status: nextStatus } : item
+            )),
+          }
+        })
+        await updateGoalTask(task.id, { status: nextStatus })
+        await loadDashboardOverview()
+      } else if (task.source === 'plan' && typeof task.planLineIndex === 'number') {
+        const currentContent = dailyPlans[today] || ''
+        const nextContent = togglePlanChecklistLine(currentContent, task.planLineIndex, nextStatus === 'completed')
+        if (nextContent === null) {
+          message.warning('没有找到对应的计划任务')
+          return
+        }
+
+        setDailyPlans((prev) => ({ ...prev, [today]: nextContent }))
+        const saved = await apiFetch<DailyPlan>(`/api/plans/${today}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: nextContent }),
+        })
+        setDailyPlans((prev) => ({ ...prev, [today]: saved?.content ?? nextContent }))
+      }
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '更新任务状态失败'))
+      await Promise.all([
+        loadDashboardOverview(),
+        loadWeeklyPlans(),
+      ])
+    } finally {
+      setUpdatingTodayTaskKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(taskKey)
+        return next
+      })
+    }
+  }
 
   // Feature 1: Show loading overlay while waiting for backend
   if (!backendReady) {
@@ -2949,21 +2963,41 @@ export function ObsidianLayout() {
                 }}
                 renderItem={(task) => {
                   const done = task.status === 'completed'
+                  const taskKey = getTodayTaskKey(task)
+                  const updating = updatingTodayTaskKeys.has(taskKey)
                   return (
                     <List.Item style={{ padding: '7px 0', cursor: 'pointer' }} onClick={() => openPlanDocument(dayjs())}>
                       <div style={{ width: '100%', minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
-                          <span
+                          <button
+                            type="button"
+                            aria-pressed={done}
+                            aria-label={done ? '标记为未完成' : '标记为已完成'}
+                            title={done ? '标记为未完成' : '标记为已完成'}
+                            disabled={updating}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void handleToggleTodayTask(task)
+                            }}
                             style={{
                               flex: '0 0 auto',
                               width: 16,
                               height: 16,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
                               borderRadius: 4,
                               border: `1px solid ${done ? 'var(--success)' : 'var(--border-color)'}`,
                               background: done ? 'var(--success)' : 'transparent',
                               marginTop: 2,
+                              padding: 0,
+                              cursor: updating ? 'wait' : 'pointer',
+                              opacity: updating ? 0.65 : 1,
+                              transition: 'background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out)',
                             }}
-                          />
+                          >
+                            {done && <CheckOutlined style={{ fontSize: 11, color: '#fff' }} />}
+                          </button>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div
                               style={{
@@ -3046,7 +3080,7 @@ export function ObsidianLayout() {
               }
               extra={
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <Button type="text" size="small" icon={<BarChartOutlined />} onClick={() => setShowStatsModal(true)} title="查看统计" />
+                  <Button type="text" size="small" icon={<BarChartOutlined />} onClick={() => { setStatsRange('day'); setShowStatsModal(true) }} title="查看统计" />
                   <Button type="link" size="small" onClick={() => setShowPomodoroModal(true)}>设置</Button>
                 </div>
               }

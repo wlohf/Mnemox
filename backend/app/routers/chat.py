@@ -851,8 +851,11 @@ def _is_hosted_web_search_unsupported(exc: Exception) -> bool:
     text = str(exc).lower()
     return (
         "当前供应商不支持 openai 内置联网搜索" in text
+        or "当前供应商不支持工具调用联网搜索" in text
         or ("does not support" in text and "web_search" in text)
         or ("unsupported" in text and "web_search" in text)
+        or ("unsupported" in text and "tool" in text)
+        or ("不支持" in text and "工具" in text)
     )
 
 
@@ -1033,7 +1036,7 @@ async def chat_send(
                 if not (body.web_search_enabled and use_hosted_web_search and _is_hosted_web_search_unsupported(exc)):
                     raise
 
-                logger.info("OpenAI 内置联网搜索不可用，切换到应用层网页搜索: %s", exc)
+                logger.info("联网搜索工具不可用，切换到应用层网页搜索: %s", exc)
                 collected_reply.clear()
                 web_prompt, web_results = await _build_external_web_search_prompt(body.message)
                 fallback_system_prompt = f"{system_prompt or ''}{web_prompt}" if web_prompt else system_prompt

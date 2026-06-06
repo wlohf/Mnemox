@@ -203,6 +203,10 @@ async def update_task(
         task.planned_date = body.planned_date
     if body.status is not None:
         task.status = body.status
+        if body.status == "completed":
+            task.completed_at = task.completed_at or datetime.now()
+        else:
+            task.completed_at = None
 
     await db.flush()
     await db.refresh(task)

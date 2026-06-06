@@ -140,7 +140,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 左侧会话栏支持新建、搜索、按时间分组、置顶、重命名、项目筛选和项目资料管理
 - 支持流式回复、会话持久化、学习会话聊天记录同步、对话摘要、长期记忆提取、错题自动检测和学习事件追踪
 - 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
-- 聊天输入区支持模型覆盖默认路由；官方 OpenAI Provider 可手动开启内置联网搜索，其他供应商会返回明确的不支持提示
+- 聊天输入区支持模型覆盖默认路由；开启联网搜索后，官方 OpenAI 走 Responses 内置 Web Search，OpenAI-compatible 中转可通过本地工具调用执行网页搜索，其他供应商使用应用层搜索上下文兜底
 - 聊天中的自然语言写入会先生成可编辑草稿，再由用户确认写入笔记、目标任务或当天计划
 
 ### 5. RAG 知识库
@@ -274,8 +274,8 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 本次文档同步了最近几轮围绕聊天、AI 设置、桌面发布和界面体验的修复：
 
-- **OpenAI 联网搜索**：聊天输入区新增“联网搜索”开关；开启后，官方 OpenAI Provider 会通过 Responses API 调用内置 Web Search，默认关闭以避免额外延迟和费用。
-- **供应商边界提示**：DeepSeek、Qwen、Claude、Gemini 和 OpenAI-compatible 中转不会误走 OpenAI 内置联网搜索；不支持时会通过 SSE 返回明确提示，提醒切换到官方 OpenAI。
+- **联网搜索**：聊天输入区新增“联网搜索”开关；开启后，官方 OpenAI Provider 会通过 Responses API 调用内置 Web Search，OpenAI-compatible 中转可通过 Chat Completions tools 调用本地 `web_search`。
+- **供应商边界提示**：DeepSeek、Qwen、Claude、Gemini 和 OpenAI-compatible 中转不会误走 OpenAI 内置联网搜索；工具调用不兼容时会回退到应用层搜索结果注入，并通过 SSE 返回搜索结果事件。
 - **AI 错误信息优化**：API Key 错误、模型不存在、额度不足、Base URL 填错、返回 HTML/非 JSON、非 OpenAI-compatible 聊天格式等问题，会在聊天流、模型搜索和连接测试里显示更容易理解的中文提示。
 - **AI Provider 管理修复**：默认供应商也可以删除；删除激活供应商时会自动选择剩余可用供应商接管，并清理场景路由引用，避免数据库外键失败或设置页卡死。
 - **流式聊天持久化增强**：聊天内容保存与摘要、记忆、反思、错题检测、事件追踪分阶段提交，后处理失败不会连带回滚已经保存的用户消息和 AI 回复。
@@ -566,7 +566,7 @@ Mnemox/
 
 ### 已完成
 
-- [x] OpenAI 联网搜索：官方 OpenAI Provider 可在聊天中手动开启 Web Search，其他供应商返回清晰边界提示
+- [x] 联网搜索：官方 OpenAI Provider 可使用 Web Search，OpenAI-compatible 中转可通过本地工具调用搜索，工具不兼容时回退到应用层搜索结果注入
 - [x] AI 设置增强：供应商场景路由、RAG Embedding 配置、自定义中转、模型搜索、连接测试、供应商删除和路由清理
 - [x] AI 错误提示优化：常见 Key、模型、额度、Base URL、JSON 格式和 OpenAI-compatible 响应异常会转成可读中文提示
 - [x] 聊天工作区升级：会话路由、历史搜索、项目筛选、项目资料管理、左侧折叠栏、模型覆盖和流式回复

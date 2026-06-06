@@ -21,6 +21,35 @@ interface StatsModalProps {
   weekChartOption: object
 }
 
+const getDurationParts = (minutes: number, minutePrecision = 0) => {
+  const safeMinutes = Number.isFinite(minutes) ? Math.max(0, minutes) : 0
+  const factor = 10 ** minutePrecision
+  const roundedTotalMinutes = Math.round(safeMinutes * factor) / factor
+  const hours = Math.floor(roundedTotalMinutes / 60)
+  const restMinutes = Math.max(0, roundedTotalMinutes - hours * 60)
+
+  return { hours, minutes: restMinutes }
+}
+
+const formatMinuteValue = (minutes: number, precision = 0) => {
+  if (precision === 0) return `${Math.round(minutes)}`
+  return minutes.toFixed(precision).replace(/\.0$/, '')
+}
+
+const formatDurationCompact = (minutes: number, minutePrecision = 0) => {
+  const parts = getDurationParts(minutes, minutePrecision)
+  const minuteText = formatMinuteValue(parts.minutes, minutePrecision)
+
+  return parts.hours > 0 ? `${parts.hours}h ${minuteText}m` : `${minuteText}m`
+}
+
+const formatDurationChinese = (minutes: number) => {
+  const parts = getDurationParts(minutes)
+  const minuteText = `${Math.round(parts.minutes)}分钟`
+
+  return parts.hours > 0 ? `${parts.hours}小时${minuteText}` : minuteText
+}
+
 export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, getCumulativeStats, getTaskDistribution, weekChartOption }: StatsModalProps) {
   const cumulativeStats = useMemo(() => getCumulativeStats(), [getCumulativeStats])
   const distribution = useMemo(() => getTaskDistribution(statsRange), [getTaskDistribution, statsRange])
@@ -34,17 +63,15 @@ export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, ge
       borderWidth: 1,
       textStyle: { color: 'var(--text-primary)', fontSize: 12 },
       formatter: (params: any) => {
-        const h = Math.floor(params.data.minutes / 60)
-        const m = params.data.minutes % 60
-        return `<b>${params.name}</b><br/>⏱️ ${h > 0 ? `${h}h ` : ''}${m}m<br/>🍅 ${params.data.count}个 (${params.percent}%)`
+        return `<b>${params.name}</b><br/>⏱️ ${formatDurationCompact(params.data.minutes, 1)}<br/>🍅 ${params.data.count}个 (${params.percent}%)`
       },
     },
-    legend: { orient: 'vertical', right: 10, top: 'center', itemWidth: 10, itemHeight: 10, textStyle: { fontSize: 11, color: 'var(--text-secondary)' } },
+    legend: { show: false },
     series: [{
-      type: 'pie', radius: ['45%', '70%'], center: ['35%', '50%'], avoidLabelOverlap: true,
+      type: 'pie', radius: ['42%', '68%'], center: ['50%', '50%'], avoidLabelOverlap: true,
       itemStyle: { borderRadius: 4, borderColor: 'var(--bg-surface)', borderWidth: 2 },
       label: { show: false },
-      emphasis: { label: { show: true, fontSize: 12, fontWeight: 'bold' }, itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.2)' } },
+      emphasis: { label: { show: false }, itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.2)' } },
       data: distribution.map((t) => ({ value: t.minutes, name: t.taskName, minutes: t.minutes, count: t.count, itemStyle: { color: t.color } })),
     }],
   }), [distribution])
@@ -67,10 +94,10 @@ export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, ge
           {[
             { value: cumulativeStats.totalCount, unit: '', label: '次数', color: '#ff4d4f' },
             { value: cumulativeStats.totalHours, unit: 'h', label: '时长', color: '#007AFF' },
-            { value: cumulativeStats.dailyAverageMinutes, unit: 'm', label: '日均', color: '#34C759' },
+            { value: formatDurationChinese(cumulativeStats.dailyAverageMinutes), unit: '', label: '日均时长', color: '#34C759', fontSize: 24 },
           ].map((s) => (
             <Col key={s.label} span={8} style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 32, fontWeight: 'bold', color: s.color }}>{s.value}<span style={{ fontSize: 14, fontWeight: 'normal' }}>{s.unit}</span></div>
+              <div style={{ fontSize: s.fontSize ?? 32, fontWeight: 'bold', color: s.color, lineHeight: 1.2, whiteSpace: 'nowrap' }}>{s.value}<span style={{ fontSize: 14, fontWeight: 'normal' }}>{s.unit}</span></div>
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{s.label}</div>
             </Col>
           ))}
@@ -115,19 +142,23 @@ export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, ge
           title={
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>专注时长分布</span>
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 'normal' }}>共 {Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</span>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 'normal' }}>共 {formatDurationCompact(totalMinutes, 1)}</span>
             </div>
           }
           style={{ marginBottom: 16 }}
         >
-          <ReactECharts option={pieOption} style={{ height: 200 }} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8, marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-            {distribution.slice(0, 6).map((task) => (
-              <div key={task.taskName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', background: 'rgba(0,0,0,0.02)', borderRadius: 6 }}>
+          <ReactECharts option={pieOption} style={{ height: 180 }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 8, paddingTop: 12, borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>项目明细</span>
+            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{distribution.length} 项</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 8, marginTop: 8, maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}>
+            {distribution.map((task) => (
+              <div key={task.taskName} title={task.taskName} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(0,0,0,0.02)', borderRadius: 6, minWidth: 0 }}>
                 <div style={{ width: 10, height: 10, borderRadius: 3, background: task.color, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.taskName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{Math.floor(task.minutes / 60)}h {task.minutes % 60}m · {task.percentage}%</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{formatDurationCompact(task.minutes, 1)} · {task.percentage}%</div>
                 </div>
               </div>
             ))}

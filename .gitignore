@@ -69,6 +69,7 @@ uploads/
 .env.*.local
 .ace-tool/
 .aionrs/
+.codegraph/
 .pytest_cache/
 nul
 *.db-journal
