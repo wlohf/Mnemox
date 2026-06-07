@@ -29,13 +29,26 @@ class _FakeResponsesStream:
 
 
 class _FakeResponses:
-    def __init__(self, events):
-        self.events = events
-        self.kwargs = None
+    def __init__(self, *streams):
+        self.streams = [list(events) for events in streams]
+        self.calls = []
 
     def stream(self, **kwargs):
-        self.kwargs = kwargs
-        return _FakeResponsesStream(self.events)
+        self.calls.append(deepcopy(kwargs))
+        events = self.streams.pop(0)
+        if len(events) == 1 and isinstance(events[0], Exception):
+            raise events[0]
+        return _FakeResponsesStream(events)
+
+
+class _FailingResponses:
+    def __init__(self, exc):
+        self.exc = exc
+        self.calls = []
+
+    def stream(self, **kwargs):
+        self.calls.append(deepcopy(kwargs))
+        raise self.exc
 
 
 class _FakeChatCompletions:
@@ -48,19 +61,39 @@ class _FakeChatCompletions:
         return self.responses.pop(0)
 
 
+class _FakeChatStream:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+
+    def __aiter__(self):
+        self._iter = iter(self.chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+def _stream_chunk(delta):
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
 def _chat_response(message):
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
 class OpenAIProviderWebSearchTests(unittest.IsolatedAsyncioTestCase):
-    async def test_web_search_stream_yields_only_output_text_delta(self):
+    async def test_web_search_stream_uses_hosted_responses_tool_first(self):
         provider = OpenAIProvider(api_key="test", model="gpt-4o-mini")
-        fake_responses = _FakeResponses([
-            SimpleNamespace(type="response.web_search_call.searching"),
-            SimpleNamespace(type="response.output_text.delta", delta="hello"),
-            SimpleNamespace(type="response.output_text.delta", delta=" world"),
-            SimpleNamespace(type="response.completed"),
-        ])
+        fake_responses = _FakeResponses(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="hello"),
+                SimpleNamespace(type="response.output_text.delta", delta=" world"),
+                SimpleNamespace(type="response.completed"),
+            ],
+        )
         provider.client.responses = fake_responses
 
         chunks = [
@@ -73,10 +106,34 @@ class OpenAIProviderWebSearchTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(chunks, ["hello", " world"])
-        self.assertEqual(fake_responses.kwargs["tools"], [{"type": "web_search", "search_context_size": "medium"}])
-        self.assertEqual(fake_responses.kwargs["include"], ["web_search_call.action.sources"])
-        self.assertEqual(fake_responses.kwargs["instructions"], "be brief")
-        self.assertEqual(fake_responses.kwargs["input"][0]["content"], "search")
+        self.assertEqual(fake_responses.calls[0]["tools"], [{"type": "web_search"}])
+        self.assertEqual(fake_responses.calls[0]["tool_choice"], {"type": "web_search"})
+        self.assertEqual(fake_responses.calls[0]["include"], ["web_search_call.action.sources"])
+        self.assertEqual(fake_responses.calls[0]["instructions"], "be brief")
+        self.assertEqual(fake_responses.calls[0]["input"][0]["content"], "search")
+
+    async def test_web_search_stream_keeps_auto_hosted_tool_choice_for_non_current_query(self):
+        provider = OpenAIProvider(api_key="test", model="gpt-4o-mini")
+        fake_responses = _FakeResponses(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="plain"),
+                SimpleNamespace(type="response.completed"),
+            ],
+        )
+        provider.client.responses = fake_responses
+
+        chunks = [
+            chunk
+            async for chunk in provider.chat_stream_with_web_search(
+                messages=[{"role": "user", "content": "解释一下勾股定理"}],
+                system_prompt="be brief",
+                temperature=0.2,
+            )
+        ]
+
+        self.assertEqual(chunks, ["plain"])
+        self.assertEqual(fake_responses.calls[0]["tools"], [{"type": "web_search"}])
+        self.assertEqual(fake_responses.calls[0]["tool_choice"], "auto")
 
     def test_supports_web_search_for_official_and_openai_compatible_base_url(self):
         self.assertTrue(OpenAIProvider(api_key="test").supports_web_search())
@@ -93,29 +150,42 @@ class OpenAIProviderWebSearchTests(unittest.IsolatedAsyncioTestCase):
             ).supports_web_search()
         )
 
-    async def test_openai_compatible_web_search_uses_local_function_tool(self):
+    async def test_openai_compatible_web_search_uses_streaming_local_function_tool(self):
         provider = OpenAIProvider(
             api_key="test",
             model="gpt-4o",
             base_url="https://relay.example/v1",
         )
+        provider.client.responses = _FailingResponses(ValueError("unsupported parameter: web_search"))
         fake_completions = _FakeChatCompletions([
-            _chat_response(
-                SimpleNamespace(
-                    content=None,
-                    tool_calls=[
-                        SimpleNamespace(
-                            id="call_1",
-                            type="function",
-                            function=SimpleNamespace(
-                                name="web_search",
-                                arguments='{"query": "Mnemox latest", "max_results": 2}',
-                            ),
-                        )
-                    ],
-                )
+            _FakeChatStream([
+                _stream_chunk(SimpleNamespace(tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        id="call_1",
+                        type="function",
+                        function=SimpleNamespace(name="web_search", arguments=""),
+                    )
+                ])),
+                _stream_chunk(SimpleNamespace(tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        function=SimpleNamespace(arguments='{"query": "Mnemox'),
+                    )
+                ])),
+                _stream_chunk(SimpleNamespace(tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        function=SimpleNamespace(arguments=' latest", "max_results": 2}'),
+                    )
+                ])),
+            ]),
+            _FakeChatStream(
+                [
+                    _stream_chunk(SimpleNamespace(content="final ")),
+                    _stream_chunk(SimpleNamespace(content="answer")),
+                ]
             ),
-            _chat_response(SimpleNamespace(content="final answer", tool_calls=None)),
         ])
         provider.client.chat.completions = fake_completions
 
@@ -138,12 +208,92 @@ class OpenAIProviderWebSearchTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
 
-        self.assertEqual(chunks, ["final answer"])
+        self.assertEqual(chunks, ["final ", "answer"])
         search_mock.assert_awaited_once_with("Mnemox latest", limit=2)
         self.assertEqual(fake_completions.calls[0]["tools"][0]["function"]["name"], "web_search")
-        self.assertEqual(fake_completions.calls[0]["tool_choice"], "auto")
+        self.assertEqual(fake_completions.calls[0]["tool_choice"]["function"]["name"], "web_search")
+        self.assertTrue(fake_completions.calls[0]["stream"])
+        self.assertTrue(fake_completions.calls[1]["stream"])
         self.assertEqual(fake_completions.calls[1]["messages"][-1]["role"], "tool")
         self.assertIn("https://example.com/a", fake_completions.calls[1]["messages"][-1]["content"])
+
+    async def test_openai_compatible_web_search_falls_back_to_responses_function_tool(self):
+        provider = OpenAIProvider(
+            api_key="test",
+            model="gpt-4o",
+            base_url="https://relay.example/v1",
+        )
+        fake_responses = _FakeResponses(
+            [ValueError("unsupported parameter: web_search")],
+            [
+                SimpleNamespace(
+                    type="response.output_item.added",
+                    output_index=0,
+                    item=SimpleNamespace(
+                        type="function_call",
+                        id="fc_1",
+                        call_id="call_1",
+                        name="web_search",
+                        arguments='{"query": "Mnemox latest", "max_results": 2}',
+                    ),
+                ),
+                SimpleNamespace(type="response.completed"),
+            ],
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="relay answer"),
+                SimpleNamespace(type="response.completed"),
+            ],
+        )
+        provider.client.responses = fake_responses
+
+        with patch(
+            "app.ai.openai_provider.search_web",
+            AsyncMock(return_value=[
+                WebSearchResult(
+                    title="Result A",
+                    url="https://example.com/a",
+                    snippet="summary",
+                )
+            ]),
+        ) as search_mock:
+            chunks = [
+                chunk
+                async for chunk in provider.chat_stream_with_web_search(
+                    messages=[{"role": "user", "content": "search"}],
+                    system_prompt="be brief",
+                    temperature=0.2,
+                )
+            ]
+
+        self.assertEqual(chunks, ["relay answer"])
+        search_mock.assert_awaited_once_with("Mnemox latest", limit=2)
+        self.assertEqual(fake_responses.calls[0]["tools"], [{"type": "web_search"}])
+        self.assertEqual(fake_responses.calls[1]["tools"][0]["name"], "web_search")
+        self.assertEqual(fake_responses.calls[2]["input"][-1]["type"], "function_call_output")
+
+    async def test_openai_compatible_web_search_keeps_auto_tool_choice_for_non_current_query(self):
+        provider = OpenAIProvider(
+            api_key="test",
+            model="gpt-4o",
+            base_url="https://relay.example/v1",
+        )
+        provider.client.responses = _FailingResponses(ValueError("unsupported parameter: web_search"))
+        fake_completions = _FakeChatCompletions([
+            _FakeChatStream([_stream_chunk(SimpleNamespace(content="plain answer"))]),
+        ])
+        provider.client.chat.completions = fake_completions
+
+        chunks = [
+            chunk
+            async for chunk in provider.chat_stream_with_web_search(
+                messages=[{"role": "user", "content": "解释一下勾股定理"}],
+                system_prompt="be brief",
+                temperature=0.2,
+            )
+        ]
+
+        self.assertEqual(chunks, ["plain answer"])
+        self.assertEqual(fake_completions.calls[0]["tool_choice"], "auto")
 
     async def test_openai_compatible_tool_unsupported_raises_fallback_signal(self):
         provider = OpenAIProvider(
@@ -151,6 +301,7 @@ class OpenAIProviderWebSearchTests(unittest.IsolatedAsyncioTestCase):
             model="gpt-4o",
             base_url="https://relay.example/v1",
         )
+        provider.client.responses = _FailingResponses(ValueError("unsupported parameter: web_search"))
 
         class _UnsupportedCompletions:
             async def create(self, **_kwargs):

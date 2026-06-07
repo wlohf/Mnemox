@@ -38,9 +38,10 @@ import {
 import ReactECharts from 'echarts-for-react'
 import { usePomodoroStore, type DateRange, type PomodoroRecord } from '../stores/pomodoroStore'
 import { PageShell } from '../components/PageShell'
+import { getApiErrorMessage, withAuthQuery } from '../services/apiClient'
+import { uploadImageStrict } from '../services/imageApi'
 import { getCurrentQuote, type MotivationQuote } from '../services/motivationApi'
 
-const MAX_BACKGROUND_IMAGE_SIZE = 3 * 1024 * 1024
 const TASK_STORAGE_KEY = 'mnemox_pomodoro_focus_tasks'
 const TASK_SET_STORAGE_KEY = 'mnemox_pomodoro_task_sets'
 const DEFAULT_TASK_SET_ID = 'default'
@@ -217,6 +218,7 @@ export function PomodoroPage() {
   const [stopReasonModalVisible, setStopReasonModalVisible] = useState(false)
   const [stopReason, setStopReason] = useState('')
   const [quote, setQuote] = useState<MotivationQuote | null>(null)
+  const [backgroundUploading, setBackgroundUploading] = useState(false)
   const [taskSets, setTaskSets] = useState<ReusablePomodoroTaskSet[]>(() => (
     normalizeTaskSets(readStoredJson<ReusablePomodoroTaskSet[]>(TASK_SET_STORAGE_KEY, DEFAULT_TASK_SETS))
   ))
@@ -496,34 +498,25 @@ export function PomodoroPage() {
     })
   }
 
-  const handleBackgroundUpload = (file: File) => {
+  const handleBackgroundUpload = async (file: File) => {
+    if (backgroundUploading) return false
+
     if (!file.type.startsWith('image/')) {
       message.warning('请选择图片文件')
       return false
     }
 
-    if (file.size > MAX_BACKGROUND_IMAGE_SIZE) {
-      message.warning('背景图不能超过 3MB')
-      return false
+    setBackgroundUploading(true)
+    try {
+      const result = await uploadImageStrict(file)
+      setBackgroundImage(result.raw_url)
+      message.success('番茄背景已更新')
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '背景图上传失败'))
+    } finally {
+      setBackgroundUploading(false)
     }
 
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result
-      if (typeof result !== 'string') {
-        message.error('背景图读取失败')
-        return
-      }
-
-      try {
-        setBackgroundImage(result)
-        message.success('番茄背景已更新')
-      } catch {
-        message.error('背景图保存失败，请换一张更小的图片')
-      }
-    }
-    reader.onerror = () => message.error('背景图读取失败')
-    reader.readAsDataURL(file)
     return false
   }
 
@@ -609,8 +602,9 @@ export function PomodoroPage() {
   const isBreak = timerMode === 'break'
   const statusLabel = isRunning || isPaused ? (isBreak ? '休息中' : '专注中') : '准备开始'
   const activeTask = isRunning || isPaused ? currentTask || (isBreak ? '休息' : '专注学习') : taskName
-  const stageStyle: PomodoroStageStyle | undefined = backgroundImage
-    ? { '--mnemox-pomodoro-background': `url("${backgroundImage}")` }
+  const backgroundImageUrl = backgroundImage ? withAuthQuery(backgroundImage) : null
+  const stageStyle: PomodoroStageStyle | undefined = backgroundImageUrl
+    ? { '--mnemox-pomodoro-background': `url("${backgroundImageUrl}")` }
     : undefined
 
   const renderTaskCard = (task: ReusablePomodoroTask) => {
@@ -690,10 +684,13 @@ export function PomodoroPage() {
           </Button>
           <Upload
             accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+            disabled={backgroundUploading}
             showUploadList={false}
             beforeUpload={handleBackgroundUpload}
           >
-            <Button icon={<PictureOutlined />}>{backgroundImage ? '更换背景' : '上传背景'}</Button>
+            <Button icon={<PictureOutlined />} loading={backgroundUploading}>
+              {backgroundImage ? '更换背景' : '上传背景'}
+            </Button>
           </Upload>
           {backgroundImage && (
             <Button icon={<DeleteOutlined />} onClick={handleResetBackground}>

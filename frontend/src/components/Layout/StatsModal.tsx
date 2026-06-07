@@ -43,13 +43,6 @@ const formatDurationCompact = (minutes: number, minutePrecision = 0) => {
   return parts.hours > 0 ? `${parts.hours}h ${minuteText}m` : `${minuteText}m`
 }
 
-const formatDurationChinese = (minutes: number) => {
-  const parts = getDurationParts(minutes)
-  const minuteText = `${Math.round(parts.minutes)}分钟`
-
-  return parts.hours > 0 ? `${parts.hours}小时${minuteText}` : minuteText
-}
-
 export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, getCumulativeStats, getTaskDistribution, weekChartOption }: StatsModalProps) {
   const cumulativeStats = useMemo(() => getCumulativeStats(), [getCumulativeStats])
   const distribution = useMemo(() => getTaskDistribution(statsRange), [getTaskDistribution, statsRange])
@@ -94,7 +87,7 @@ export function StatsModal({ open, onClose, stats, statsRange, setStatsRange, ge
           {[
             { value: cumulativeStats.totalCount, unit: '', label: '次数', color: '#ff4d4f' },
             { value: cumulativeStats.totalHours, unit: 'h', label: '时长', color: '#007AFF' },
-            { value: formatDurationChinese(cumulativeStats.dailyAverageMinutes), unit: '', label: '日均时长', color: '#34C759', fontSize: 24 },
+            { value: formatDurationCompact(cumulativeStats.dailyAverageMinutes), unit: '', label: '日均时长', color: '#34C759', fontSize: 24 },
           ].map((s) => (
             <Col key={s.label} span={8} style={{ textAlign: 'center' }}>
               <div style={{ fontSize: s.fontSize ?? 32, fontWeight: 'bold', color: s.color, lineHeight: 1.2, whiteSpace: 'nowrap' }}>{s.value}<span style={{ fontSize: 14, fontWeight: 'normal' }}>{s.unit}</span></div>

@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from app.config import settings
 from app.utils.paths import ensure_data_dirs, get_user_images_dir
 from app.auth import get_current_user
 from app.models.user import User
@@ -13,7 +14,7 @@ from app.models.user import User
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
-MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_SIZE = settings.IMAGE_UPLOAD_MAX_MB * 1024 * 1024
 
 
 def _validate_image_extension(file: UploadFile) -> str:
@@ -45,8 +46,9 @@ def _detect_image_extension(data: bytes) -> str | None:
 async def _read_limited(
     file: UploadFile,
     max_size: int,
-    error_detail: str = "图片大小不能超过 10 MB",
+    error_detail: str | None = None,
 ) -> bytes:
+    detail = error_detail or f"图片大小不能超过 {settings.IMAGE_UPLOAD_MAX_MB} MB"
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -55,7 +57,7 @@ async def _read_limited(
             break
         total += len(chunk)
         if total > max_size:
-            raise HTTPException(status_code=400, detail=error_detail)
+            raise HTTPException(status_code=400, detail=detail)
         chunks.append(chunk)
     return b"".join(chunks)
 

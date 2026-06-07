@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     RAG_COLLECTION_NAME: str = "study_materials"
     SMALL_MATERIAL_THRESHOLD: int = 4000
     MATERIAL_UPLOAD_MAX_MB: int = 200
+    IMAGE_UPLOAD_MAX_MB: int = 50
     MAX_REQUEST_BODY_MB: int = 20
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_PER_MINUTE: int = 120
@@ -94,7 +95,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_HOURS: int = 24
 
     # App Update
-    APP_VERSION: str = "1.0.7"
+    APP_VERSION: str = "1.0.8"
     APP_UPDATE_MANIFEST_URL: str = _DEFAULT_UPDATE_MANIFEST_URL
 
     # Local packaged app

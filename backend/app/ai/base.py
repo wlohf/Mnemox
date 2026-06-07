@@ -11,7 +11,7 @@ class AIProvider(ABC):
         self.model = model
 
     def supports_web_search(self) -> bool:
-        """Whether this provider can use the OpenAI hosted web search tool."""
+        """Whether this provider can answer with web search enabled."""
         return False
     
     @abstractmethod

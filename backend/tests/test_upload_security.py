@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException, UploadFile
 
-from app.routers.images import _save_image
+from app.routers.images import MAX_SIZE as IMAGE_MAX_SIZE, _save_image
 from app.routers.materials import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 
 PNG_1X1 = (
@@ -60,6 +60,9 @@ class UploadSecurityTests(unittest.TestCase):
 
     def test_material_default_upload_limit_is_200mb(self):
         self.assertEqual(MAX_FILE_SIZE, 200 * 1024 * 1024)
+
+    def test_image_default_upload_limit_is_50mb(self):
+        self.assertEqual(IMAGE_MAX_SIZE, 50 * 1024 * 1024)
 
 
 if __name__ == "__main__":

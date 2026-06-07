@@ -39,7 +39,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                 size = 0
             limit_mb = settings.MAX_REQUEST_BODY_MB
             if request.url.path in {"/api/materials/upload", "/api/images/upload", "/api/images/upload-batch"}:
-                limit_mb = settings.MATERIAL_UPLOAD_MAX_MB + 5
+                limit_mb = max(settings.MATERIAL_UPLOAD_MAX_MB, settings.IMAGE_UPLOAD_MAX_MB) + 5
             if limit_mb > 0 and size > limit_mb * 1024 * 1024:
                 return JSONResponse(status_code=413, content={"detail": f"请求体超过限制 ({limit_mb}MB)"})
         return await call_next(request)

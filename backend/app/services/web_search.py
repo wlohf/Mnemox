@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Iterable
 from urllib.parse import parse_qs, unquote, urlparse
+import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -94,6 +95,111 @@ def parse_duckduckgo_html(html: str, limit: int = 5) -> list[WebSearchResult]:
     return _dedupe_results(parser.results)[:limit]
 
 
+class _BingHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[WebSearchResult] = []
+        self._current: dict[str, str] | None = None
+        self._li_depth = 0
+        self._capture: str | None = None
+        self._capture_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = {key: value or "" for key, value in attrs}
+        classes = set(attr.get("class", "").split())
+
+        if tag == "li" and "b_algo" in classes:
+            self._finish_current()
+            self._current = {"title": "", "url": "", "snippet": ""}
+            self._li_depth = 1
+            return
+
+        if self._current is None:
+            return
+
+        if tag == "li":
+            self._li_depth += 1
+
+        if tag == "a" and not self._current.get("url"):
+            href = attr.get("href", "").strip()
+            if href.startswith(("http://", "https://")):
+                self._current["url"] = _clean_result_url(href)
+                self._capture = "title"
+                self._capture_depth = 1
+                return
+
+        if tag == "p":
+            self._capture = "snippet"
+            self._capture_depth = 1
+            return
+
+        if self._capture:
+            self._capture_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._current is not None and tag == "li":
+            self._li_depth -= 1
+            if self._li_depth <= 0:
+                self._finish_current()
+                return
+
+        if not self._capture:
+            return
+        self._capture_depth -= 1
+        if self._capture_depth <= 0:
+            self._capture = None
+            self._capture_depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None or not self._capture:
+            return
+        text = " ".join(data.split())
+        if not text:
+            return
+        previous = self._current.get(self._capture, "")
+        self._current[self._capture] = f"{previous} {text}".strip()
+
+    def close(self) -> None:
+        super().close()
+        self._finish_current()
+
+    def _finish_current(self) -> None:
+        if not self._current:
+            return
+        title = self._current.get("title", "").strip()
+        url = self._current.get("url", "").strip()
+        snippet = self._current.get("snippet", "").strip()
+        if title and url.startswith(("http://", "https://")):
+            self.results.append(WebSearchResult(title=title, url=url, snippet=snippet))
+        self._current = None
+        self._capture = None
+        self._capture_depth = 0
+        self._li_depth = 0
+
+
+def parse_bing_html(html: str, limit: int = 5) -> list[WebSearchResult]:
+    parser = _BingHTMLParser()
+    parser.feed(html)
+    parser.close()
+    return _dedupe_results(parser.results)[:limit]
+
+
+def parse_bing_rss(xml_text: str, limit: int = 5) -> list[WebSearchResult]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    results: list[WebSearchResult] = []
+    for item in root.findall("./channel/item"):
+        title = " ".join((item.findtext("title", default="") or "").split())
+        url = (item.findtext("link", default="") or "").strip()
+        snippet = " ".join((item.findtext("description", default="") or "").split())
+        if title and url.startswith(("http://", "https://")):
+            results.append(WebSearchResult(title=title, url=_clean_result_url(url), snippet=snippet))
+    return _dedupe_results(results)[:limit]
+
+
 def _dedupe_results(results: Iterable[WebSearchResult]) -> list[WebSearchResult]:
     seen: set[str] = set()
     unique: list[WebSearchResult] = []
@@ -119,6 +225,21 @@ async def search_web(query: str, *, limit: int = 5, timeout: float = 8.0) -> lis
         )
     }
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-        response = await client.get("https://html.duckduckgo.com/html/", params={"q": clean_query})
+        try:
+            response = await client.get("https://html.duckduckgo.com/html/", params={"q": clean_query})
+            response.raise_for_status()
+            results = parse_duckduckgo_html(response.text, limit=limit)
+            if results:
+                return results
+        except httpx.HTTPError:
+            pass
+
+        response = await client.get("https://www.bing.com/search", params={"q": clean_query, "format": "rss"})
         response.raise_for_status()
-    return parse_duckduckgo_html(response.text, limit=limit)
+        results = parse_bing_rss(response.text, limit=limit)
+        if results:
+            return results
+
+        response = await client.get("https://www.bing.com/search", params={"q": clean_query})
+        response.raise_for_status()
+        return parse_bing_html(response.text, limit=limit)

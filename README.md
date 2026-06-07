@@ -140,7 +140,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 左侧会话栏支持新建、搜索、按时间分组、置顶、重命名、项目筛选和项目资料管理
 - 支持流式回复、会话持久化、学习会话聊天记录同步、对话摘要、长期记忆提取、错题自动检测和学习事件追踪
 - 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
-- 聊天输入区支持模型覆盖默认路由；开启联网搜索后，官方 OpenAI 走 Responses 内置 Web Search，OpenAI-compatible 中转可通过本地工具调用执行网页搜索，其他供应商使用应用层搜索上下文兜底
+- 聊天输入区支持模型覆盖默认路由；开启联网搜索后，GPT / OpenAI-compatible 优先走 Responses hosted `web_search`，明确搜索类请求会强制触发联网；不支持 hosted tool 时自动回退到本地工具调用和应用层搜索上下文兜底
 - 聊天中的自然语言写入会先生成可编辑草稿，再由用户确认写入笔记、目标任务或当天计划
 
 ### 5. RAG 知识库
@@ -263,6 +263,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 不提交 `.env`、数据库文件、上传目录、ChromaDB 数据、日志或真实 API Key。
 - 上传文件当前有扩展名、大小和 Content-Type 白名单校验，后端使用 UUID 文件名保存；公开服务仍建议增加反病毒扫描、速率限制和对象存储隔离。
 - `MATERIAL_UPLOAD_MAX_MB` 默认 200MB，可按部署资源调整。
+- `IMAGE_UPLOAD_MAX_MB` 默认 50MB，用于聊天图片、笔记图片和番茄背景图上传限制。
 - Markdown 展示默认跳过原始 HTML，并对外链使用 `noopener`；如果后续引入新的 Markdown 渲染组件，也要保持同等安全策略。
 - AI Provider Key 可以通过环境变量或设置页配置；多人部署时应评估 Key 的隔离、额度限制和审计需求。
 
@@ -270,9 +271,21 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 ## 此次更新说明
 
-更新日期：2026-06-06
+更新日期：2026-06-07
 
-本次文档同步了最近几轮围绕聊天、AI 设置、桌面发布和界面体验的修复：
+本次文档同步了 1.0.8 围绕联网搜索、图片上传和番茄体验的修复：
+
+- **Responses 联网搜索修复**：GPT / OpenAI-compatible 中转在流式对话中优先使用 Responses hosted `web_search`，请求形态与 Codex 使用方式保持一致：`tools: [{"type": "web_search"}]`、`tool_choice` 自动或按搜索意图强制触发、`include` 返回搜索来源。
+- **联网搜索回退增强**：hosted `web_search` 不支持时，自动回退到 Responses function tool；再不支持时回退到 Chat Completions 流式 tools + Mnemox 本地搜索工具。
+- **自动搜索触发更稳**：用户明确表达“联网、搜索、最新、当前、today、latest”等意图时会强制触发联网搜索，普通问题保持 `auto`，避免不必要的搜索。
+- **本地搜索兜底更可靠**：应用层 `web_search` 从单一 DuckDuckGo HTML 扩展为 DuckDuckGo、Bing RSS、Bing HTML 多级解析，减少无结果导致的降级失败。
+- **图片上传与番茄背景图优化**：图片上传默认上限提升到 50MB；番茄背景图改为走后端图片接口保存和鉴权访问，不再依赖浏览器保存大体积 base64。
+- **统计时长显示优化**：统计弹窗中的小时和分钟统一使用 `h` / `m` 紧凑格式。
+- **版本元数据同步**：应用版本、前端包版本、桌面包版本、更新清单和发布脚本默认版本同步到 `1.0.8`。
+
+上一轮更新日期：2026-06-06
+
+1.0.7 同步了最近几轮围绕聊天、AI 设置、桌面发布和界面体验的修复：
 
 - **联网搜索**：聊天输入区新增“联网搜索”开关；开启后，官方 OpenAI Provider 会通过 Responses API 调用内置 Web Search，OpenAI-compatible 中转可通过 Chat Completions tools 调用本地 `web_search`。
 - **供应商边界提示**：DeepSeek、Qwen、Claude、Gemini 和 OpenAI-compatible 中转不会误走 OpenAI 内置联网搜索；工具调用不兼容时会回退到应用层搜索结果注入，并通过 SSE 返回搜索结果事件。
@@ -284,7 +297,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **聊天工作区体验升级**：左侧会话栏、项目筛选、折叠窄栏、账户入口、设置弹窗和 AI 设置抽屉统一视觉样式；聊天主区域高度和滚动行为更稳定。
 - **番茄专注任务升级**：番茄页新增可复用专注任务、待办集、任务卡、任务详情和任务级统计，支持长期学习任务复用。
 - **右侧栏任务与布局同步**：右侧栏布局偏好统一同步到桌面稳定偏好和本地存储，今日任务可以直接勾选完成并同步目标任务完成时间。
-- **桌面发布记录同步**：v1.0.5 增加 OpenAI 联网搜索；v1.0.6 优化桌面单实例和工作台体验；v1.0.7 增强 OpenAI-compatible 搜索、番茄任务和右侧栏持久化。
+- **桌面发布记录同步**：v1.0.5 增加 OpenAI 联网搜索；v1.0.6 优化桌面单实例和工作台体验；v1.0.7 增强 OpenAI-compatible 搜索、番茄任务和右侧栏持久化；v1.0.8 修复 Responses 流式联网搜索、图片上传和番茄背景图。
 
 上一轮更新日期：2026-05-01
 
@@ -453,6 +466,7 @@ DEBUG=True
 ENVIRONMENT=development
 CORS_ORIGINS=["http://localhost:5173", "http://localhost:3000"]
 MATERIAL_UPLOAD_MAX_MB=200
+IMAGE_UPLOAD_MAX_MB=50
 ```
 
 **3. 启动后端**
