@@ -3,5 +3,7 @@
   "release_notes": "修复 GPT / OpenAI-compatible 在 Responses 流式模式下的联网搜索，优先使用 hosted web_search，补强本地搜索兜底，并优化图片上传、番茄背景图和统计时长展示。",
   "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.8",
   "published_at": "2026-06-07T00:00:00+08:00",
-  "downloads": {}
+  "downloads": {
+    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.8/Mnemox-Setup-1.0.8.exe"
+  }
 }
