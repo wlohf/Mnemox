@@ -22,7 +22,13 @@ export interface DesktopUpdateSettings {
 
 export function isDesktopUpdaterAvailable(): boolean {
   const bridge = getDesktopBridge()
-  return Boolean(bridge?.checkForUpdates && bridge?.getUpdateState)
+  return Boolean(
+    bridge?.checkForUpdates &&
+    bridge?.getUpdateState &&
+    bridge?.downloadUpdate &&
+    bridge?.downloadInstallerAndRun &&
+    bridge?.quitAndInstall,
+  )
 }
 
 export async function checkForDesktopUpdate(): Promise<DesktopUpdateState> {
@@ -41,6 +47,14 @@ export async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
   const bridge = getDesktopBridge()
   if (!bridge?.downloadUpdate) throw new Error('桌面更新器不可用')
   return bridge.downloadUpdate()
+}
+
+export async function downloadInstallerAndRunDesktopUpdate(
+  payload: { url: string; version?: string | null },
+): Promise<DesktopUpdateState> {
+  const bridge = getDesktopBridge()
+  if (!bridge?.downloadInstallerAndRun) throw new Error('桌面更新器不可用')
+  return bridge.downloadInstallerAndRun(payload)
 }
 
 export async function getDesktopUpdateSettings(): Promise<DesktopUpdateSettings> {

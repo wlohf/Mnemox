@@ -6,6 +6,7 @@ const test = require('node:test')
 
 const {
   defaultUpdateSettings,
+  getInstallerFileName,
   readUpdateSettings,
   reduceUpdateState,
   writeUpdateSettings,
@@ -74,4 +75,19 @@ test('readUpdateSettings falls back to defaults and writeUpdateSettings persists
     intervalMinutes: 90,
     lastCheckedAt: 123,
   })
+})
+
+test('getInstallerFileName uses release asset basename and sanitizes unsafe names', () => {
+  assert.equal(
+    getInstallerFileName('https://github.com/wlohf/Mnemox/releases/download/v1.0.8/Mnemox-Setup-1.0.8.exe', '1.0.8'),
+    'Mnemox-Setup-1.0.8.exe',
+  )
+  assert.equal(
+    getInstallerFileName('https://example.com/download?asset=installer', 'v1.0.9'),
+    'Mnemox-Setup-1.0.9.exe',
+  )
+  assert.equal(
+    getInstallerFileName('https://example.com/releases/Mnemox%3ASetup%3F1.0.9.exe', null),
+    'Mnemox_Setup_1.0.9.exe',
+  )
 })

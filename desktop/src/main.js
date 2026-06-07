@@ -219,6 +219,9 @@ function createTraySafely() {
 function registerAutoUpdater() {
   autoUpdateManager = createAutoUpdateManager({
     app,
+    beforeInstall: async () => {
+      stopBackend()
+    },
     onStateChange: (state) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('desktop-updater:state', state)
@@ -229,6 +232,7 @@ function registerAutoUpdater() {
   ipcMain.handle('desktop-updater:get-state', () => autoUpdateManager.getState())
   ipcMain.handle('desktop-updater:check', () => autoUpdateManager.checkForUpdates())
   ipcMain.handle('desktop-updater:download', () => autoUpdateManager.downloadUpdate())
+  ipcMain.handle('desktop-updater:download-installer-and-run', (_event, payload) => autoUpdateManager.downloadInstallerAndRun(payload))
   ipcMain.handle('desktop-updater:get-settings', () => readUpdateSettings(updateSettingsPath))
   ipcMain.handle('desktop-updater:set-settings', (_event, settings) => {
     const current = readUpdateSettings(updateSettingsPath)

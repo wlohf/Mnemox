@@ -20,6 +20,7 @@ import { checkSystemUpdate, getSystemVersion, type SystemUpdateInfo } from '../s
 import { getApiErrorMessage } from '../services/apiClient'
 import {
   checkForDesktopUpdate,
+  downloadInstallerAndRunDesktopUpdate,
   downloadDesktopUpdate,
   getDesktopUpdateState,
   getDesktopUpdateSettings,
@@ -339,20 +340,43 @@ function SystemSettings() {
       try {
         const nextState = await downloadDesktopUpdate()
         setDesktopUpdateState(nextState)
-        message.success('开始下载更新')
+        message.success('开始下载更新，下载完成后将自动安装')
         return
       } catch (error) {
-        message.error(getApiErrorMessage(error, '下载更新失败，请稍后再试'))
-        return
+        if (!updateInfo?.download_url?.trim()) {
+          message.error(getApiErrorMessage(error, '下载更新失败，请稍后再试'))
+          return
+        }
       }
     }
 
-    const url = getUpdateOpenUrl(updateInfo)
+    const url = updateInfo?.download_url?.trim()
     if (!url) {
       message.warning('当前版本暂无可用下载链接')
       return
     }
-    window.open(url, '_blank', 'noopener,noreferrer')
+
+    if (desktopUpdaterAvailable) {
+      try {
+      const nextState = await downloadInstallerAndRunDesktopUpdate({
+        url,
+        version: displayedLatestVersion,
+      })
+      setDesktopUpdateState(nextState)
+        message.success('开始下载更新，下载完成后将启动安装程序')
+        return
+      } catch (error) {
+        message.error(getApiErrorMessage(error, '下载并安装更新失败，请稍后再试'))
+        return
+      }
+    }
+
+    const openUrl = getUpdateOpenUrl(updateInfo)
+    if (!openUrl) {
+      message.warning('当前版本暂无可用下载链接')
+      return
+    }
+    window.open(openUrl, '_blank', 'noopener,noreferrer')
   }
 
   useEffect(() => {
@@ -426,6 +450,9 @@ function SystemSettings() {
   const displayedReleaseNotes = getDisplayedReleaseNotes(updateInfo, desktopUpdateState)
   const canDownloadUpdate = hasDownloadableUpdate(updateInfo, desktopUpdateState)
   const hasInstallerDownload = hasDirectDownloadUrl(updateInfo)
+  const updateActionLabel = desktopUpdaterAvailable
+    ? (desktopUpdateState?.phase === 'downloading' ? '正在下载更新' : '下载并安装更新')
+    : hasInstallerDownload ? '下载更新' : '查看更新'
 
   const row = (label: string, desc: string, control: React.ReactNode) => (
     <div className="mnemox-settings-row">
@@ -475,10 +502,14 @@ function SystemSettings() {
             手动检查更新
           </Button>
           {canDownloadUpdate && (
-            <Button type="primary" size="small" onClick={handleOpenUpdateLink}>
-              {isDesktopUpdateAvailable(desktopUpdateState)
-                ? '下载并安装更新'
-                : hasInstallerDownload ? '下载更新' : '查看更新'}
+            <Button
+              type="primary"
+              size="small"
+              loading={desktopUpdateState?.phase === 'downloading'}
+              disabled={desktopUpdateState?.phase === 'downloading'}
+              onClick={handleOpenUpdateLink}
+            >
+              {updateActionLabel}
             </Button>
           )}
           {desktopUpdaterAvailable && desktopUpdateState?.phase === 'downloaded' && (

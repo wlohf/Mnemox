@@ -1,5 +1,156 @@
 const fs = require('node:fs')
+const https = require('node:https')
 const path = require('node:path')
+const { spawn } = require('node:child_process')
+
+function normalizeInstallerFileName(fileName) {
+  const cleaned = String(fileName || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+
+  if (!cleaned || !cleaned.toLowerCase().endsWith('.exe')) {
+    return null
+  }
+  return cleaned
+}
+
+function getInstallerFileName(downloadUrl, version) {
+  try {
+    const url = new URL(downloadUrl)
+    const basename = path.posix.basename(url.pathname)
+    const decoded = decodeURIComponent(basename)
+    const fileName = normalizeInstallerFileName(decoded)
+    if (fileName) return fileName
+  } catch {
+    // Fall back to version-based file name below.
+  }
+
+  const normalizedVersion = String(version || '').trim().replace(/^v/i, '')
+  return normalizedVersion
+    ? `Mnemox-Setup-${normalizedVersion}.exe`
+    : 'Mnemox-Setup-update.exe'
+}
+
+function assertDownloadUrl(downloadUrl) {
+  let url
+  try {
+    url = new URL(downloadUrl)
+  } catch {
+    throw new Error('更新安装包地址无效')
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error('更新安装包地址必须使用 HTTPS')
+  }
+  return url
+}
+
+function downloadFile(downloadUrl, destinationPath, onProgress = () => {}, redirectCount = 0) {
+  if (redirectCount > 5) {
+    return Promise.reject(new Error('更新安装包下载重定向次数过多'))
+  }
+
+  const url = assertDownloadUrl(downloadUrl)
+  const tempPath = `${destinationPath}.download`
+
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        'User-Agent': 'Mnemox-Desktop-Updater',
+        Accept: 'application/octet-stream,*/*',
+      },
+    }, (response) => {
+      const statusCode = response.statusCode || 0
+      if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
+        response.resume()
+        const redirectedUrl = new URL(response.headers.location, url).toString()
+        resolve(downloadFile(redirectedUrl, destinationPath, onProgress, redirectCount + 1))
+        return
+      }
+
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume()
+        reject(new Error(`更新安装包下载失败：HTTP ${statusCode}`))
+        return
+      }
+
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true })
+      fs.rmSync(tempPath, { force: true })
+
+      const total = Number.parseInt(String(response.headers['content-length'] || '0'), 10) || 0
+      const startedAt = Date.now()
+      let transferred = 0
+      let lastProgressAt = 0
+      const file = fs.createWriteStream(tempPath)
+
+      const emitProgress = (force = false) => {
+        const now = Date.now()
+        if (!force && now - lastProgressAt < 500) return
+        lastProgressAt = now
+        const elapsedSeconds = Math.max((now - startedAt) / 1000, 0.001)
+        onProgress({
+          percent: total > 0 ? (transferred / total) * 100 : 0,
+          bytesPerSecond: Math.round(transferred / elapsedSeconds),
+          transferred,
+          total,
+        })
+      }
+
+      response.on('data', (chunk) => {
+        transferred += chunk.length
+        emitProgress()
+      })
+
+      response.on('error', (error) => {
+        file.destroy()
+        fs.rmSync(tempPath, { force: true })
+        reject(error)
+      })
+
+      file.on('error', (error) => {
+        fs.rmSync(tempPath, { force: true })
+        reject(error)
+      })
+
+      file.on('finish', () => {
+        file.close((error) => {
+          if (error) {
+            fs.rmSync(tempPath, { force: true })
+            reject(error)
+            return
+          }
+          try {
+            fs.rmSync(destinationPath, { force: true })
+            fs.renameSync(tempPath, destinationPath)
+            emitProgress(true)
+            resolve(destinationPath)
+          } catch (renameError) {
+            fs.rmSync(tempPath, { force: true })
+            reject(renameError)
+          }
+        })
+      })
+
+      response.pipe(file)
+    })
+
+    request.setTimeout(60000, () => {
+      request.destroy(new Error('更新安装包下载超时'))
+    })
+    request.on('error', (error) => {
+      fs.rmSync(tempPath, { force: true })
+      reject(error)
+    })
+  })
+}
+
+function launchInstaller(installerPath) {
+  const child = spawn(installerPath, [], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  })
+  child.unref()
+}
 
 function summarizeUpdateError(error) {
   const text = String(error || '').trim()
@@ -152,7 +303,7 @@ function shouldAutoCheckForUpdates(enabled, lastCheckedAt, intervalMinutes, now 
   return now - lastCheckedAt >= intervalMs
 }
 
-function createAutoUpdateManager({ app, onStateChange = () => {} }) {
+function createAutoUpdateManager({ app, onStateChange = () => {}, beforeInstall = () => {} }) {
   const { autoUpdater } = require('electron-updater')
   let state = {
     ...buildInitialUpdateState(),
@@ -205,7 +356,55 @@ function createAutoUpdateManager({ app, onStateChange = () => {} }) {
     },
     async downloadUpdate() {
       await autoUpdater.downloadUpdate()
+      if (state.phase === 'downloaded') {
+        await beforeInstall()
+        autoUpdater.quitAndInstall(false, true)
+      }
       return state
+    },
+    async downloadInstallerAndRun(payload = {}) {
+      const downloadUrl = String(payload.url || '').trim()
+      if (!downloadUrl) {
+        const error = new Error('缺少更新安装包下载地址')
+        emit('error', {
+          message: '缺少更新安装包下载地址',
+          error: error.message,
+        })
+        throw error
+      }
+
+      const version = payload.version || state.version
+      const installerName = getInstallerFileName(downloadUrl, version)
+      const installerPath = path.join(app.getPath('userData'), 'updates', installerName)
+
+      try {
+        emit('download-progress', {
+          percent: 0,
+          transferred: 0,
+          total: 0,
+          message: '正在下载更新安装包',
+        })
+        await downloadFile(downloadUrl, installerPath, (progress) => {
+          emit('download-progress', {
+            ...progress,
+            message: '正在下载更新安装包',
+          })
+        })
+        emit('update-downloaded', {
+          version,
+          message: '更新已下载，正在启动安装程序',
+        })
+        await beforeInstall()
+        launchInstaller(installerPath)
+        setTimeout(() => app.quit(), 500)
+        return state
+      } catch (error) {
+        emit('error', {
+          message: '下载安装包失败，请稍后重试',
+          error: String(error && error.message ? error.message : error),
+        })
+        throw error
+      }
     },
     async quitAndInstall() {
       autoUpdater.quitAndInstall(false, true)
@@ -217,6 +416,7 @@ module.exports = {
   buildInitialUpdateState,
   createAutoUpdateManager,
   defaultUpdateSettings,
+  getInstallerFileName,
   readUpdateSettings,
   reduceUpdateState,
   shouldAutoCheckForUpdates,

@@ -18,6 +18,7 @@ export interface MnemoxDesktopBridge {
   getUpdateSettings?: () => Promise<DesktopUpdateSettings>
   setUpdateSettings?: (settings: DesktopUpdateSettings) => Promise<DesktopUpdateSettings>
   downloadUpdate?: () => Promise<DesktopUpdateState>
+  downloadInstallerAndRun?: (payload: { url: string; version?: string | null }) => Promise<DesktopUpdateState>
   quitAndInstall?: () => Promise<void>
   onUpdateState?: (callback: (state: DesktopUpdateState) => void) => () => void
   getSavedLogin?: () => Promise<SavedLogin | null>

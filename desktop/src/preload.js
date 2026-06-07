@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('mnemoxDesktop', {
   getUpdateSettings: () => ipcRenderer.invoke('desktop-updater:get-settings'),
   setUpdateSettings: (settings) => ipcRenderer.invoke('desktop-updater:set-settings', settings),
   downloadUpdate: () => ipcRenderer.invoke('desktop-updater:download'),
+  downloadInstallerAndRun: (payload) => ipcRenderer.invoke('desktop-updater:download-installer-and-run', payload),
   quitAndInstall: () => ipcRenderer.invoke('desktop-updater:quit-and-install'),
   getSavedLogin: () => ipcRenderer.invoke('desktop-auth:get-saved-login'),
   saveLogin: (payload) => ipcRenderer.invoke('desktop-auth:save-login', payload),
