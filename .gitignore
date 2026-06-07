@@ -70,6 +70,8 @@ uploads/
 .ace-tool/
 .aionrs/
 .codegraph/
+.worktrees
+.worktrees/
 .pytest_cache/
 nul
 *.db-journal
