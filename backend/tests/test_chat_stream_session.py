@@ -335,6 +335,42 @@ class ChatStreamSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         persist_mock.assert_not_awaited()
 
+    async def test_chat_send_appends_note_context_and_emits_indicators(self):
+        db = _FakeDb()
+        provider = _FakeProvider()
+        current_user = User(id=1, username="u", email="u@example.com", hashed_password="x")
+        body = ChatRequest(message="梯度下降怎么坚持学", conversation_id=1, history=[])
+        hit = type(
+            "Hit",
+            (),
+            {
+                "id": 7,
+                "title": "梯度下降复盘",
+                "excerpt": "坚持不是兴奋时才学习，而是先完成一个最小步骤。",
+                "tags": ["机器学习"],
+                "score": 4.2,
+                "reason": "关键词匹配：梯度下降",
+                "updated_at": None,
+            },
+        )()
+
+        with (
+            patch("app.routers.chat._resolve_materials_and_build_prompt", AsyncMock(return_value=("base prompt", [], []))),
+            patch("app.routers.chat.search_note_context", AsyncMock(return_value=[hit])),
+            patch("app.routers.chat.get_relevant_memories", AsyncMock(return_value=[])),
+            patch("app.routers.chat._persist_streamed_chat_turn", AsyncMock()),
+            patch("app.routers.chat.detect_progress_feedback", AsyncMock(return_value=None)),
+            patch("app.routers.chat.AIProviderFactory.create_provider", AsyncMock(return_value=provider)),
+        ):
+            response = await chat_send(body, db=db, current_user=current_user)
+            chunks = [chunk async for chunk in response.body_iterator]
+
+        self.assertIn("base prompt", provider.system_prompt)
+        self.assertIn("用户相关笔记摘录", provider.system_prompt)
+        self.assertIn("梯度下降复盘", provider.system_prompt)
+        self.assertTrue(any("note_context_indicators" in chunk for chunk in chunks))
+        self.assertTrue(any("梯度下降复盘" in chunk for chunk in chunks))
+
 
 if __name__ == "__main__":
     unittest.main()
