@@ -1,7 +1,7 @@
 # Mnemox Voice, RAG Motivation, and Agent Design
 
 Date: 2026-06-08
-Status: Draft pending user approval
+Status: Phase 1 implementation in progress
 
 ## Decision
 
@@ -147,6 +147,14 @@ flowchart TD
 ### Phase 1: Note-Grounded Motivation and Chat Recall
 
 Goal: make encouragement and chat feel grounded in the user's own notes without adding a new runtime.
+
+Implementation notes for Phase 1:
+
+- `backend/app/services/note_context_service.py` provides deterministic keyword/recency retrieval before vector indexing is introduced.
+- `backend/app/services/motivation_service.py` centralizes motivation prompt construction and deterministic fallback.
+- Chat routes append user note context without changing the existing material prompt tuple contract.
+- Retrieved notes are always scoped by `Note.user_id == current_user.id`.
+- Retrieved note content is always wrapped by `wrap_untrusted_context` before it enters an LLM prompt.
 
 Deliverables:
 
