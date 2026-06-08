@@ -59,7 +59,7 @@ import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
 import { useThemeStore } from '../../stores/themeStore'
 import * as pomodoroApi from '../../services/pomodoroApi'
-import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator } from '../../services/chatApi'
+import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator, type NoteContextIndicator } from '../../services/chatApi'
 import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
 import { useChatStore } from '../../stores/chatStore'
@@ -1233,6 +1233,11 @@ export function ObsidianLayout() {
       chatMode,
       (memories) => {
         setMemoryIndicators(memories)
+      },
+      (notes: NoteContextIndicator[]) => {
+        if (notes.length > 0) {
+          message.info(`已参考 ${notes.length} 条相关笔记：${notes.map((n) => n.title).join('、')}`)
+        }
       },
       (feedback) => {
         notification.open({
