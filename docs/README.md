@@ -19,6 +19,7 @@
 - 从 RAG 到 AI 教练完整方案：`/从RAG到AI教练-完整方案.md`
 - 语音 / 笔记联想 / 个性化激励方案评估：`/docs/voice-rag-motivation-plan-2026-06-08.md`
 - 语音 / RAG 激励 / Agent 正式设计草案：`/docs/superpowers/specs/2026-06-08-voice-rag-motivation-agent-design.md`
+- 自主 Coach Agent 工程设计：`/docs/superpowers/specs/2026-06-15-autonomous-coach-agent-design.md`
 
 ## 🎨 UI/体验优化记录（历史参考）
 
