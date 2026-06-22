@@ -16,6 +16,8 @@ class AIProviderSetting(Base):
     base_url = Column(String(500), default="", comment="API Base URL")
     model = Column(String(100), default="", comment="模型名称")
     available_models = Column(Text, default="[]", comment="可选模型 JSON 列表")
+    max_context_tokens = Column(Integer, nullable=True, comment="上下文 token 上限")
+    max_output_tokens = Column(Integer, nullable=True, comment="输出 token 上限")
     is_active = Column(Boolean, default=False, comment="是否为当前激活的提供商")
     enabled = Column(Boolean, default=True, comment="是否启用")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")

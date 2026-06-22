@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from sqlalchemy.exc import OperationalError
 from pydantic import BaseModel
-from typing import List, Optional, cast
+from typing import Any, AsyncIterator, List, Optional, cast
 
 from app.database import get_db
 from app.ai.factory import AIProviderFactory
@@ -30,7 +31,8 @@ from app.services.memory_service import (
     upsert_conversation_summary,
     upsert_user_memories_from_turn,
 )
-from app.services.web_search import WebSearchResult, search_web
+from app.services.search_settings_service import get_search_settings_dict
+from app.services.web_search import SearchProviderSettings, WebSearchResult, search_web
 
 from app.config import settings
 from app.auth import get_current_user
@@ -41,6 +43,22 @@ from app.utils.prompt_safety import wrap_untrusted_context
 logger = logging.getLogger(__name__)
 
 _SQLITE_LOCK_RETRY_DELAYS = (0.25, 0.75, 1.5, 3.0)
+WEB_SEARCH_MODE_AUTO = "auto"
+WEB_SEARCH_MODE_PROVIDER_HOSTED = "provider_hosted"
+WEB_SEARCH_MODE_APP_SEARCH = "app_search"
+WEB_SEARCH_MODE_GROK_SUMMARY = "grok_summary"
+WEB_SEARCH_MODE_TAVILY = "tavily"
+WEB_SEARCH_MODE_LOCAL_FALLBACK = "local_fallback"
+_WEB_SEARCH_MODES = {
+    WEB_SEARCH_MODE_AUTO,
+    WEB_SEARCH_MODE_PROVIDER_HOSTED,
+    WEB_SEARCH_MODE_APP_SEARCH,
+    WEB_SEARCH_MODE_GROK_SUMMARY,
+    WEB_SEARCH_MODE_TAVILY,
+    WEB_SEARCH_MODE_LOCAL_FALLBACK,
+}
+_DEFAULT_GROK_SEARCH_PROVIDER_NAME = "openai-grok"
+_URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+")
 
 
 # Correction markers that suggest the user made a mistake
@@ -618,6 +636,8 @@ class ChatRequest(BaseModel):
     provider_name: Optional[str] = None
     model: Optional[str] = None
     web_search_enabled: bool = False
+    web_search_mode: str = WEB_SEARCH_MODE_AUTO
+    web_search_provider_name: Optional[str] = None
 
 
 def _is_sqlite_database_locked(exc: Exception) -> bool:
@@ -841,6 +861,7 @@ def _format_web_search_context(results: list[WebSearchResult]) -> str:
                     f"[{index}] {item.title}",
                     f"URL: {item.url}",
                     f"摘要: {item.snippet or '无摘要'}",
+                    f"搜索来源: {getattr(item, 'source_provider', 'local')}",
                 ]
             )
         )
@@ -859,8 +880,264 @@ def _is_hosted_web_search_unsupported(exc: Exception) -> bool:
     )
 
 
-async def _build_external_web_search_prompt(query: str) -> tuple[str, list[dict]]:
-    results = await search_web(query, limit=5)
+def _message_text_for_token_budget(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+            elif item.get("type") == "image_url":
+                parts.append("[image]")
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _estimate_message_tokens(message: dict) -> int:
+    text = _message_text_for_token_budget(message)
+    role = str(message.get("role") or "")
+    return max(1, (len(text) + len(role)) // 4 + 4)
+
+
+def _trim_messages_for_context_budget(messages: list[dict], max_context_tokens: Optional[int]) -> list[dict]:
+    if not max_context_tokens or max_context_tokens <= 0:
+        return messages
+    if not messages:
+        return messages
+
+    remaining = max_context_tokens
+    selected_reversed: list[dict] = []
+    for message in reversed(messages):
+        cost = _estimate_message_tokens(message)
+        if selected_reversed and cost > remaining:
+            continue
+        selected_reversed.append(message)
+        remaining -= cost
+        if remaining <= 0:
+            break
+
+    selected_reversed.reverse()
+    return selected_reversed or [messages[-1]]
+
+
+def _normalize_web_search_mode(raw: Optional[str]) -> str:
+    mode = (raw or WEB_SEARCH_MODE_AUTO).strip().lower()
+    if mode not in _WEB_SEARCH_MODES:
+        return WEB_SEARCH_MODE_AUTO
+    return mode
+
+
+def _extract_urls(text: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in _URL_PATTERN.findall(text or ""):
+        url = match.rstrip(".,);]}>\"'")
+        if not url.startswith(("http://", "https://")):
+            continue
+        key = url.rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        urls.append(url)
+    return urls
+
+
+def _strip_markdown_fences(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    lines = cleaned.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _parse_search_summary_payload(raw_text: str) -> tuple[str, list[dict]]:
+    cleaned = _strip_markdown_fences(raw_text)
+    candidates = [cleaned]
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(cleaned[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        summary = str(
+            data.get("summary")
+            or data.get("answer")
+            or data.get("content")
+            or ""
+        ).strip()
+        sources_raw = data.get("sources") or data.get("results") or []
+        results: list[dict] = []
+        for item in sources_raw:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                continue
+            results.append(
+                {
+                    "title": str(item.get("title") or url).strip(),
+                    "url": url,
+                    "snippet": str(item.get("snippet") or "").strip(),
+                }
+            )
+        if summary or results:
+            return summary, results[:5]
+
+    urls = _extract_urls(cleaned)
+    fallback_results = [
+        {"title": url, "url": url, "snippet": ""}
+        for url in urls[:5]
+    ]
+    return cleaned, fallback_results
+
+
+async def _collect_stream_text(stream: AsyncIterator[str], *, max_chars: int = 16000) -> str:
+    parts: list[str] = []
+    total = 0
+    async for chunk in stream:
+        text = str(chunk)
+        if not text:
+            continue
+        parts.append(text)
+        total += len(text)
+        if total >= max_chars:
+            break
+    return "".join(parts)
+
+
+async def _build_provider_search_summary_prompt(
+    *,
+    query: str,
+    db: AsyncSession,
+    user_id: int,
+    provider_name: Optional[str] = None,
+) -> tuple[str, list[dict]]:
+    search_provider_name = (provider_name or _DEFAULT_GROK_SEARCH_PROVIDER_NAME).strip()
+    search_provider = await AIProviderFactory.create_provider(
+        provider_name=search_provider_name,
+        db=db,
+        scenario="chat_main",
+        user_id=user_id,
+    )
+
+    if not search_provider.supports_web_search():
+        raise ValueError("选定的搜索提供商不支持联网搜索。")
+
+    stream_method = getattr(search_provider, "chat_stream_with_web_search", None)
+    if not callable(stream_method):
+        raise ValueError("选定的搜索提供商不支持联网搜索。")
+
+    summary_instruction = (
+        "你是一名联网研究助手。请先搜索网页，再输出严格 JSON 对象，不要使用 Markdown 代码块。"
+        '格式必须是 {"summary":"...","sources":[{"title":"...","url":"...","snippet":"..."}]}。'
+        "summary 请用中文简洁总结；sources 保留 2-5 个最重要来源；url 必须是绝对链接。"
+    )
+    raw_summary = await _collect_stream_text(
+        stream_method(
+            messages=[{"role": "user", "content": query}],
+            system_prompt=summary_instruction,
+            temperature=0.1,
+        )
+    )
+    summary, results = _parse_search_summary_payload(raw_summary)
+    if not summary and not results:
+        raise ValueError("搜索提供商没有返回可用搜索结果。")
+
+    payload_parts: list[str] = []
+    if summary:
+        payload_parts.append(f"搜索总结:\n{summary}")
+    if results:
+        payload_parts.append(
+            "来源链接:\n"
+            + _format_web_search_context(
+                [WebSearchResult(**item) for item in results]
+            )
+        )
+    wrapped = wrap_untrusted_context(
+        "联网搜索结果（专用搜索提供商总结）",
+        "\n\n".join(payload_parts),
+        source=f"search_provider:{search_provider_name}",
+        max_chars=8000,
+    )
+    prompt = (
+        "\n\n用户开启了联网搜索。下面是由专用搜索提供商联网检索并总结的网页结果。"
+        "请优先基于这些结果回答；如果结果不足以支持结论，请明确说明不确定。"
+        "引用网页信息时请带上对应 URL。\n"
+        f"{wrapped}"
+    )
+    return prompt, results
+
+
+def _should_use_provider_web_search(provider, mode: str, search_settings: Optional[dict] = None) -> bool:
+    if not provider.supports_web_search():
+        return False
+
+    normalized_mode = _normalize_web_search_mode(mode)
+    if normalized_mode in {
+        WEB_SEARCH_MODE_APP_SEARCH,
+        WEB_SEARCH_MODE_GROK_SUMMARY,
+        WEB_SEARCH_MODE_TAVILY,
+        WEB_SEARCH_MODE_LOCAL_FALLBACK,
+    }:
+        return False
+    if normalized_mode == WEB_SEARCH_MODE_AUTO and search_settings:
+        if (
+            search_settings.get("enabled")
+            and search_settings.get("tavily_api_key")
+            and search_settings.get("provider") in {"auto", "tavily"}
+        ):
+            return False
+    return True
+
+
+async def _build_external_web_search_prompt(
+    query: str,
+    *,
+    db: Optional[AsyncSession] = None,
+    user_id: Optional[int] = None,
+    mode: str = WEB_SEARCH_MODE_AUTO,
+) -> tuple[str, list[dict]]:
+    settings_data: Optional[dict] = None
+    if db is not None and user_id is not None:
+        try:
+            settings_data = await get_search_settings_dict(db, user_id)
+        except Exception:
+            settings_data = None
+
+    if settings_data:
+        if mode == WEB_SEARCH_MODE_TAVILY:
+            settings_data["enabled"] = True
+            settings_data["provider"] = "tavily"
+        elif mode in {WEB_SEARCH_MODE_APP_SEARCH, WEB_SEARCH_MODE_LOCAL_FALLBACK}:
+            settings_data["enabled"] = True
+            settings_data["provider"] = "local_fallback"
+    settings = (
+        SearchProviderSettings(
+            **{
+                key: value
+                for key, value in (settings_data or {}).items()
+                if key in SearchProviderSettings.__dataclass_fields__
+            }
+        )
+        if settings_data
+        else None
+    )
+    results = await search_web(query, limit=5, settings=settings)
     if not results:
         return "", []
 
@@ -878,7 +1155,14 @@ async def _build_external_web_search_prompt(query: str) -> tuple[str, list[dict]
         f"{wrapped}"
     )
     event_results = [
-        {"title": item.title, "url": item.url, "snippet": item.snippet}
+        {
+            "title": item.title,
+            "url": item.url,
+            "snippet": item.snippet,
+            "source_provider": getattr(item, "source_provider", "local"),
+            "score": getattr(item, "score", None),
+            "published_date": getattr(item, "published_date", None),
+        }
         for item in results
     ]
     return prompt, event_results
@@ -960,6 +1244,11 @@ async def chat_send(
             detail=f"无法创建 AI 提供商：{str(e)}",
         )
 
+    messages = _trim_messages_for_context_budget(
+        messages,
+        getattr(provider, "max_context_tokens", None),
+    )
+
     # 用于收集完整回复以便保存
     collected_reply = []
     user_id = current_user.id
@@ -996,12 +1285,50 @@ async def chat_send(
 
         try:
             effective_system_prompt = system_prompt
+            web_search_mode = _normalize_web_search_mode(body.web_search_mode)
+            search_settings = None
+            if body.web_search_enabled:
+                try:
+                    search_settings = await get_search_settings_dict(db, current_user.id)
+                except Exception:
+                    search_settings = None
             use_hosted_web_search = False
-            if body.web_search_enabled and provider.supports_web_search():
+            if body.web_search_enabled and web_search_mode == WEB_SEARCH_MODE_GROK_SUMMARY:
+                try:
+                    web_prompt, web_results = await _build_provider_search_summary_prompt(
+                        query=body.message,
+                        db=db,
+                        user_id=current_user.id,
+                        provider_name=body.web_search_provider_name,
+                    )
+                    if web_prompt:
+                        effective_system_prompt = f"{system_prompt or ''}{web_prompt}"
+                        yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'web_search_results', 'results': []}, ensure_ascii=False)}\n\n"
+                except Exception as exc:
+                    logger.warning("专用搜索提供商联网失败，降级为应用层网页搜索: %s", exc)
+                    notice = "专用搜索提供商暂时不可用，已降级为应用层联网搜索。"
+                    yield f"data: {json.dumps({'type': 'web_search_notice', 'message': notice}, ensure_ascii=False)}\n\n"
+                    web_prompt, web_results = await _build_external_web_search_prompt(
+                        body.message,
+                        db=db,
+                        user_id=current_user.id,
+                        mode=web_search_mode,
+                    )
+                    if web_prompt:
+                        effective_system_prompt = f"{system_prompt or ''}{web_prompt}"
+                    yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
+            elif body.web_search_enabled and _should_use_provider_web_search(provider, web_search_mode, search_settings):
                 use_hosted_web_search = True
             elif body.web_search_enabled:
                 try:
-                    web_prompt, web_results = await _build_external_web_search_prompt(body.message)
+                    web_prompt, web_results = await _build_external_web_search_prompt(
+                        body.message,
+                        db=db,
+                        user_id=current_user.id,
+                        mode=web_search_mode,
+                    )
                     if web_prompt:
                         effective_system_prompt = f"{system_prompt or ''}{web_prompt}"
                         yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
@@ -1038,7 +1365,12 @@ async def chat_send(
 
                 logger.info("联网搜索工具不可用，切换到应用层网页搜索: %s", exc)
                 collected_reply.clear()
-                web_prompt, web_results = await _build_external_web_search_prompt(body.message)
+                web_prompt, web_results = await _build_external_web_search_prompt(
+                    body.message,
+                    db=db,
+                    user_id=current_user.id,
+                    mode=web_search_mode,
+                )
                 fallback_system_prompt = f"{system_prompt or ''}{web_prompt}" if web_prompt else system_prompt
                 yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
                 async for chunk in provider.chat_stream(
@@ -1167,6 +1499,11 @@ async def chat_send_sync(
             status_code=500,
             detail=f"无法创建 AI 提供商：{str(e)}",
         )
+
+    messages = _trim_messages_for_context_budget(
+        messages,
+        getattr(provider, "max_context_tokens", None),
+    )
 
     if body.web_search_enabled:
         raise HTTPException(

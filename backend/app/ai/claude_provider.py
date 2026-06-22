@@ -9,8 +9,20 @@ from app.ai.base import AIProvider
 class ClaudeProvider(AIProvider):
     """Anthropic Claude 提供商"""
 
-    def __init__(self, api_key: str, model: str = "claude-3-opus-20240229", base_url: Optional[str] = None):
-        super().__init__(api_key, model)
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-3-opus-20240229",
+        base_url: Optional[str] = None,
+        max_context_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+    ):
+        super().__init__(
+            api_key,
+            model,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+        )
         self.base_url = "https://api.anthropic.com"
         if base_url:
             self.base_url = base_url.rstrip("/")
@@ -86,7 +98,7 @@ class ClaudeProvider(AIProvider):
         converted_messages = self._convert_messages(messages)
         payload: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": self.max_output_tokens,
             "temperature": temperature,
             "messages": converted_messages,
         }
@@ -120,7 +132,7 @@ class ClaudeProvider(AIProvider):
         converted_messages = self._convert_messages(messages)
         payload: Dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": self.max_output_tokens,
             "temperature": temperature,
             "messages": converted_messages,
             "stream": True,

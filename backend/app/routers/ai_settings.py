@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List
 import re
 import json
@@ -17,6 +17,14 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.utils.ai_errors import format_ai_provider_error
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
+from app.models.search_settings import AISearchSettings
+from app.services.search_settings_service import (
+    get_or_create_search_settings,
+    normalize_search_settings,
+    search_settings_to_dict,
+    update_search_settings,
+)
+from app.services.web_search import SearchProviderSettings, search_web
 
 router = APIRouter()
 
@@ -30,6 +38,8 @@ class ProviderOut(BaseModel):
     base_url: str
     model: str
     available_models: List[str] = []
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     is_active: bool
     enabled: bool
 
@@ -39,6 +49,8 @@ class ProviderUpdate(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
     available_models: Optional[List[str]] = None
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     enabled: Optional[bool] = None
 
 
@@ -50,6 +62,8 @@ class ProviderCreate(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
     available_models: Optional[List[str]] = None
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     enabled: Optional[bool] = True
 
 
@@ -92,6 +106,68 @@ class ModelSearchRequest(BaseModel):
 class ModelSearchResult(BaseModel):
     provider_name: str
     models: List[str]
+
+
+class SearchSettingsOut(BaseModel):
+    enabled: bool
+    default_mode: str
+    provider: str
+    tavily_api_key_masked: str = ""
+    tavily_search_depth: str
+    tavily_max_results: int
+    tavily_chunks_per_source: int
+    tavily_include_answer: bool
+    tavily_include_raw_content: bool
+    timeout_seconds: float
+    fallback_enabled: bool
+    updated_at: Optional[str] = None
+
+
+class SearchSettingsUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    default_mode: Optional[str] = None
+    provider: Optional[str] = None
+    tavily_api_key: Optional[str] = None
+    tavily_search_depth: Optional[str] = None
+    tavily_max_results: Optional[int] = None
+    tavily_chunks_per_source: Optional[int] = None
+    tavily_include_answer: Optional[bool] = None
+    tavily_include_raw_content: Optional[bool] = None
+    timeout_seconds: Optional[float] = None
+    fallback_enabled: Optional[bool] = None
+
+    @field_validator("tavily_max_results")
+    @classmethod
+    def clamp_tavily_max_results(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        return max(1, min(10, int(value)))
+
+    @field_validator("tavily_chunks_per_source")
+    @classmethod
+    def clamp_tavily_chunks(cls, value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return value
+        return max(1, min(5, int(value)))
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def clamp_timeout(cls, value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return value
+        return max(2.0, min(30.0, float(value)))
+
+
+class SearchTestRequest(BaseModel):
+    query: Optional[str] = "Mnemox connectivity test"
+    tavily_api_key: Optional[str] = None
+
+
+class SearchTestResult(BaseModel):
+    success: bool
+    message: str
+    provider: str
+    result_count: int = 0
 
 
 # ---- Helpers ----
@@ -212,9 +288,29 @@ def _to_out(row: AIProviderSetting) -> ProviderOut:
         base_url=base_url or "",
         model=model or "",
         available_models=available_models,
-        is_active=row.is_active,
-        enabled=row.enabled,
+        max_context_tokens=row.max_context_tokens,
+        max_output_tokens=row.max_output_tokens,
+        is_active=bool(row.is_active),
+        enabled=bool(row.enabled),
     )
+
+
+def _search_settings_to_out(row: AISearchSettings | None) -> SearchSettingsOut:
+    data = search_settings_to_dict(row)
+    data.pop("tavily_api_key", None)
+    return SearchSettingsOut(**data)
+
+
+def _clamp_token_limit(value: Optional[int], *, low: int = 1, high: int = 1_000_000) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return max(low, min(high, number))
 
 
 async def _fetch_model_catalog(
@@ -426,6 +522,65 @@ async def list_providers(
     return [_to_out(r) for r in rows]
 
 
+@router.get("/search", response_model=SearchSettingsOut)
+async def get_web_search_settings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    row = await get_or_create_search_settings(db, current_user.id)
+    return _search_settings_to_out(row)
+
+
+@router.put("/search", response_model=SearchSettingsOut)
+async def put_web_search_settings(
+    body: SearchSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    patch = body.model_dump(exclude_unset=True)
+    if "tavily_api_key" in patch and patch["tavily_api_key"] is None:
+        patch.pop("tavily_api_key")
+    row_data = await update_search_settings(db, current_user.id, patch)
+    await db.commit()
+    row_data.pop("tavily_api_key", None)
+    return SearchSettingsOut(**row_data)
+
+
+@router.post("/search/test", response_model=SearchTestResult)
+async def test_web_search_settings(
+    body: Optional[SearchTestRequest] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    row = await get_or_create_search_settings(db, current_user.id)
+    data = search_settings_to_dict(row)
+    if body and body.tavily_api_key is not None:
+        data["tavily_api_key"] = body.tavily_api_key
+    data["enabled"] = True
+    data["provider"] = "tavily" if data.get("tavily_api_key") else "local_fallback"
+    normalized = normalize_search_settings(data)
+    try:
+        results = await search_web(
+            (body.query if body else None) or "Mnemox connectivity test",
+            limit=min(int(normalized["tavily_max_results"] or 5), 5),
+            settings=SearchProviderSettings(**{key: value for key, value in normalized.items() if key in SearchProviderSettings.__dataclass_fields__}),
+        )
+        provider = results[0].source_provider if results else normalized["provider"]
+        return SearchTestResult(
+            success=bool(results),
+            message=f"搜索连接成功，返回 {len(results)} 条结果。" if results else "搜索完成，但没有返回结果。",
+            provider=provider,
+            result_count=len(results),
+        )
+    except Exception as exc:
+        return SearchTestResult(
+            success=False,
+            message=f"搜索连接失败：{format_ai_provider_error(exc)}",
+            provider=normalized["provider"],
+            result_count=0,
+        )
+
+
 @router.post("/", response_model=ProviderOut)
 async def create_provider(
     body: ProviderCreate,
@@ -457,6 +612,8 @@ async def create_provider(
         base_url=body.base_url or "",
         model=body.model or "",
         available_models=_dump_available_models(body.available_models or [], body.model or ""),
+        max_context_tokens=_clamp_token_limit(body.max_context_tokens),
+        max_output_tokens=_clamp_token_limit(body.max_output_tokens, high=32000),
         is_active=False,
         enabled=body.enabled if body.enabled is not None else True,
     )
@@ -497,6 +654,10 @@ async def update_provider(
             )
     if body.available_models is not None:
         row.available_models = _dump_available_models(body.available_models, row.model or "")
+    if "max_context_tokens" in body.model_fields_set:
+        row.max_context_tokens = _clamp_token_limit(body.max_context_tokens)
+    if "max_output_tokens" in body.model_fields_set:
+        row.max_output_tokens = _clamp_token_limit(body.max_output_tokens, high=32000)
     if body.enabled is not None:
         row.enabled = body.enabled
 

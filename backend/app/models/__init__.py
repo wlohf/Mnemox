@@ -9,6 +9,7 @@ from app.models.note import Note, NoteLink  # noqa: F401
 from app.models.pomodoro import Pomodoro  # noqa: F401
 from app.models.daily_plan import DailyPlan  # noqa: F401
 from app.models.ai_settings import AIProviderSetting  # noqa: F401
+from app.models.search_settings import AISearchSettings  # noqa: F401
 from app.models.ai_routing import AIRoutingSetting  # noqa: F401
 from app.models.memory import ConversationSummary, UserMemory  # noqa: F401
 from app.models.progress import MaterialProfile, OutputEvaluation  # noqa: F401

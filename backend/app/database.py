@@ -75,7 +75,7 @@ async def _run_lightweight_migrations(conn):
         "materials", "goals", "chat_projects", "chat_conversations",
         "notes", "pomodoros", "daily_stats", "study_sessions",
         "questions", "wrong_questions", "review_schedule",
-        "ai_provider_settings", "ai_routing_settings",
+        "ai_provider_settings", "ai_routing_settings", "ai_search_settings",
         "user_memories", "conversation_summaries", "daily_plans",
         "agent_jobs", "agent_execution_logs",
     ]
@@ -125,6 +125,8 @@ async def _run_lightweight_migrations(conn):
         ("agent_jobs", "updated_at", "DATETIME"),
         ("agent_execution_logs", "metadata", "JSON"),
         ("ai_provider_settings", "available_models", "TEXT DEFAULT '[]'"),
+        ("ai_provider_settings", "max_context_tokens", "INTEGER"),
+        ("ai_provider_settings", "max_output_tokens", "INTEGER"),
         ("ai_routing_settings", "model", "VARCHAR(100)"),
     ]
 

@@ -35,13 +35,22 @@ import {
   createProvider,
   deleteProvider,
   getRagSettings,
+  getSearchSettings,
+  getStoredWebSearchMode,
+  getStoredWebSearchProviderName,
   updateRagSettings,
   testRagEmbedding,
+  testSearchSettings,
   searchProviderModels,
   notifyAIProvidersUpdated,
+  updateSearchSettings,
+  setStoredWebSearchMode,
+  setStoredWebSearchProviderName,
   type AIProvider,
   type AIRoutingItem,
   type RagSettings,
+  type SearchSettings,
+  type WebSearchMode,
 } from '../services/aiSettingsApi'
 import { getApiErrorMessage } from '../services/apiClient'
 
@@ -61,6 +70,8 @@ interface EditState {
   model: string
   available_models: string[]
   test_model: string
+  max_context_tokens?: number | null
+  max_output_tokens?: number | null
 }
 
 interface ProviderFeedback {
@@ -84,6 +95,15 @@ function withDefaultModel(models: string[], model?: string) {
 function modelOptions(models: string[], model?: string) {
   return withDefaultModel(models, model).map((item) => ({ label: item, value: item }))
 }
+
+const WEB_SEARCH_MODE_OPTIONS: { label: string; value: WebSearchMode }[] = [
+  { label: '自动', value: 'auto' },
+  { label: 'Tavily 优先', value: 'tavily' },
+  { label: 'Responses 内置联网', value: 'provider_hosted' },
+  { label: '后端网页搜索注入', value: 'app_search' },
+  { label: 'Grok 搜索总结后回答', value: 'grok_summary' },
+  { label: 'DuckDuckGo / Bing 兜底', value: 'local_fallback' },
+]
 
 function resolveValidationModel(
   testModel: string | undefined,
@@ -109,6 +129,8 @@ function buildProviderEditStates(data: AIProvider[]): Record<string, EditState> 
       model: p.model,
       available_models: availableModels,
       test_model: resolveValidationModel(p.model, p.model, availableModels),
+      max_context_tokens: p.max_context_tokens ?? null,
+      max_output_tokens: p.max_output_tokens ?? null,
     }
   }
   return states
@@ -135,6 +157,24 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     model: '',
     available_models: [] as string[],
   })
+  const [webSearchMode, setWebSearchModeState] = useState<WebSearchMode>(() => getStoredWebSearchMode())
+  const [webSearchProviderName, setWebSearchProviderNameState] = useState(() => getStoredWebSearchProviderName())
+  const [searchSettings, setSearchSettings] = useState<SearchSettings | null>(null)
+  const [searchEdit, setSearchEdit] = useState({
+    enabled: false,
+    default_mode: 'auto' as WebSearchMode,
+    provider: 'auto' as SearchSettings['provider'],
+    tavily_api_key: '',
+    tavily_search_depth: 'advanced' as SearchSettings['tavily_search_depth'],
+    tavily_max_results: 8,
+    tavily_chunks_per_source: 3,
+    tavily_include_answer: false,
+    tavily_include_raw_content: false,
+    timeout_seconds: 12,
+    fallback_enabled: true,
+  })
+  const [savingSearch, setSavingSearch] = useState(false)
+  const [testingSearch, setTestingSearch] = useState(false)
 
   // RAG settings state
   const [ragSettings, setRagSettings] = useState<RagSettings | null>(null)
@@ -153,10 +193,11 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
   const loadProviders = async () => {
     setLoading(true)
     try {
-      const [providersResult, routingResult, ragResult] = await Promise.allSettled([
+      const [providersResult, routingResult, ragResult, searchResult] = await Promise.allSettled([
         getAllProviders(),
         getRoutingSettings(),
         getRagSettings(),
+        getSearchSettings(),
       ])
 
       if (providersResult.status === 'fulfilled') {
@@ -187,6 +228,26 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
       } else {
         showApiError(ragResult.reason, '加载 RAG 设置失败')
       }
+
+      if (searchResult.status === 'fulfilled') {
+        const data = searchResult.value
+        setSearchSettings(data)
+        setSearchEdit({
+          enabled: data.enabled,
+          default_mode: data.default_mode,
+          provider: data.provider,
+          tavily_api_key: '',
+          tavily_search_depth: data.tavily_search_depth,
+          tavily_max_results: data.tavily_max_results,
+          tavily_chunks_per_source: data.tavily_chunks_per_source,
+          tavily_include_answer: data.tavily_include_answer,
+          tavily_include_raw_content: data.tavily_include_raw_content,
+          timeout_seconds: data.timeout_seconds,
+          fallback_enabled: data.fallback_enabled,
+        })
+      } else {
+        showApiError(searchResult.reason, '加载联网搜索设置失败')
+      }
     } finally {
       setLoading(false)
     }
@@ -207,6 +268,12 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
   }
 
   const activeProvider = providers.find((p) => p.is_active)
+  const searchProviderOptions = providers
+    .filter((p) => p.enabled)
+    .map((p) => ({
+      label: `${p.display_name}${p.model ? ` · ${p.model}` : ''}`,
+      value: p.provider_name,
+    }))
   const providerBasePlaceholder =
     newProvider.provider_type === 'anthropic'
       ? 'https://api.ikuncode.cc/v1/messages'
@@ -248,6 +315,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     updateData.base_url = edit.base_url
     updateData.model = defaultModel
     updateData.available_models = selectedModels
+    updateData.max_context_tokens = edit.max_context_tokens || null
+    updateData.max_output_tokens = edit.max_output_tokens || null
 
     try {
       const result = await updateProvider(providerName, updateData)
@@ -264,6 +333,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           model: result.model,
           available_models: savedModels,
           test_model: resolveValidationModel(edit.test_model, result.model, savedModels),
+          max_context_tokens: result.max_context_tokens ?? null,
+          max_output_tokens: result.max_output_tokens ?? null,
         },
       }))
       notifyAIProvidersUpdated({
@@ -379,6 +450,17 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
         },
       }
     })
+  }
+
+  const updateTokenEditState = (
+    providerName: string,
+    field: 'max_context_tokens' | 'max_output_tokens',
+    value: number | null,
+  ) => {
+    setEditStates((prev) => ({
+      ...prev,
+      [providerName]: { ...prev[providerName], [field]: value },
+    }))
   }
 
   const updateProviderTestModel = (providerName: string, testModel: string) => {
@@ -542,6 +624,56 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     }
   }
 
+  const handleSearchSave = async () => {
+    setSavingSearch(true)
+    const payload: Record<string, any> = {
+      enabled: searchEdit.enabled,
+      default_mode: searchEdit.default_mode,
+      provider: searchEdit.provider,
+      tavily_search_depth: searchEdit.tavily_search_depth,
+      tavily_max_results: searchEdit.tavily_max_results,
+      tavily_chunks_per_source: searchEdit.tavily_chunks_per_source,
+      tavily_include_answer: searchEdit.tavily_include_answer,
+      tavily_include_raw_content: searchEdit.tavily_include_raw_content,
+      timeout_seconds: searchEdit.timeout_seconds,
+      fallback_enabled: searchEdit.fallback_enabled,
+    }
+    if (searchEdit.tavily_api_key.trim()) {
+      payload.tavily_api_key = searchEdit.tavily_api_key.trim()
+    }
+    try {
+      const result = await updateSearchSettings(payload)
+      setSearchSettings(result)
+      setSearchEdit((prev) => ({ ...prev, tavily_api_key: '' }))
+      setStoredWebSearchMode(result.default_mode)
+      setWebSearchModeState(result.default_mode)
+      message.success('联网搜索设置已保存')
+    } catch (error) {
+      showApiError(error, '联网搜索设置保存失败')
+    } finally {
+      setSavingSearch(false)
+    }
+  }
+
+  const handleSearchTest = async () => {
+    setTestingSearch(true)
+    try {
+      const result = await testSearchSettings({
+        query: 'Mnemox AI search test',
+        tavily_api_key: searchEdit.tavily_api_key.trim() || undefined,
+      })
+      if (result.success) {
+        message.success(`${result.message} 来源：${result.provider}`)
+      } else {
+        message.error(result.message)
+      }
+    } catch (error) {
+      showApiError(error, '联网搜索测试失败')
+    } finally {
+      setTestingSearch(false)
+    }
+  }
+
   const handleCreateProvider = async () => {
     const displayName = newProvider.display_name.trim()
     if (!displayName) {
@@ -650,6 +782,192 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               }))}
             />
           </div>
+
+          <div className="mnemox-ai-section">
+            <div className="mnemox-ai-field-label">
+              联网搜索模式
+            </div>
+            <Select
+              style={{ width: '100%' }}
+              value={webSearchMode}
+              onChange={(value) => {
+                setWebSearchModeState(value)
+                setStoredWebSearchMode(value)
+              }}
+              options={WEB_SEARCH_MODE_OPTIONS}
+            />
+            {webSearchMode === 'grok_summary' && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>专用搜索提供商</div>
+                <Select
+                  allowClear
+                  style={{ width: '100%' }}
+                  placeholder="默认使用 openai-grok"
+                  value={webSearchProviderName || undefined}
+                  onChange={(value) => {
+                    const nextValue = typeof value === 'string' ? value : ''
+                    setWebSearchProviderNameState(nextValue)
+                    setStoredWebSearchProviderName(nextValue)
+                  }}
+                  options={searchProviderOptions}
+                />
+              </div>
+            )}
+            <Alert
+              style={{ marginTop: 12 }}
+              type="info"
+              showIcon
+              message="DuckDuckGo / Bing 作为最终兜底"
+              description={
+                webSearchMode === 'tavily'
+                  ? '优先使用设置中的 Tavily Key。失败且开启兜底时，再使用 DuckDuckGo / Bing。'
+                  : webSearchMode === 'provider_hosted'
+                  ? '优先使用当前聊天供应商的 Responses / 内置联网能力；如果上游不支持，后端会回退到应用层搜索。'
+                  : webSearchMode === 'app_search'
+                    ? '后端直接抓取 DuckDuckGo / Bing 搜索结果，再把摘要和 URL 注入给当前模型。'
+                    : webSearchMode === 'grok_summary'
+                      ? '先用专用搜索提供商联网检索并总结，再把总结结果交给当前聊天模型回答。适合你现在的 Grok 额度方案。'
+                      : webSearchMode === 'local_fallback'
+                        ? '只使用无需 Key 的 DuckDuckGo / Bing 搜索。'
+                        : '默认优先使用已配置的 Tavily；没有 Key 或失败时再尝试内置联网与 DuckDuckGo / Bing 兜底。'
+              }
+            />
+          </div>
+
+          <Collapse
+            size="small"
+            className="mnemox-ai-collapse"
+            items={[{
+              key: 'web-search',
+              label: (
+                <Space>
+                  <SearchOutlined />
+                  <span>联网搜索配置</span>
+                  {searchSettings?.tavily_api_key_masked ? <Tag color="green">Tavily 已配置</Tag> : <Tag>无 Key 兜底</Tag>}
+                </Space>
+              ),
+              children: (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>启用独立搜索设置</div>
+                      <Space>
+                        <Switch
+                          checked={searchEdit.enabled}
+                          onChange={(enabled) => setSearchEdit((prev) => ({ ...prev, enabled }))}
+                        />
+                        <span style={{ fontSize: 12, color: '#666' }}>
+                          {searchEdit.enabled ? 'Tavily 可作为优先搜索路径' : '仅按聊天模式和兜底逻辑搜索'}
+                        </span>
+                      </Space>
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>默认搜索模式</div>
+                      <Select
+                        style={{ width: '100%' }}
+                        value={searchEdit.default_mode}
+                        options={WEB_SEARCH_MODE_OPTIONS}
+                        onChange={(default_mode) => setSearchEdit((prev) => ({ ...prev, default_mode }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 12 }}>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>搜索提供商</div>
+                      <Select
+                        style={{ width: '100%' }}
+                        value={searchEdit.provider}
+                        options={[
+                          { label: '自动：Tavily 优先，失败后兜底', value: 'auto' },
+                          { label: 'Tavily 优先', value: 'tavily' },
+                          { label: 'DuckDuckGo / Bing 兜底', value: 'local_fallback' },
+                        ]}
+                        onChange={(provider) => setSearchEdit((prev) => ({ ...prev, provider }))}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                        Tavily API Key
+                        {searchSettings?.tavily_api_key_masked && (
+                          <span style={{ marginLeft: 8, color: '#999' }}>当前：{searchSettings.tavily_api_key_masked}</span>
+                        )}
+                      </div>
+                      <Input.Password
+                        placeholder="留空则继续使用已保存 Key；未配置时用 DuckDuckGo / Bing"
+                        value={searchEdit.tavily_api_key}
+                        onChange={(e) => setSearchEdit((prev) => ({ ...prev, tavily_api_key: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 12 }}>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>质量</div>
+                      <Select
+                        style={{ width: '100%' }}
+                        value={searchEdit.tavily_search_depth}
+                        options={[
+                          { label: 'Basic', value: 'basic' },
+                          { label: 'Advanced', value: 'advanced' },
+                        ]}
+                        onChange={(tavily_search_depth) => setSearchEdit((prev) => ({ ...prev, tavily_search_depth }))}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>结果数</div>
+                      <InputNumber
+                        min={1}
+                        max={10}
+                        style={{ width: '100%' }}
+                        value={searchEdit.tavily_max_results}
+                        onChange={(v) => setSearchEdit((prev) => ({ ...prev, tavily_max_results: v ?? 8 }))}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>每源片段</div>
+                      <InputNumber
+                        min={1}
+                        max={5}
+                        style={{ width: '100%' }}
+                        value={searchEdit.tavily_chunks_per_source}
+                        onChange={(v) => setSearchEdit((prev) => ({ ...prev, tavily_chunks_per_source: v ?? 3 }))}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>超时秒数</div>
+                      <InputNumber
+                        min={2}
+                        max={30}
+                        style={{ width: '100%' }}
+                        value={searchEdit.timeout_seconds}
+                        onChange={(v) => setSearchEdit((prev) => ({ ...prev, timeout_seconds: v ?? 12 }))}
+                      />
+                    </div>
+                  </div>
+
+                  <Space wrap style={{ marginBottom: 12 }}>
+                    <Switch
+                      checked={searchEdit.fallback_enabled}
+                      onChange={(fallback_enabled) => setSearchEdit((prev) => ({ ...prev, fallback_enabled }))}
+                    />
+                    <span style={{ fontSize: 12, color: '#666' }}>Tavily / 内置联网失败时使用 DuckDuckGo / Bing 兜底</span>
+                  </Space>
+
+                  <div>
+                    <Space>
+                      <Button type="primary" icon={<SaveOutlined />} loading={savingSearch} onClick={() => void handleSearchSave()}>
+                        保存搜索设置
+                      </Button>
+                      <Button icon={<ApiOutlined />} loading={testingSearch} onClick={() => void handleSearchTest()}>
+                        测试搜索
+                      </Button>
+                    </Space>
+                  </div>
+                </>
+              ),
+            }]}
+          />
 
           <Collapse
             size="small"
@@ -1163,22 +1481,38 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       />
                     </div>
 
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
-                        验证模型
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 16 }}>
+                      <div>
+                        <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                          上下文 Token 上限
+                        </div>
+                        <InputNumber
+                          min={1024}
+                          max={1000000}
+                          step={1024}
+                          style={{ width: '100%' }}
+                          placeholder="默认 32000"
+                          value={edit.max_context_tokens ?? undefined}
+                          onChange={(value) => updateTokenEditState(provider.provider_name, 'max_context_tokens', value ?? null)}
+                        />
                       </div>
-                      <Select
-                        mode="tags"
-                        style={{ width: '100%' }}
-                        tokenSeparators={[',', '，', ' ']}
-                        placeholder="搜索后会自动填充，也可以手动补充模型名"
-                        value={edit.available_models}
-                        options={modelOptions(edit.available_models || [], edit.model)}
-                        onChange={(models) => {
-                          updateProviderAvailableModels(provider.provider_name, models)
-                        }}
-                        popupMatchSelectWidth={false}
-                      />
+                      <div>
+                        <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                          输出 Token 上限
+                        </div>
+                        <InputNumber
+                          min={512}
+                          max={32000}
+                          step={512}
+                          style={{ width: '100%' }}
+                          placeholder="默认 4096，长回复可设 8192"
+                          value={edit.max_output_tokens ?? undefined}
+                          onChange={(value) => updateTokenEditState(provider.provider_name, 'max_output_tokens', value ?? null)}
+                        />
+                      </div>
+                      <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#999' }}>
+                        上下文上限会用于后续 RAG / 搜索 / 记忆裁剪；输出上限会直接传给支持的模型供应商。过高可能增加费用和延迟。
+                      </div>
                     </div>
 
                     <div style={{ marginBottom: 16 }}>

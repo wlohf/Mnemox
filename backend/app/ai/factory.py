@@ -46,6 +46,8 @@ class AIProviderFactory:
         api_key: str,
         model: str,
         base_url: str = "",
+        max_context_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> AIProvider:
         """根据参数直接创建提供商实例（供 test 接口和数据库查询使用）"""
         kind = AIProviderFactory._resolve_provider_kind(provider_name, base_url, model)
@@ -56,6 +58,8 @@ class AIProviderFactory:
                 api_key=api_key,
                 model=model,
                 base_url=base_url or None,
+                max_context_tokens=max_context_tokens,
+                max_output_tokens=max_output_tokens,
             )
         elif kind == "claude":
             from app.ai.claude_provider import ClaudeProvider
@@ -63,12 +67,16 @@ class AIProviderFactory:
                 api_key=api_key,
                 model=model,
                 base_url=base_url or None,
+                max_context_tokens=max_context_tokens,
+                max_output_tokens=max_output_tokens,
             )
         elif kind == "gemini":
             from app.ai.gemini_provider import GeminiProvider
             return GeminiProvider(
                 api_key=api_key,
                 model=model,
+                max_context_tokens=max_context_tokens,
+                max_output_tokens=max_output_tokens,
             )
         else:
             from app.ai.openai_provider import OpenAIProvider
@@ -76,6 +84,8 @@ class AIProviderFactory:
                 api_key=api_key,
                 model=model,
                 base_url=base_url or None,
+                max_context_tokens=max_context_tokens,
+                max_output_tokens=max_output_tokens,
             )
 
     @staticmethod
@@ -145,6 +155,8 @@ class AIProviderFactory:
                     api_key=api_key,
                     model=model or row.model,
                     base_url=row.base_url,
+                    max_context_tokens=row.max_context_tokens,
+                    max_output_tokens=row.max_output_tokens,
                 )
 
         # 回退到 .env 配置

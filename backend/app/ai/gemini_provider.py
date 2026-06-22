@@ -1,5 +1,5 @@
 """Google Gemini 提供商实现。"""
-from typing import AsyncIterator, Dict, List
+from typing import AsyncIterator, Dict, List, Optional
 
 from google import genai
 from google.genai import types
@@ -10,8 +10,19 @@ from app.ai.base import AIProvider
 class GeminiProvider(AIProvider):
     """Google Gemini 提供商，基于新版 google-genai SDK。"""
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
-        super().__init__(api_key, model)
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-1.5-flash",
+        max_context_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+    ):
+        super().__init__(
+            api_key,
+            model,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+        )
         self.client = genai.Client(api_key=api_key)
 
     def _convert_messages(self, messages: List[Dict[str, str]]) -> str:
@@ -34,6 +45,7 @@ class GeminiProvider(AIProvider):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=temperature,
+                max_output_tokens=self.max_output_tokens,
             ),
         )
         return response.text or ""
@@ -51,6 +63,7 @@ class GeminiProvider(AIProvider):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=temperature,
+                max_output_tokens=self.max_output_tokens,
             ),
         )
         async for chunk in stream:

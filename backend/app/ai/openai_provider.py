@@ -52,12 +52,26 @@ LOCAL_WEB_SEARCH_INSTRUCTION = (
     "引用网页信息时请附上对应 URL。"
 )
 
+DEFAULT_RESPONSES_INSTRUCTIONS = "你是一个有帮助的 AI 助手。"
+
 
 class OpenAIProvider(AIProvider):
     """OpenAI (GPT-4, GPT-3.5) 提供商"""
     
-    def __init__(self, api_key: str, model: str = "gpt-4", base_url: Optional[str] = None):
-        super().__init__(api_key, model)
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4",
+        base_url: Optional[str] = None,
+        max_context_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+    ):
+        super().__init__(
+            api_key,
+            model,
+            max_context_tokens=max_context_tokens,
+            max_output_tokens=max_output_tokens,
+        )
         self.base_url = (base_url or "").rstrip("/")
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -136,6 +150,10 @@ class OpenAIProvider(AIProvider):
         if isinstance(value, dict):
             return value.get(key, default)
         return getattr(value, key, default)
+
+    def _responses_instructions(self, instructions: Optional[str]) -> str:
+        text = (instructions or "").strip()
+        return text or DEFAULT_RESPONSES_INSTRUCTIONS
 
     def _tool_call_to_dict(self, tool_call: Any) -> Dict[str, Any]:
         function = self._get_attr_or_key(tool_call, "function", {})
@@ -280,6 +298,11 @@ class OpenAIProvider(AIProvider):
 
     def _looks_like_tool_unsupported_error(self, exc: Exception) -> bool:
         text = str(exc).lower()
+        if (
+            "instructions are required" in text
+            or "missing required parameter: instructions" in text
+        ):
+            return True
         tool_markers = ("tool", "tools", "function", "tool_calls", "function_call")
         unsupported_markers = (
             "unsupported",
@@ -323,6 +346,12 @@ class OpenAIProvider(AIProvider):
             "upstream request failed",
             "不支持",
         )
+        instructions_required_markers = (
+            "instructions are required",
+            "missing required parameter: instructions",
+        )
+        if any(marker in text for marker in instructions_required_markers):
+            return True
         if any(
             marker in text
             for marker in (
@@ -437,9 +466,9 @@ class OpenAIProvider(AIProvider):
         async with self.client.responses.stream(
             model=self.model,
             input=cast(Any, input_items),
-            instructions=instructions,
+            instructions=self._responses_instructions(instructions),
             temperature=temperature,
-            max_output_tokens=4096,
+            max_output_tokens=self.max_output_tokens,
             tools=cast(Any, [LOCAL_WEB_SEARCH_RESPONSE_TOOL]),
             tool_choice=tool_choice,
         ) as stream:
@@ -507,9 +536,9 @@ class OpenAIProvider(AIProvider):
         async with self.client.responses.stream(
             model=self.model,
             input=cast(Any, input_items),
-            instructions=instructions,
+            instructions=self._responses_instructions(instructions),
             temperature=temperature,
-            max_output_tokens=4096,
+            max_output_tokens=self.max_output_tokens,
         ) as stream:
             async for event in stream:
                 if getattr(event, "type", None) == "response.output_text.delta":
@@ -532,9 +561,9 @@ class OpenAIProvider(AIProvider):
         async with self.client.responses.stream(
             model=self.model,
             input=cast(Any, input_items),
-            instructions=system_prompt,
+            instructions=self._responses_instructions(system_prompt),
             temperature=temperature,
-            max_output_tokens=4096,
+            max_output_tokens=self.max_output_tokens,
             tools=[{"type": "web_search"}],
             tool_choice=tool_choice,
             include=["web_search_call.action.sources"],
@@ -604,7 +633,7 @@ class OpenAIProvider(AIProvider):
             model=self.model,
             messages=cast(Any, conversation),
             temperature=temperature,
-            max_tokens=4096,
+            max_tokens=self.max_output_tokens,
             tools=cast(Any, [LOCAL_WEB_SEARCH_TOOL]),
             tool_choice=tool_choice,
             stream=True,
@@ -634,7 +663,7 @@ class OpenAIProvider(AIProvider):
             model=self.model,
             messages=cast(Any, conversation),
             temperature=temperature,
-            max_tokens=4096,
+            max_tokens=self.max_output_tokens,
             stream=True,
         )
 
@@ -664,7 +693,7 @@ class OpenAIProvider(AIProvider):
             model=self.model,
             messages=cast(Any, normalized_messages),
             temperature=temperature,
-            max_tokens=4096,
+            max_tokens=self.max_output_tokens,
         )
         
         return response.choices[0].message.content or ""
@@ -686,12 +715,18 @@ class OpenAIProvider(AIProvider):
             model=self.model,
             messages=cast(Any, normalized_messages),
             temperature=temperature,
+            max_tokens=self.max_output_tokens,
             stream=True
         )
         
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            choices = self._get_attr_or_key(chunk, "choices", []) or []
+            if not choices:
+                continue
+            delta = self._get_attr_or_key(choices[0], "delta", {})
+            content = self._get_attr_or_key(delta, "content", None)
+            if content:
+                yield str(content)
 
     async def chat_stream_with_web_search(
         self,
@@ -701,9 +736,9 @@ class OpenAIProvider(AIProvider):
     ) -> AsyncIterator[str]:
         """Stream a response with web search.
 
-        Official OpenAI uses hosted Responses API search. OpenAI-compatible
-        relay endpoints use Chat Completions function tools and execute the
-        search locally in Mnemox.
+        Try hosted Responses web search first, then fall back to local
+        search executed by Mnemox through either Responses function tools
+        or Chat Completions function tools.
         """
         try:
             async for chunk in self._stream_responses_hosted_web_search(
@@ -714,7 +749,10 @@ class OpenAIProvider(AIProvider):
                 yield chunk
             return
         except Exception as exc:
-            if not (self._looks_like_responses_unsupported_error(exc) or self._looks_like_tool_unsupported_error(exc)):
+            if not (
+                self._looks_like_responses_unsupported_error(exc)
+                or self._looks_like_tool_unsupported_error(exc)
+            ):
                 raise
 
         try:
@@ -726,15 +764,24 @@ class OpenAIProvider(AIProvider):
                 yield chunk
             return
         except Exception as exc:
-            if not (self._looks_like_responses_unsupported_error(exc) or self._looks_like_tool_unsupported_error(exc)):
+            if not (
+                self._looks_like_responses_unsupported_error(exc)
+                or self._looks_like_tool_unsupported_error(exc)
+            ):
                 raise
 
-        async for chunk in self._chat_stream_with_local_web_search(
-            messages=messages,
-            system_prompt=system_prompt,
-            temperature=temperature,
-        ):
-            yield chunk
+        try:
+            async for chunk in self._chat_stream_with_local_web_search(
+                messages=messages,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            ):
+                yield chunk
+            return
+        except Exception as exc:
+            if not self._looks_like_tool_unsupported_error(exc):
+                raise
+            raise ValueError("当前供应商不支持工具调用联网搜索。") from exc
 
     async def _chat_stream_with_responses_local_web_search(
         self,
@@ -758,6 +805,8 @@ class OpenAIProvider(AIProvider):
         )
 
         if not tool_calls:
+            if force_search:
+                raise ValueError("当前供应商不支持工具调用联网搜索。")
             if content:
                 yield content
             return
@@ -823,6 +872,8 @@ class OpenAIProvider(AIProvider):
                 raise
 
             if not tool_calls:
+                if force_search and round_index == 0:
+                    raise ValueError("当前供应商不支持工具调用联网搜索。")
                 if content:
                     yield str(content)
                 return
