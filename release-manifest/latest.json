@@ -1,9 +1,7 @@
 {
-  "latest_version": "1.0.9",
-  "release_notes": "优化桌面更新体验：设置页点击更新后直接下载并启动安装程序，不再跳转到 GitHub 页面手动下载。",
-  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.0.9",
-  "published_at": "2026-06-07T00:00:00+08:00",
-  "downloads": {
-    "windows": "https://github.com/wlohf/Mnemox/releases/download/v1.0.9/Mnemox-Setup-1.0.9.exe"
-  }
+  "latest_version": "1.1.0",
+  "release_notes": "新增 Tavily 高质量联网搜索、DuckDuckGo/Bing 最终兜底、搜索设置页，以及 AI 上下文/输出 token 上限配置。",
+  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.1.0",
+  "published_at": "2026-06-22T00:00:00+08:00",
+  "downloads": {}
 }
