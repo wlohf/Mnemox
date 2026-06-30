@@ -1,7 +1,7 @@
 {
-  "latest_version": "1.1.0",
-  "release_notes": "新增 Tavily 高质量联网搜索、DuckDuckGo/Bing 最终兜底、搜索设置页，以及 AI 上下文/输出 token 上限配置。",
-  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.1.0",
-  "published_at": "2026-06-22T00:00:00+08:00",
+  "latest_version": "1.2.0",
+  "release_notes": "新增目标驱动 Agent、双层记忆审核、自主 Coach Kernel、笔记证据工作流、搜索缓存与质量增强，并修复桌面背景持久化。",
+  "release_page": "https://github.com/wlohf/Mnemox/releases/tag/v1.2.0",
+  "published_at": "2026-06-30T00:00:00+08:00",
   "downloads": {}
 }
