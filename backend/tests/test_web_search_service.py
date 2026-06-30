@@ -3,8 +3,10 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
+from app.services.search_quality import canonicalize_url, enhance_search_results, score_source_credibility
 from app.services.web_search import (
     SearchProviderSettings,
+    WebSearchResult,
     parse_bing_html,
     parse_bing_rss,
     parse_duckduckgo_html,
@@ -73,6 +75,63 @@ def test_parse_bing_rss_extracts_result_links():
     assert results[0].snippet == "A concise RSS summary."
 
 
+def test_canonicalize_url_removes_tracking_params_and_fragment():
+    assert (
+        canonicalize_url("https://www.example.com/path/?utm_source=x&b=2&a=1#section")
+        == "https://example.com/path?a=1&b=2"
+    )
+
+
+def test_enhance_search_results_merges_duplicates_and_preserves_providers():
+    results = enhance_search_results(
+        [
+            WebSearchResult(
+                title="Mnemox Docs - Official",
+                url="https://docs.tavily.com/search?utm_source=newsletter",
+                snippet="Official Tavily search documentation.",
+                source_provider="tavily",
+                score=0.8,
+            ),
+            WebSearchResult(
+                title="Mnemox Docs",
+                url="https://docs.tavily.com/search/",
+                snippet="Duplicate from local fallback.",
+                source_provider="bing",
+            ),
+        ],
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert results[0].canonical_url == "https://docs.tavily.com/search"
+    assert set(results[0].merged_from_providers) == {"tavily", "bing"}
+
+
+def test_enhance_search_results_prioritizes_official_sources():
+    results = enhance_search_results(
+        [
+            WebSearchResult(
+                title="Unofficial Python guide",
+                url="https://random-blog.example/python",
+                snippet="A long blog summary about Python docs and examples.",
+                source_provider="bing",
+                score=0.9,
+            ),
+            WebSearchResult(
+                title="Python documentation",
+                url="https://docs.python.org/3/tutorial/",
+                snippet="The official Python tutorial documentation.",
+                source_provider="duckduckgo",
+                score=0.6,
+            ),
+        ],
+        limit=5,
+    )
+
+    assert results[0].url == "https://docs.python.org/3/tutorial/"
+    assert score_source_credibility(results[0].url) > score_source_credibility(results[1].url)
+
+
 class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_web_uses_tavily_first_when_enabled(self):
         settings = SearchProviderSettings(
@@ -100,6 +159,7 @@ class WebSearchProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results[0].title, "Tavily Result")
         self.assertEqual(results[0].source_provider, "tavily")
+        self.assertEqual(results[0].source_domain, "example.com")
         tavily_mock.assert_awaited_once()
 
     async def test_search_web_falls_back_to_local_search_when_tavily_fails(self):

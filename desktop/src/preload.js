@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('mnemoxDesktop', {
   setPreference: (key, value) => ipcRenderer.invoke('desktop-preferences:set', key, value),
   setPomodoroReminder: (payload) => ipcRenderer.invoke('desktop-reminder:set', payload),
   clearPomodoroReminder: () => ipcRenderer.invoke('desktop-reminder:clear'),
+  showCoachNotification: (payload) => ipcRenderer.invoke('desktop-coach:notify', payload),
   onUpdateState: (callback) => {
     const handler = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop-updater:state', handler)
@@ -24,5 +25,10 @@ contextBridge.exposeInMainWorld('mnemoxDesktop', {
     const handler = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop-reminder:triggered', handler)
     return () => ipcRenderer.removeListener('desktop-reminder:triggered', handler)
+  },
+  onCoachNotificationRoute: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop-coach:open-route', handler)
+    return () => ipcRenderer.removeListener('desktop-coach:open-route', handler)
   },
 })

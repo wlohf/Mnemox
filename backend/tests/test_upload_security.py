@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException, UploadFile
 
-from app.routers.images import MAX_SIZE as IMAGE_MAX_SIZE, _save_image
+from app.routers.images import MAX_SIZE as IMAGE_MAX_SIZE, _read_limited, _save_image
 from app.routers.materials import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 
 PNG_1X1 = (
@@ -63,6 +63,14 @@ class UploadSecurityTests(unittest.TestCase):
 
     def test_image_default_upload_limit_is_50mb(self):
         self.assertEqual(IMAGE_MAX_SIZE, 50 * 1024 * 1024)
+
+    def test_image_read_limited_treats_zero_as_unlimited(self):
+        file = make_upload_file("large.png", "image/png", PNG_1X1 + (b"x" * 1024))
+        try:
+            data = asyncio.run(_read_limited(file, max_size=0))
+            self.assertGreater(len(data), 1024)
+        finally:
+            file.file.close()
 
 
 if __name__ == "__main__":

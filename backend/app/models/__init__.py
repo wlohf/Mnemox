@@ -10,6 +10,7 @@ from app.models.pomodoro import Pomodoro  # noqa: F401
 from app.models.daily_plan import DailyPlan  # noqa: F401
 from app.models.ai_settings import AIProviderSetting  # noqa: F401
 from app.models.search_settings import AISearchSettings  # noqa: F401
+from app.models.search_cache import WebSearchCache  # noqa: F401
 from app.models.ai_routing import AIRoutingSetting  # noqa: F401
 from app.models.memory import ConversationSummary, UserMemory  # noqa: F401
 from app.models.progress import MaterialProfile, OutputEvaluation  # noqa: F401
@@ -18,3 +19,4 @@ from app.models.user_profile import UserProfile  # noqa: F401
 from app.models.learning_event import LearningEvent  # noqa: F401
 from app.models.anki import AnkiCard  # noqa: F401
 from app.models.agent import AgentJob, AgentExecutionLog  # noqa: F401
+from app.models.coach import CoachEvent, CoachNudge, CoachPreference, CoachSkillStats, CoachWorkflow  # noqa: F401

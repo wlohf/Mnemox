@@ -73,6 +73,8 @@ uploads/
 .worktrees
 .worktrees/
 .pytest_cache/
+.playwright-cli/
+output/
 nul
 *.db-journal
 backend/venv/

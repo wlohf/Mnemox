@@ -82,8 +82,8 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
     title: string
     content: string
     note_type?: string
-    material_id?: number
-    chapter_id?: number
+    material_id?: number | null
+    chapter_id?: number | null
     tags?: string[]
     links?: Array<{ link_type: string; link_id: number }>
   }): Promise<OfflineNoteItem> => {
@@ -125,7 +125,10 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
     if (data.title !== undefined) updates.title = data.title as string
     if (data.content !== undefined) updates.content = data.content as string
     if (data.note_type !== undefined) updates.note_type = data.note_type as string | null
+    if (data.material_id !== undefined) updates.material_id = data.material_id as number | null
+    if (data.chapter_id !== undefined) updates.chapter_id = data.chapter_id as number | null
     if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags)
+    if (data.links !== undefined) updates.links = JSON.stringify(data.links)
 
     if (existing._syncStatus === 'synced') {
       updates._syncStatus = 'pending_update'
@@ -137,6 +140,7 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
     const queuePayload: Record<string, unknown> = { ...updates }
     // For the queue we store tags as JSON string
     if (data.tags !== undefined) queuePayload.tags = JSON.stringify(data.tags)
+    if (data.links !== undefined) queuePayload.links = JSON.stringify(data.links)
 
     await enqueueOperation(
       'notes',

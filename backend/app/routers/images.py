@@ -56,18 +56,18 @@ async def _read_limited(
         if not chunk:
             break
         total += len(chunk)
-        if total > max_size:
+        if max_size > 0 and total > max_size:
             raise HTTPException(status_code=400, detail=detail)
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _save_image(file: UploadFile, user_id: int) -> dict:
+async def _save_image(file: UploadFile, user_id: int, max_size: int = MAX_SIZE) -> dict:
     ext = _validate_image_extension(file)
     content_type = (file.content_type or "").lower()
     if content_type and not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="上传内容类型必须是图片")
-    data = await _read_limited(file, MAX_SIZE)
+    data = await _read_limited(file, max_size)
     detected_ext = _detect_image_extension(data)
     if detected_ext is None:
         raise HTTPException(status_code=400, detail="文件内容不是有效图片")
@@ -108,6 +108,15 @@ async def upload_image(
 ):
     """上传单张图片，返回 URL 和 Markdown 片段。"""
     return await _save_image(file, int(current_user.id))
+
+
+@router.post("/upload-background")
+async def upload_background_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传自定义背景图；不设置应用级文件大小上限。"""
+    return await _save_image(file, int(current_user.id), max_size=0)
 
 
 @router.post("/upload-batch")

@@ -71,6 +71,62 @@ export interface AgentActionDraftResponse {
   requires_confirmation: boolean
 }
 
+export interface AgentGoalContextItem {
+  id?: number | string
+  title?: string
+  route?: string
+  [key: string]: unknown
+}
+
+export interface AgentGoalContext {
+  date: string
+  generated_at: string
+  active_goal: null | {
+    id: number
+    title: string
+    description?: string | null
+    deadline?: string | null
+    target_level?: string | null
+    material_id?: number | null
+    route?: string
+    progress?: {
+      pending_task_count?: number
+      completed_today_count?: number
+      overdue_task_count?: number
+      today_task_count?: number
+    }
+  }
+  goal_creation?: {
+    title: string
+    message: string
+    route: string
+    requires_confirmation: boolean
+  }
+  today_focus: {
+    id: string
+    action_id: string
+    title: string
+    reason: string
+    estimated_minutes: number
+    route: string
+    target?: unknown
+    requires_confirmation?: boolean
+  }
+  supporting_context: {
+    notes?: AgentGoalContextItem[]
+    materials?: AgentGoalContextItem[]
+    wrong_questions?: AgentGoalContextItem[]
+    review_items?: AgentGoalContextItem[]
+  }
+  risk_flags: {
+    no_daily_plan?: boolean
+    review_debt_high?: boolean
+    goal_stale?: boolean
+  }
+  evidence?: string[]
+  core_profile?: AgentCoreProfile | null
+}
+
 export interface AgentActionExecuteResponse {
   status: string
   action: AgentAction
@@ -198,6 +254,124 @@ export async function getAgentBrief(useLlm = false): Promise<AgentBrief> {
   return await apiFetch<AgentBrief>(`/api/agent/brief${useLlm ? '?use_llm=true' : ''}`)
 }
 
+export interface AgentMemoryCandidate {
+  id: number
+  memory_key: string
+  memory_value: string
+  category: string
+  confidence: number
+  status?: string
+  review_status?: 'staged' | 'confirmed' | 'ignored' | 'inaccurate' | string | null
+  memory_type?: string | null
+  source_type?: string | null
+  source_id?: string | number | null
+  evidence?: string[] | string | null
+  expires_at?: string | null
+  material_id?: number | null
+  is_locked?: number | boolean
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface AgentCoreProfile {
+  id?: number | null
+  memory_key?: string
+  memory_value: string
+  category?: string
+  confidence?: number
+  updated_at?: string | null
+  evidence?: string[] | string | null
+  signals?: Array<{ label?: string; value?: string; confidence?: number }>
+}
+
+export interface AgentCoreProfileResponse {
+  memory?: AgentMemoryCandidate | null
+  profile?: Record<string, unknown> | null
+}
+
+export interface AgentMemoryLearningRun {
+  ok?: boolean
+  checkpoint_at?: string
+  scanned_events?: number
+  created?: number
+  staged?: number
+  confirmed?: number
+  core_profile?: AgentCoreProfile | null
+  message?: string
+}
+
+export async function getAgentGoalContext(goalId?: number): Promise<AgentGoalContext> {
+  const suffix = goalId ? `?goal_id=${encodeURIComponent(String(goalId))}` : ''
+  return await apiFetch<AgentGoalContext>(`/api/agent/goal-context${suffix}`)
+}
+
+export async function listAgentMemoryCandidates(): Promise<AgentMemoryCandidate[]> {
+  try {
+    return await apiFetch<AgentMemoryCandidate[]>('/api/agent/memory/candidates')
+  } catch {
+    return []
+  }
+}
+
+export async function confirmAgentMemoryCandidate(
+  id: number,
+  options: { lock?: boolean } = {},
+): Promise<AgentMemoryCandidate | { ok: boolean } | null> {
+  try {
+    return await apiFetch<AgentMemoryCandidate | { ok: boolean }>(`/api/agent/memory/candidates/${id}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function ignoreAgentMemoryCandidate(
+  id: number,
+  options: { reason?: 'ignored' | 'inaccurate' | string } = {},
+): Promise<AgentMemoryCandidate | { ok: boolean } | null> {
+  try {
+    return await apiFetch<AgentMemoryCandidate | { ok: boolean }>(`/api/agent/memory/candidates/${id}/ignore`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function runAgentMemoryLearning(): Promise<AgentMemoryLearningRun | null> {
+  try {
+    return await apiFetch<AgentMemoryLearningRun>('/api/agent/memory/run-learning', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function getAgentCoreProfile(): Promise<AgentCoreProfile | null> {
+  try {
+    const data = await apiFetch<AgentCoreProfile | AgentCoreProfileResponse>('/api/agent/memory/core-profile')
+    if ('memory_value' in data) return data
+    const profile = (data as AgentCoreProfileResponse).profile || {}
+    const memory = (data as AgentCoreProfileResponse).memory || null
+    return {
+      id: memory?.id ?? null,
+      memory_key: memory?.memory_key || 'agent_core_profile',
+      memory_value: JSON.stringify(profile),
+      category: memory?.category || 'system',
+      confidence: memory?.confidence,
+      updated_at: memory?.updated_at || (typeof profile.updated_at === 'string' ? profile.updated_at : null),
+      evidence: memory?.evidence,
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function getAgentPrompt(): Promise<{ prompt: string }> {
   return await apiFetch<{ prompt: string }>('/api/agent/prompt')
 }
@@ -221,6 +395,17 @@ export async function getAgentActionDraft(actionId: string, useLlm = false): Pro
   try {
     const suffix = useLlm ? '?use_llm=true' : ''
     return await apiFetch<AgentActionDraftResponse>(`/api/agent/actions/${encodeURIComponent(actionId)}/draft${suffix}`)
+  } catch {
+    return null
+  }
+}
+
+export async function getAgentGoalContextActionDraft(actionId: string): Promise<AgentActionDraftResponse | null> {
+  try {
+    return await apiFetch<AgentActionDraftResponse>(`/api/agent/goal-context/actions/${encodeURIComponent(actionId)}/draft`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
   } catch {
     return null
   }

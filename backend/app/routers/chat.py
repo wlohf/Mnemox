@@ -32,6 +32,7 @@ from app.services.memory_service import (
     upsert_user_memories_from_turn,
 )
 from app.services.search_settings_service import get_search_settings_dict
+from app.services.search_cache_service import search_web_with_cache
 from app.services.web_search import SearchProviderSettings, WebSearchResult, search_web
 
 from app.config import settings
@@ -855,13 +856,24 @@ def _ai_configuration_error(exc: Exception) -> HTTPException:
 def _format_web_search_context(results: list[WebSearchResult]) -> str:
     lines: list[str] = []
     for index, item in enumerate(results, start=1):
+        provider = getattr(item, "source_provider", "local")
+        domain = getattr(item, "source_domain", None)
+        credibility = getattr(item, "credibility_score", None)
+        merged = getattr(item, "merged_from_providers", None) or []
+        source_bits = [f"搜索来源: {provider}"]
+        if domain:
+            source_bits.append(f"域名: {domain}")
+        if credibility is not None:
+            source_bits.append(f"可信度: {credibility:.2f}")
+        if len(merged) > 1:
+            source_bits.append(f"合并来源: {', '.join(merged)}")
         lines.append(
             "\n".join(
                 [
                     f"[{index}] {item.title}",
                     f"URL: {item.url}",
                     f"摘要: {item.snippet or '无摘要'}",
-                    f"搜索来源: {getattr(item, 'source_provider', 'local')}",
+                    *source_bits,
                 ]
             )
         )
@@ -1137,7 +1149,15 @@ async def _build_external_web_search_prompt(
         if settings_data
         else None
     )
-    results = await search_web(query, limit=5, settings=settings)
+    results = await search_web_with_cache(
+        query,
+        db=db,
+        user_id=user_id,
+        limit=5,
+        settings=settings,
+        mode=mode,
+        search_func=search_web,
+    )
     if not results:
         return "", []
 
@@ -1162,6 +1182,11 @@ async def _build_external_web_search_prompt(
             "source_provider": getattr(item, "source_provider", "local"),
             "score": getattr(item, "score", None),
             "published_date": getattr(item, "published_date", None),
+            "canonical_url": getattr(item, "canonical_url", None),
+            "source_domain": getattr(item, "source_domain", None),
+            "credibility_score": getattr(item, "credibility_score", None),
+            "rank_score": getattr(item, "rank_score", None),
+            "merged_from_providers": getattr(item, "merged_from_providers", []),
         }
         for item in results
     ]

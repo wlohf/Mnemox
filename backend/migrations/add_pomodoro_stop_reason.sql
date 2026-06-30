@@ -5,4 +5,4 @@
 --   interrupted = 临时有事被打断（噪声，排除出效率分析）
 --   distracted  = 状态不好/走神（低效信号，触发 AI 干预）
 
-ALTER TABLE pomodoros ADD COLUMN stop_reason VARCHAR(20) NULL;
+ALTER TABLE pomodoros ADD COLUMN IF NOT EXISTS stop_reason VARCHAR(20) NULL;

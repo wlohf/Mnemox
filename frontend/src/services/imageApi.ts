@@ -30,6 +30,13 @@ export async function uploadImageStrict(file: File): Promise<ImageUploadResult> 
   return withAuthenticatedImageUrl(result)
 }
 
+export async function uploadBackgroundImageStrict(file: File): Promise<ImageUploadResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const result = await apiFetch<ImageUploadResponse>('/api/images/upload-background', { method: 'POST', body: form })
+  return withAuthenticatedImageUrl(result)
+}
+
 export async function uploadImage(file: File): Promise<ImageUploadResult | null> {
   try {
     return await uploadImageStrict(file)

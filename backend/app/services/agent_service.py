@@ -1,7 +1,11 @@
 """自主学习 Agent 简报服务。
 
 把画像、记忆、任务、复习、错题与番茄钟状态整理成主动建议，并提供可注入聊天 prompt 的片段。
-当前版本优先使用规则引擎兜底，后续可在此基础上叠加 LLM planner。
+
+工程边界：
+- 所有读取和写入都必须显式带上 user_id，避免跨用户上下文泄漏。
+- 自然语言写入只生成草稿，必须经过确认后才执行。
+- LLM planner/router 只能提供候选结果，最终由确定性清洗、去重和权限规则收口。
 """
 from __future__ import annotations
 
@@ -24,11 +28,14 @@ from app.models.note import Note
 from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.services.memory_service import get_relevant_memories
-from app.services.profile_service import get_or_compute_profile
+from app.services.learning_snapshot_service import build_learning_snapshot
+from app.services.agent_long_memory_service import get_core_profile
+from app.services.agent_memory_learning_service import run_agent_memory_learning_if_due
 from app.config import settings
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
+CONFIRMED_REVIEW_STATUS = "confirmed"
 
 NEGATIVE_FEEDBACK_REASON_LABELS = {
     "too_long": "太长",
@@ -170,14 +177,112 @@ def _extract_plan_items(text: str, today: date) -> list[dict[str, Any]]:
         title = _compact_text(part, 100)
         if not title or title in stop_words:
             continue
-        task_type = "review" if "复习" in title else "practice" if any(k in title for k in ["练习", "刷题", "训练"]) else "summarize" if any(k in title for k in ["总结", "整理", "复盘"]) else "learn"
         items.append({
             "title": title,
             "description": "由对话 Agent 根据你的自然语言计划加入每日计划。",
-            "task_type": task_type,
+            "task_type": _task_type_for_title(title),
             "planned_date": planned_date.isoformat(),
         })
     return items
+
+
+def _task_type_for_title(title: str) -> str:
+    if "复习" in title:
+        return "review"
+    if any(k in title for k in ["练习", "刷题", "训练"]):
+        return "practice"
+    if any(k in title for k in ["总结", "整理", "复盘"]):
+        return "summarize"
+    return "learn"
+
+
+def _goal_title_from_message(text: str) -> str:
+    patterns = [
+        r"(?:新建|创建|添加|建立|制定|设置)(?:一个)?(?:学习)?目标(?:是|为|：|:)?\s*([^，,。；;\n]+)",
+        r"(?:我的目标|接下来我的目标|目标)(?:是|为|：|:)\s*([^，,。；;\n]+)",
+        r"(?:接下来我要|我要)\s*([^，,。；;\n]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            title = re.sub(r"^(?:是|为)\s*", "", match.group(1)).strip()
+            title = re.sub(r"(?:任务|子任务|行动|待办|计划)(?:是|为|：|:).*$", "", title).strip()
+            if title:
+                return _compact_text(title, 60)
+    if "英语" in text:
+        return "英语学习计划"
+    return "学习目标"
+
+
+def _goal_task_draft_from_message(text: str, today: date) -> dict[str, Any]:
+    goal_title = _goal_title_from_message(text)
+
+    def clean_task_phrase(value: str) -> str:
+        cleaned = str(value or "").strip()
+        cleaned = re.sub(r"^(?:任务|子任务|行动|待办|计划)(?:是|为|：|:)?", "", cleaned).strip()
+        cleaned = re.sub(r"^(?:把|将|请把|请将|帮我把|帮我将|帮我|请)", "", cleaned).strip()
+        cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务$", "", cleaned).strip()
+        cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务", "", cleaned).strip()
+        cleaned = re.sub(r"^(?:然后|并且|以及|和)\s*", "", cleaned).strip()
+        return _compact_text(cleaned or value, 80)
+
+    task_source_parts = [
+        match.group(1)
+        for match in re.finditer(r"(?:任务|子任务|行动|待办|计划)(?:是|为|：|:)\s*([^。；;\n]+)", text)
+    ]
+    source_text = "，".join(task_source_parts) if task_source_parts else text
+    task_keywords = [
+        "精读",
+        "精听",
+        "阅读",
+        "听力",
+        "复习",
+        "练习",
+        "训练",
+        "刷题",
+        "真题",
+        "错题",
+        "背诵",
+        "背单词",
+        "单词",
+        "总结",
+        "整理",
+        "复盘",
+        "预习",
+        "模拟",
+        "每天",
+        "每周",
+    ]
+
+    task_phrases: list[str] = []
+    for part in re.split(r"[，,。；;、\n]+", source_text):
+        clean = clean_task_phrase(part)
+        if not clean:
+            continue
+        if task_source_parts or any(keyword in clean for keyword in task_keywords):
+            task_phrases.append(clean)
+
+    tasks = []
+    for phrase in list(dict.fromkeys(task_phrases))[:8]:
+        tasks.append({
+            "title": phrase,
+            "description": "由对话 Agent 根据你的自然语言计划生成。",
+            "task_type": _task_type_for_title(phrase),
+            "planned_date": today.isoformat(),
+        })
+    if not tasks:
+        tasks.append({
+            "title": goal_title,
+            "description": "由对话 Agent 根据你的自然语言计划生成。",
+            "task_type": "learn",
+            "planned_date": today.isoformat(),
+        })
+
+    return {
+        "goal_title": goal_title,
+        "goal_description": text[:500],
+        "tasks": tasks,
+    }
 
 
 def _parse_agent_date(value: Any, default: date) -> date:
@@ -400,7 +505,11 @@ async def _collect_memory_state(db: AsyncSession, user_id: int) -> dict[str, Any
         user_id=user_id,
     )
     count_result = await db.execute(
-        select(func.count(UserMemory.id)).where(UserMemory.user_id == user_id, UserMemory.status == "active")
+        select(func.count(UserMemory.id)).where(
+            UserMemory.user_id == user_id,
+            UserMemory.status == "active",
+            UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+        )
     )
     return {"memories": memories, "active_memory_count": int(count_result.scalar() or 0)}
 
@@ -471,6 +580,7 @@ async def _collect_agent_personalization(db: AsyncSession, user_id: int, context
         .where(
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
+            UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
             UserMemory.category == "agent_feedback",
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
@@ -762,6 +872,8 @@ async def _get_agent_learning_profile(db: AsyncSession, user_id: int) -> dict[st
         select(UserMemory).where(
             UserMemory.user_id == user_id,
             UserMemory.memory_key == "agent_learning_profile",
+            UserMemory.status == "active",
+            UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
         )
     )
     row = result.scalar_one_or_none()
@@ -784,6 +896,7 @@ async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload
         row.category = "style"
         row.confidence = max(float(row.confidence or 0.0), 0.82)
         row.status = "active"
+        row.review_status = CONFIRMED_REVIEW_STATUS
         row.memory_type = "semantic"
         row.last_seen_at = now
     else:
@@ -795,6 +908,7 @@ async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload
                 category="style",
                 confidence=0.82,
                 status="active",
+                review_status=CONFIRMED_REVIEW_STATUS,
                 is_locked=0,
                 memory_type="semantic",
                 last_seen_at=now,
@@ -1317,29 +1431,12 @@ def _build_summary(context: dict[str, Any], readiness: float, risk: str, autonom
 async def build_agent_brief(db: AsyncSession, user_id: int, use_llm: bool = False) -> dict[str, Any]:
     now = datetime.now()
     today = date.today()
-    profile_obj = await get_or_compute_profile(db, user_id)
-    profile: dict[str, Any] = {}
-    if profile_obj:
-        profile = {
-            "total_study_days": int(profile_obj.total_study_days or 0),
-            "total_study_hours": float(profile_obj.total_study_hours or 0),
-            "total_pomodoros": int(profile_obj.total_pomodoros or 0),
-            "focus_score": float(profile_obj.focus_score or 0),
-            "consistency_score": float(profile_obj.consistency_score or 0),
-            "planning_score": float(profile_obj.planning_score or 0),
-            "optimal_hours": profile_obj.optimal_hours,
-            "weak_points": profile_obj.weak_points or [],
-            "recent_performance": profile_obj.recent_performance or {},
-        }
-
-    context = {
-        "profile": profile,
-        "tasks": await _collect_task_state(db, user_id, today),
-        "review": await _collect_review_state(db, user_id, now),
-        "learning": await _collect_learning_state(db, user_id, today, now),
-        "weaknesses": await _collect_weakness_state(db, user_id),
-        "memory": await _collect_memory_state(db, user_id),
-    }
+    try:
+        await run_agent_memory_learning_if_due(db, user_id, now=now, interval_hours=6)
+    except Exception as exc:
+        logger.warning("Agent memory checkpoint failed for user_id=%s: %s", user_id, exc)
+    context = await build_learning_snapshot(db, user_id, now=now)
+    context["core_profile"] = await get_core_profile(db, user_id)
     personalization = await _collect_agent_personalization(db, user_id, context)
     actions = _personalize_actions(_build_actions(context), personalization, context)
     context["personalization"] = personalization
@@ -1551,6 +1648,14 @@ def _heuristic_write_intent(message: str, today: date) -> dict[str, Any]:
         "后天计划",
     ]
     task_triggers = [
+        "新建目标",
+        "创建目标",
+        "添加目标",
+        "建立目标",
+        "制定目标",
+        "设置目标",
+        "目标：",
+        "目标:",
         "创建任务",
         "添加任务",
         "加入任务",
@@ -1599,53 +1704,15 @@ def _heuristic_write_intent(message: str, today: date) -> dict[str, Any]:
         }
 
     if any(trigger in text for trigger in task_triggers):
-        goal_title = "学习目标"
-        goal_match = re.search(r"(?:目标是|我的目标是|接下来我的目标是|接下来我要|我要)([^，。；;\n]+)", text)
-        if goal_match:
-            goal_title = _compact_text(goal_match.group(1), 60)
-        elif "英语" in text:
-            goal_title = "英语学习计划"
-
-        def clean_task_phrase(value: str) -> str:
-            cleaned = re.sub(r"^(把|将|请把|请将|帮我把|帮我将)", "", value).strip()
-            cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务$", "", cleaned).strip()
-            cleaned = re.sub(r"(拆成|拆为|拆解成|生成|做成|转成|变成)(子)?任务", "", cleaned).strip()
-            return _compact_text(cleaned or value, 80)
-
-        task_phrases: list[str] = []
-        for part in re.split(r"[，,。；;、\n]+", text):
-            clean = clean_task_phrase(part)
-            if not clean:
-                continue
-            if any(keyword in clean for keyword in ["精读", "精听", "阅读", "听力", "复习", "练习", "背诵", "总结"]):
-                task_phrases.append(clean)
-
-        tasks = []
-        for phrase in task_phrases[:8]:
-            task_type = "practice" if any(k in phrase for k in ["练习", "刷题"]) else "review" if "复习" in phrase else "summarize" if "总结" in phrase else "learn"
-            tasks.append({
-                "title": phrase,
-                "description": "由对话 Agent 根据你的自然语言计划生成。",
-                "task_type": task_type,
-                "planned_date": today.isoformat(),
-            })
-        if not tasks:
-            tasks.append({
-                "title": goal_title,
-                "description": "由对话 Agent 根据你的自然语言计划生成。",
-                "task_type": "learn",
-                "planned_date": today.isoformat(),
-            })
+        draft = _goal_task_draft_from_message(text, today)
+        goal_title = draft["goal_title"]
+        tasks = draft["tasks"]
 
         return {
             "intent": "create_goal_tasks",
             "confidence": 0.7,
             "summary": f"创建/复用目标「{goal_title}」，并安排 {len(tasks)} 个任务",
-            "draft": {
-                "goal_title": goal_title,
-                "goal_description": text[:500],
-                "tasks": tasks,
-            },
+            "draft": draft,
         }
 
     return {"intent": "none", "confidence": 0.0, "summary": "", "draft": {}}
@@ -2068,6 +2135,7 @@ async def remember_agent_feedback(
         row.confidence = max(float(row.confidence or 0.0), 0.75)
         row.last_seen_at = now
         row.status = "active"
+        row.review_status = CONFIRMED_REVIEW_STATUS
     else:
         row = UserMemory(
             user_id=user_id,
@@ -2076,6 +2144,7 @@ async def remember_agent_feedback(
             category="agent_feedback",
             confidence=0.75,
             status="active",
+            review_status=CONFIRMED_REVIEW_STATUS,
             is_locked=0,
             memory_type="episodic",
             last_seen_at=now,

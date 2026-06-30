@@ -10,8 +10,11 @@ from app.database import Base
 from app.models.chat import ChatConversation, ChatMessage
 from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
+from app.models.learning_event import LearningEvent
 from app.models.note import Note
 from app.models.user import User
+from app.routers.agent import record_agent_action_feedback
+from app.routers.agent import execute_agent_action_endpoint, AgentFeedbackRequest
 from app.routers.conversations import ConversationMessageCreate, append_conversation_messages
 from app.services.agent_service import _heuristic_write_intent, build_agent_write_draft, execute_agent_write_draft
 
@@ -48,6 +51,12 @@ class AgentWriteFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks["draft"]["goal_title"], "英语学习计划")
         self.assertEqual(len(tasks["draft"]["tasks"]), 2)
         self.assertTrue(all("拆成任务" not in item["title"] for item in tasks["draft"]["tasks"]))
+
+        new_goal = _heuristic_write_intent("新建目标：两周提升英语听力，任务：每天精听20分钟", date(2026, 5, 2))
+        self.assertEqual(new_goal["intent"], "create_goal_tasks")
+        self.assertEqual(new_goal["draft"]["goal_title"], "两周提升英语听力")
+        self.assertEqual(new_goal["draft"]["tasks"][0]["title"], "每天精听20分钟")
+        self.assertEqual(new_goal["draft"]["tasks"][0]["planned_date"], "2026-05-02")
 
     def test_heuristic_detects_daily_plan_and_classified_note(self):
         plan = _heuristic_write_intent("今天的任务是 背单词，复习数学错题", date(2026, 5, 2))
@@ -198,6 +207,54 @@ class AgentWriteFlowTests(unittest.IsolatedAsyncioTestCase):
             messages = result.scalars().all()
             self.assertEqual([m.role for m in messages], ["user", "assistant"])
             self.assertEqual(messages[1].content, "已创建笔记：把这个想法记下来")
+
+    async def test_agent_action_execute_records_learning_events(self):
+        user_id = await self._create_user()
+        async with self.sessionmaker() as session:
+            goal = Goal(user_id=user_id, title="线代复习", status="active")
+            session.add(goal)
+            await session.commit()
+
+        user = User(id=user_id, username="tester", email="tester@example.com", hashed_password="hash", is_active=True)
+        async with self.sessionmaker() as session:
+            result = await execute_agent_action_endpoint("make_today_minimum_plan", db=session, current_user=user)
+
+        self.assertEqual(result["status"], "created")
+        async with self.sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(LearningEvent).where(LearningEvent.user_id == user_id).order_by(LearningEvent.event_type)
+                )
+            ).scalars().all()
+
+        event_types = [row.event_type for row in rows]
+        self.assertIn("agent.action_feedback", event_types)
+        self.assertIn("task.created", event_types)
+        self.assertTrue(any(row.task_id == result["created_task"]["id"] for row in rows))
+
+    async def test_agent_action_feedback_records_learning_event(self):
+        user_id = await self._create_user()
+        user = User(id=user_id, username="tester", email="tester@example.com", hashed_password="hash", is_active=True)
+        async with self.sessionmaker() as session:
+            await record_agent_action_feedback(
+                "maintain_rhythm",
+                AgentFeedbackRequest(outcome="dismissed", reason_code="too_disruptive", notes="现在不需要"),
+                db=session,
+                current_user=user,
+            )
+
+        async with self.sessionmaker() as session:
+            row = (
+                await session.execute(
+                    select(LearningEvent).where(
+                        LearningEvent.user_id == user_id,
+                        LearningEvent.event_type == "agent.action_feedback",
+                    )
+                )
+            ).scalar_one()
+
+        self.assertEqual(row.source, "agent_actions")
+        self.assertEqual(row.event_data["outcome"], "dismissed")
 
 
 if __name__ == "__main__":

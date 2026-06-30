@@ -1,22 +1,27 @@
 """今日激励语录路由"""
 from datetime import datetime, date
+import logging
 import hashlib
 from typing import Optional, List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.motivation import MotivationQuote, MotivationSettings
-from app.models.goal import Goal, Task
-from app.models.pomodoro import Pomodoro
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.motivation_service import (
+    build_fallback_motivation_quote,
+    build_motivation_prompt,
+    collect_motivation_snapshot,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DEFAULT_ROTATION_SECONDS = 3 * 3600
 MIN_ROTATION_SECONDS = 30 * 60
@@ -405,53 +410,9 @@ async def generate_quote(
     await _ensure_presets(db, user_id)
 
     today = date.today()
-    today_str = today.isoformat()
-
-    goal_result = await db.execute(
-        select(Goal.title)
-        .where(Goal.user_id == user_id, Goal.status == "active")
-        .order_by(Goal.created_at.desc())
-        .limit(4)
-    )
-    goals = [row[0] for row in goal_result.all()]
-
-    task_stats_result = await db.execute(
-        select(
-            func.count(Task.id),
-            func.coalesce(func.sum(case((Task.status == "completed", 1), else_=0)), 0),
-        )
-        .select_from(Task)
-        .join(Goal, Task.goal_id == Goal.id)
-        .where(Goal.user_id == user_id, Task.planned_date == today)
-    )
-    task_total, task_completed = task_stats_result.one()
-
-    pomodoro_result = await db.execute(
-        select(
-            func.count(Pomodoro.id),
-            func.coalesce(func.sum(Pomodoro.duration), 0),
-        )
-        .where(Pomodoro.user_id == user_id)
-        .where(Pomodoro.completed.is_(True))
-        .where(func.date(Pomodoro.started_at) == today_str)
-    )
-    pomodoro_count, pomodoro_minutes = pomodoro_result.one()
-
-    goals_text = ", ".join(goals) if goals else "暂无明确目标"
-    task_completed_value = int(task_completed or 0)
-    task_total_value = int(task_total or 0)
-    pomodoro_count_value = int(pomodoro_count or 0)
-    pomodoro_minutes_value = int(pomodoro_minutes or 0)
-
-    prompt = (
-        "以下是一位学习者的今日学习情况：\n"
-        f"当前学习目标: {goals_text}\n"
-        f"今日完成任务: {task_completed_value}/{task_total_value}\n"
-        f"今日专注时长: {pomodoro_minutes_value} 分钟\n"
-        f"今日番茄钟: {pomodoro_count_value} 个\n\n"
-        "请生成一句个性化的激励语录。简短、真诚、有力量。\n"
-        "只输出语录本身。"
-    )
+    snapshot = await collect_motivation_snapshot(db, user_id, today)
+    prompt = build_motivation_prompt(snapshot)
+    author = "AI"
 
     try:
         provider = await AIProviderFactory.create_provider(
@@ -461,13 +422,16 @@ async def generate_quote(
         )
         reply = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
-            system_prompt="你是贴心的学习教练。",
+            system_prompt="你是克制、真诚、具体的学习教练。优先参考用户自己写过的笔记观点，但不要编造。",
             temperature=0.8,
         )
+        text = (reply or "").strip().strip("\"“”")
+        if not text:
+            raise ValueError("empty motivation quote")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成激励失败: {str(e)}")
-
-    text = (reply or "").strip().strip("\"“”")
+        logger.warning("AI 激励生成失败，使用本地兜底。user_id=%s err=%s", user_id, e)
+        text = build_fallback_motivation_quote(snapshot)
+        author = "系统"
     if not text:
         raise HTTPException(status_code=500, detail="生成激励失败")
 
@@ -478,7 +442,7 @@ async def generate_quote(
     quote = MotivationQuote(
         user_id=user_id,
         content=text,
-        author="AI",
+        author=author,
         source_type="ai",
     )
     db.add(quote)

@@ -12,6 +12,18 @@ export interface PomodoroReminderPayload {
   mode: 'focus' | 'break'
 }
 
+export interface CoachNotificationPayload {
+  id: string
+  title: string
+  body: string
+  route?: string | null
+}
+
+export interface CoachNotificationRoutePayload {
+  id: string
+  route: string
+}
+
 export interface MnemoxDesktopBridge {
   checkForUpdates?: () => Promise<DesktopUpdateState>
   getUpdateState?: () => Promise<DesktopUpdateState>
@@ -28,7 +40,9 @@ export interface MnemoxDesktopBridge {
   setPreference?: <T = unknown>(key: string, value: T) => Promise<T | null>
   setPomodoroReminder?: (payload: PomodoroReminderPayload) => Promise<void>
   clearPomodoroReminder?: () => Promise<void>
+  showCoachNotification?: (payload: CoachNotificationPayload) => Promise<void>
   onReminderTriggered?: (callback: (payload: PomodoroReminderPayload) => void) => () => void
+  onCoachNotificationRoute?: (callback: (payload: CoachNotificationRoutePayload) => void) => () => void
 }
 
 declare global {

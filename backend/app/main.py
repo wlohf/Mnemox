@@ -169,7 +169,7 @@ async def health():
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -193,6 +193,8 @@ app.include_router(obsidian_import.router, prefix="/api/obsidian", tags=["Obsidi
 app.include_router(motivation.router, prefix="/api/motivation", tags=["今日激励"])
 app.include_router(interventions.router, prefix="/api/interventions", tags=["主动干预"])
 app.include_router(agent.router, prefix="/api/agent", tags=["自主学习 Agent"])
+app.include_router(agent_memory.router, prefix="/api/agent/memory", tags=["Agent 记忆"])
+app.include_router(coach.router, prefix="/api/coach", tags=["自主 Coach"])
 app.include_router(profile.router, prefix="/api/profile", tags=["用户画像"])
 app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt 模板"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])

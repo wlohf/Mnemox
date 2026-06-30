@@ -19,6 +19,7 @@ const {
   getFrontendDistDir,
 } = require('./runtimePaths')
 const { createDesktopAuthStore } = require('./desktopAuth')
+const { normalizeCoachNotificationPayload } = require('./desktopCoach')
 const { createDesktopPreferenceStore } = require('./desktopPreferences')
 const { createReminderManager } = require('./desktopReminder')
 const { createTrayIcon } = require('./trayIcon')
@@ -293,6 +294,29 @@ function registerDesktopReminder() {
   ipcMain.handle('desktop-reminder:clear', () => reminderManager.clearReminder())
 }
 
+function registerDesktopCoachNotifications() {
+  ipcMain.handle('desktop-coach:notify', (_event, payload) => {
+    const normalized = normalizeCoachNotificationPayload(payload)
+    if (!normalized) return null
+    const notice = new Notification({
+      title: normalized.title,
+      body: normalized.body,
+      silent: false,
+    })
+    notice.on('click', () => {
+      showMainWindow()
+      if (normalized.route && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop-coach:open-route', {
+          id: normalized.id,
+          route: normalized.route,
+        })
+      }
+    })
+    notice.show()
+    return null
+  })
+}
+
 async function maybeAutoCheckForUpdates() {
   const { autoCheck, intervalMinutes, lastCheckedAt } = readUpdateSettings(updateSettingsPath)
 
@@ -328,6 +352,7 @@ if (singleInstanceLock) {
       registerDesktopAuth()
       registerDesktopPreferences()
       registerDesktopReminder()
+      registerDesktopCoachNotifications()
       createWindow()
       startupReady = true
       createTraySafely()

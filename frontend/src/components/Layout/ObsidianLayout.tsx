@@ -72,6 +72,22 @@ import { getDashboard, startLearningPipeline, startBatchLearningPipeline, genera
 import { updateGoalTask } from '../../services/goalApi'
 import { getDailyIntervention } from '../../services/interventionApi'
 import { draftAgentWrite, executeAgentWrite, type AgentWriteDraftResponse } from '../../services/agentApi'
+import {
+  detectCoachChatEvent,
+  evaluateCoach,
+  getCoachPreferences,
+  markCoachNudgeShown,
+  recordCoachNudgeFeedback,
+  type CoachFeedbackOutcome,
+  type CoachChannel,
+  type CoachNudge,
+  type CoachPreferences,
+} from '../../services/coachApi'
+import {
+  isDesktopCoachNotificationAvailable,
+  onCoachNotificationRoute,
+  showDesktopCoachNotification,
+} from '../../services/desktopCoach'
 import { createMemory } from '../../services/memoryApi'
 import {
   getCurrentQuote,
@@ -83,13 +99,20 @@ import {
   type MotivationQuote,
   type MotivationSettings,
 } from '../../services/motivationApi'
-import { apiFetch, getApiErrorMessage } from '../../services/apiClient'
+import { apiFetch, getApiErrorMessage, withAuthQuery } from '../../services/apiClient'
 import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { BackendLoadingOverlay } from './BackendLoadingOverlay'
 import { GlobalNavRail } from './GlobalNavRail'
 import { dismissOnboarding, getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
-import { AI_PROVIDERS_UPDATED_EVENT, getAllProviders, type AIProvider, type AIProvidersUpdatedDetail } from '../../services/aiSettingsApi'
+import {
+  AI_PROVIDERS_UPDATED_EVENT,
+  getAllProviders,
+  getStoredWebSearchMode,
+  getStoredWebSearchProviderName,
+  type AIProvider,
+  type AIProvidersUpdatedDetail,
+} from '../../services/aiSettingsApi'
 import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
 import { getProviderModels, getSelectableChatProviders } from './chatModelOptions'
 import {
@@ -377,6 +400,7 @@ export function ObsidianLayout() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const initialConversationRestoreRef = useRef(false)
+  const shownCoachNudgeIdsRef = useRef<Set<string>>(new Set())
 
   // Image upload state
   const [pendingImages, setPendingImages] = useState<string[]>([])
@@ -406,6 +430,7 @@ export function ObsidianLayout() {
   const [reviewPreviewTasks, setReviewPreviewTasks] = useState<ReviewTaskItem[]>([])
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
   const [updatingTodayTaskKeys, setUpdatingTodayTaskKeys] = useState<Set<string>>(() => new Set())
+  const [coachPreferences, setCoachPreferences] = useState<CoachPreferences | null>(null)
   // Backend readiness polling (Feature 1)
   const [backendReady, setBackendReady] = useState(false)
 
@@ -436,6 +461,7 @@ export function ObsidianLayout() {
     }
   })
   const hasChatContent = chatMessages.length > 0 || streamingContent.trim().length > 0
+  const bgImageUrl = bgImage ? withAuthQuery(bgImage) : null
 
   // 加载资料列表
   const loadMaterials = useCallback(async () => {
@@ -1137,6 +1163,18 @@ export function ObsidianLayout() {
     } else {
       addMessage(userMsg)
     }
+    const coachChatEvent = !forcedText && !options ? detectCoachChatEvent(text) : null
+    if (coachChatEvent) {
+      void evaluateCoachForEvent(
+        coachChatEvent,
+        { text, conversation_id: convId },
+        {
+          source: 'chat',
+          severity: coachChatEvent === 'chat.frustration_detected' ? 'warning' : 'info',
+          dedupeKey: `${coachChatEvent}:${convId}:${text.slice(0, 80)}`,
+        },
+      )
+    }
     if (!forcedText) setChatInput('')
     setPendingImages([])
     setAutoScrollEnabled(true)
@@ -1146,6 +1184,8 @@ export function ObsidianLayout() {
     let accumulated = ''
     const controller = new AbortController()
     abortControllerRef.current = controller
+    const webSearchMode = getStoredWebSearchMode()
+    const webSearchProviderName = getStoredWebSearchProviderName()
 
     await sendMessageStream(
       text,
@@ -1219,6 +1259,8 @@ export function ObsidianLayout() {
       selectedChatModelConfig.providerName,
       selectedChatModelConfig.model,
       webSearchEnabled,
+      webSearchMode,
+      webSearchProviderName,
       (results) => {
         if (results.length > 0) {
           message.info(`已检索到 ${results.length} 条网页结果，并作为上下文提供给模型`)
@@ -1378,6 +1420,133 @@ export function ObsidianLayout() {
     }
   }
 
+  const loadCoachPreferences = useCallback(async () => {
+    if (!backendReady) return
+    const prefs = await getCoachPreferences()
+    if (prefs) setCoachPreferences(prefs)
+  }, [backendReady])
+
+  useEffect(() => {
+    void loadCoachPreferences()
+  }, [loadCoachPreferences])
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'coach_preferences_updated') void loadCoachPreferences()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [loadCoachPreferences])
+
+  useEffect(() => {
+    const unsubscribe = onCoachNotificationRoute((payload) => {
+      const route = String(payload?.route || '')
+      if (route.startsWith('/')) navigate(route)
+    })
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
+  }, [navigate])
+
+  const handleCoachFeedback = useCallback(async (nudge: CoachNudge, outcome: CoachFeedbackOutcome) => {
+    const result = await recordCoachNudgeFeedback(nudge.id, { outcome })
+    if (!result) return
+    notification.destroy(`coach-${nudge.id}`)
+    if (outcome === 'helpful' || outcome === 'accepted') {
+      message.success('已记录 Coach 反馈')
+    }
+  }, [])
+
+  const showCoachNudge = useCallback((nudge: CoachNudge | null) => {
+    if (!nudge || shownCoachNudgeIdsRef.current.has(nudge.id)) return
+    shownCoachNudgeIdsRef.current.add(nudge.id)
+    void markCoachNudgeShown(nudge.id)
+
+    const actionRoute = nudge.route || nudge.suggested_action?.route
+    const actionLabel = nudge.suggested_action?.label || '去处理'
+    const showInAppNudge = () => {
+      const notify = nudge.priority === 'high' ? notification.warning : notification.info
+      notify({
+        key: `coach-${nudge.id}`,
+        message: nudge.title,
+        description: (
+          <div>
+            <div style={{ marginBottom: 8 }}>{nudge.body}</div>
+            {nudge.explainability?.signals?.slice(0, 2).map((signal) => (
+              <div key={signal} style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                • {signal}
+              </div>
+            ))}
+            {(nudge.explainability?.sources || []).slice(0, 2).length > 0 && (
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+                {(nudge.explainability?.sources || []).slice(0, 2).map((source) => (
+                  <Tag key={`${source.type}-${source.id}`} style={{ marginInlineEnd: 0 }}>
+                    {source.type === 'note' ? '笔记' : '记忆'}：{source.title || source.id}
+                  </Tag>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+        placement: 'bottomRight',
+        duration: nudge.priority === 'high' ? 0 : 8,
+        actions: (
+          <Space wrap>
+            {actionRoute && (
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  void handleCoachFeedback(nudge, 'accepted')
+                  navigate(actionRoute)
+                }}
+              >
+                {actionLabel}
+              </Button>
+            )}
+            <Button size="small" onClick={() => void handleCoachFeedback(nudge, 'helpful')}>有帮助</Button>
+            <Button size="small" onClick={() => void handleCoachFeedback(nudge, 'later')}>稍后</Button>
+            <Button size="small" danger onClick={() => void handleCoachFeedback(nudge, 'too_disruptive')}>太打扰</Button>
+          </Space>
+        ),
+      })
+    }
+
+    if (nudge.channel === 'desktop_notification' && coachPreferences?.desktop_notifications_enabled && isDesktopCoachNotificationAvailable()) {
+      void showDesktopCoachNotification({
+        id: nudge.id,
+        title: nudge.title,
+        body: nudge.body,
+        route: actionRoute || null,
+      }).then((shown) => {
+        if (!shown) showInAppNudge()
+      }).catch(showInAppNudge)
+      return
+    }
+
+    showInAppNudge()
+  }, [coachPreferences?.desktop_notifications_enabled, handleCoachFeedback, navigate])
+
+  const evaluateCoachForEvent = useCallback(async (
+    eventType: string,
+    payload: Record<string, any> = {},
+    options: { source?: string; severity?: string; dedupeKey?: string; channel?: CoachChannel } = {},
+  ) => {
+    const result = await evaluateCoach({
+      event: {
+        event_type: eventType,
+        source: options.source || 'frontend',
+        channel: options.channel,
+        payload,
+        severity: options.severity || 'info',
+        dedupe_key: options.dedupeKey,
+      },
+      include_recent_notes: false,
+      include_memories: true,
+    })
+    showCoachNudge(result?.nudge || null)
+  }, [showCoachNudge])
+
   const loadDailyIntervention = async () => {
     try {
       const report = await getDailyIntervention()
@@ -1430,6 +1599,11 @@ export function ObsidianLayout() {
         void loadReviewOverview()
         void loadDashboardOverview()
         void loadDailyIntervention()
+        void evaluateCoachForEvent(
+          'app.inactive_returned',
+          { path: location.pathname },
+          { source: 'frontend', dedupeKey: `focus:${new Date().toISOString().slice(0, 13)}` },
+        )
       }, 600)
     }
     window.addEventListener('focus', onFocus)
@@ -1438,12 +1612,47 @@ export function ObsidianLayout() {
     const interventionTimer = interventionEnabled
       ? setInterval(() => { if (backendReady) void loadDailyIntervention() }, interventionIntervalMin * 60 * 1000)
       : null
+    const coachProactiveEnabled = Boolean(
+      coachPreferences?.enabled &&
+      (coachPreferences.proactive_enabled || coachPreferences.desktop_notifications_enabled)
+    )
+    const coachIntervalMin = Math.max(30, coachPreferences?.min_minutes_between_nudges || 60)
+    const coachTimer = coachProactiveEnabled
+      ? setInterval(() => {
+          if (!backendReady) return
+          const desktopChannel = Boolean(coachPreferences?.desktop_notifications_enabled && isDesktopCoachNotificationAvailable())
+          const slot = Math.floor(Date.now() / (coachIntervalMin * 60 * 1000))
+          void evaluateCoachForEvent(
+            'app.evaluate',
+            { path: location.pathname, scheduled: true },
+            {
+              source: desktopChannel ? 'desktop' : 'frontend',
+              channel: desktopChannel ? 'desktop_notification' : 'in_app_nudge',
+              dedupeKey: `scheduled:${coachIntervalMin}:${slot}`,
+            },
+          )
+        }, coachIntervalMin * 60 * 1000)
+      : null
 
     return () => {
       window.removeEventListener('focus', onFocus)
       if (interventionTimer) clearInterval(interventionTimer)
+      if (coachTimer) clearInterval(coachTimer)
     }
-  }, [loadMaterials, loadProjects, loadConversations, backendReady, interventionEnabled, interventionIntervalMin])
+  }, [
+    loadMaterials,
+    loadProjects,
+    loadConversations,
+    backendReady,
+    interventionEnabled,
+    interventionIntervalMin,
+    evaluateCoachForEvent,
+    location.pathname,
+    coachPreferences?.enabled,
+    coachPreferences?.proactive_enabled,
+    coachPreferences?.desktop_notifications_enabled,
+    coachPreferences?.min_minutes_between_nudges,
+  ])
 
   const handleChatScroll = () => {
     const el = chatScrollRef.current
@@ -1562,7 +1771,13 @@ export function ObsidianLayout() {
   }
 
   const handleCompletePomodoro = () => {
+    const taskName = pomodoroConfig.taskName || currentTask || ''
     completeTimer()
+    void evaluateCoachForEvent(
+      'pomodoro.completed',
+      { task_name: taskName, planned_minutes: pomodoroConfig.duration },
+      { source: 'pomodoro', severity: 'info', dedupeKey: `pomodoro-completed:${Date.now()}:${taskName}` },
+    )
     message.success(`番茄钟完成！已记录到统计中，开始休息 ${pomodoroConfig.breakDuration} 分钟`)
     // 写入学习行为记忆，供 AI 感知学习状态
     if (pomodoroConfig.taskName) {
@@ -1582,10 +1797,18 @@ export function ObsidianLayout() {
 
   const handleConfirmStopReason = async (reason: 'early_done' | 'interrupted' | 'distracted') => {
     const { currentBackendId, startedAt, pausedTotalMs } = usePomodoroStore.getState()
+    const taskName = pomodoroConfig.taskName || currentTask || ''
     if (currentBackendId) {
       const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt - pausedTotalMs) : 0
       const actualMinutes = Math.max(0.1, Math.round(elapsedMs / 1000 / 60 * 10) / 10)
       await pomodoroApi.completePomodoro(currentBackendId, false, undefined, actualMinutes, reason)
+      if (reason === 'interrupted' || reason === 'distracted') {
+        void evaluateCoachForEvent(
+          reason === 'interrupted' ? 'pomodoro.interrupted' : 'pomodoro.distracted',
+          { pomodoro_id: currentBackendId, task_name: taskName, actual_minutes: actualMinutes, stop_reason: reason },
+          { source: 'pomodoro', severity: 'info', dedupeKey: `pomodoro-stop:${currentBackendId}:${reason}` },
+        )
+      }
     }
     resetTimer()
     setShowStopReasonModal(false)
@@ -1914,10 +2137,10 @@ export function ObsidianLayout() {
         onToggleBeginnerMode={() => setBeginnerMode((v) => !v)}
       />
 
-      {bgImage && (
+      {bgImageUrl && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none',
-          backgroundImage: `url(${bgImage})`,
+          backgroundImage: `url(${bgImageUrl})`,
           backgroundSize: 'cover', backgroundPosition: 'center',
           opacity: bgOpacity,
         }} />

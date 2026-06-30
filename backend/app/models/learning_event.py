@@ -1,5 +1,5 @@
 """学习行为事件模型"""
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Text
+from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, Text
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -7,6 +7,9 @@ from app.database import Base
 class LearningEvent(Base):
     """学习行为事件表（时序数据）"""
     __tablename__ = "learning_events"
+    __table_args__ = (
+        Index("ix_learning_events_user_type_time", "user_id", "event_type", "timestamp"),
+    )
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, default=1, comment="用户ID（多用户支持）")
@@ -14,6 +17,8 @@ class LearningEvent(Base):
     # 事件基本信息
     event_type = Column(String(50), nullable=False, comment="事件类型")
     event_category = Column(String(20), comment="事件分类: study/practice/review/goal")
+    source = Column(String(50), comment="事件来源: frontend/backend/router/service/agent/coach")
+    dedupe_key = Column(String(160), index=True, comment="幂等去重键，防止轮询重复记录")
     
     # 事件详情（JSON格式存储灵活数据）
     event_data = Column(JSON, comment="事件详细数据")
@@ -25,6 +30,10 @@ class LearningEvent(Base):
     # 关联信息
     material_id = Column(Integer, comment="关联资料ID")
     chapter_id = Column(Integer, comment="关联章节ID")
+    goal_id = Column(Integer, comment="关联目标ID")
+    task_id = Column(Integer, comment="关联任务ID")
+    note_id = Column(Integer, comment="关联笔记ID")
+    wrong_question_id = Column(Integer, comment="关联错题ID")
     session_id = Column(String(50), comment="会话ID（同一学习会话）")
     
     # 元数据

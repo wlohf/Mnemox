@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import * as pomodoroApi from '../services/pomodoroApi'
 import type { PomodoroStartResponse } from '../services/pomodoroApi'
 import { clearPomodoroReminder, setPomodoroReminder } from '../services/desktopReminder'
+import { getDesktopPreference, setDesktopPreference } from '../services/desktopPreferences'
 
 export interface PomodoroRecord {
   id: string
@@ -81,6 +82,7 @@ interface PomodoroState {
   tick: () => void
   addRecord: (taskName: string, duration: number) => void
   setBackgroundImage: (backgroundImage: string | null) => void
+  loadBackgroundImagePreference: () => Promise<void>
 
   // Sync actions
   syncPendingRecords: () => Promise<void>
@@ -105,6 +107,11 @@ const getDateString = (date: Date = new Date()) => {
 const MAX_RECORDS = 500
 const BACKEND_REFRESH_LIMIT = 500
 const ACTIVE_TIMER_STALE_GRACE_MS = 12 * 60 * 60 * 1000
+export const POMODORO_BACKGROUND_PREFERENCE_KEY = 'pomodoro.background'
+
+interface PomodoroBackgroundPreference {
+  backgroundImage: string | null
+}
 
 const getDateFromIso = (value: string) => {
   const datePrefix = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
@@ -121,6 +128,18 @@ const parseTimestamp = (value: string | null | undefined) => {
 
 const sortRecordsByCompletedAt = (records: PomodoroRecord[]) => {
   return [...records].sort((a, b) => parseTimestamp(b.completedAt) - parseTimestamp(a.completedAt))
+}
+
+const normalizePomodoroBackgroundPreference = (value: unknown): PomodoroBackgroundPreference | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  if (!Object.prototype.hasOwnProperty.call(value, 'backgroundImage')) return null
+
+  const backgroundImage = (value as Partial<PomodoroBackgroundPreference>).backgroundImage
+  if (backgroundImage === null || typeof backgroundImage === 'string') {
+    return { backgroundImage }
+  }
+
+  return null
 }
 
 const getRecordDedupKey = (record: PomodoroRecord) => {
@@ -425,6 +444,26 @@ export const usePomodoroStore = create<PomodoroState>()(
 
       setBackgroundImage: (backgroundImage: string | null) => {
         set({ backgroundImage })
+        void setDesktopPreference<PomodoroBackgroundPreference>(
+          POMODORO_BACKGROUND_PREFERENCE_KEY,
+          { backgroundImage },
+        )
+      },
+
+      loadBackgroundImagePreference: async () => {
+        const desktopPreference = normalizePomodoroBackgroundPreference(
+          await getDesktopPreference<PomodoroBackgroundPreference>(POMODORO_BACKGROUND_PREFERENCE_KEY),
+        )
+
+        if (desktopPreference) {
+          set({ backgroundImage: desktopPreference.backgroundImage })
+          return
+        }
+
+        void setDesktopPreference<PomodoroBackgroundPreference>(
+          POMODORO_BACKGROUND_PREFERENCE_KEY,
+          { backgroundImage: get().backgroundImage },
+        )
       },
 
       syncPendingRecords: async () => {

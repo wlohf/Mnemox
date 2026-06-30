@@ -1,72 +1,105 @@
-"""执行数据库迁移脚本"""
+"""Execute database migration helpers.
+
+SQLite development databases are covered by ``app.database.init_db`` lightweight
+column checks. For non-SQLite deployments this runner applies the checked-in SQL
+files in a stable order so model columns do not drift between environments.
+"""
+from __future__ import annotations
+
 import asyncio
 import sys
 from pathlib import Path
 
-# Add backend to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from sqlalchemy import text
-from app.database import engine
+
+from app.config import settings
+from app.database import engine, init_db
 
 
-async def run_migrations():
-    """执行所有待运行的迁移"""
-    migrations = [
-        {
-            "name": "add_goal_plan_fields",
-            "description": "添加学习计划字段到 goals 表",
-            "sql": """
-                -- Add plan fields to goals table
-                ALTER TABLE goals ADD COLUMN plan_total_days INTEGER DEFAULT NULL;
-                ALTER TABLE goals ADD COLUMN plan_current_chapter_id INTEGER DEFAULT NULL;
-                ALTER TABLE goals ADD COLUMN plan_study_days_per_week INTEGER DEFAULT 5;
-                ALTER TABLE goals ADD COLUMN plan_start_date DATE DEFAULT NULL;
-                ALTER TABLE goals ADD COLUMN plan_last_generated_week DATE DEFAULT NULL;
-            """
-        },
-        {
-            "name": "add_daily_plan_task_ids",
-            "description": "添加 task_ids 字段到 daily_plans 表",
-            "sql": """
-                -- Add task_ids field to daily_plans table
-                ALTER TABLE daily_plans ADD COLUMN task_ids TEXT DEFAULT NULL;
-            """
-        }
-    ]
-    
-    async with engine.begin() as conn:
-        for migration in migrations:
-            print(f"\n{'='*60}")
-            print(f"执行迁移: {migration['name']}")
-            print(f"描述: {migration['description']}")
-            print(f"{'='*60}")
-            
-            # Split SQL by semicolons and execute each statement
-            statements = [s.strip() for s in migration['sql'].split(';') if s.strip()]
-            
-            for i, statement in enumerate(statements, 1):
-                try:
-                    print(f"\n[{i}/{len(statements)}] 执行 SQL:")
-                    print(f"  {statement[:80]}..." if len(statement) > 80 else f"  {statement}")
-                    
-                    await conn.execute(text(statement))
-                    print(f"  ✅ 成功")
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    # Check if column already exists (not an error)
-                    if "duplicate column name" in error_msg.lower() or "already exists" in error_msg.lower():
-                        print(f"  ⚠️  字段已存在，跳过")
-                    else:
-                        print(f"  ❌ 失败: {error_msg}")
-                        raise
-            
-            print(f"\n✅ 迁移 '{migration['name']}' 完成")
-    
-    print(f"\n{'='*60}")
-    print("🎉 所有迁移执行完成！")
-    print(f"{'='*60}\n")
+MIGRATION_ORDER = [
+    "add_user_scope_and_agent_fields.sql",
+    "add_goal_plan_fields.sql",
+    "add_daily_plan_task_ids.sql",
+    "add_pomodoro_stop_reason.sql",
+    "add_review_schedule_is_archived.sql",
+    "add_ai_search_and_token_settings.sql",
+    "add_web_search_cache.sql",
+    "add_coach_kernel_tables.sql",
+    "add_coach_skill_stats.sql",
+    "add_learning_event_metadata.sql",
+    "add_agent_memory_metadata.sql",
+]
+
+
+def _is_sqlite_url(database_url: str) -> bool:
+    return database_url.startswith("sqlite")
+
+
+def _split_sql(sql: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    in_dollar_quote = False
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--") or not stripped:
+            current.append(line)
+            continue
+        if "$$" in line:
+            in_dollar_quote = not in_dollar_quote
+        current.append(line)
+        if not in_dollar_quote and stripped.endswith(";"):
+            statement = "\n".join(current).strip()
+            if statement:
+                statements.append(statement.rstrip(";"))
+            current = []
+    tail = "\n".join(current).strip()
+    if tail:
+        statements.append(tail.rstrip(";"))
+    return statements
+
+
+async def _run_sql_file(path: Path) -> None:
+    sql = path.read_text(encoding="utf-8")
+    statements = _split_sql(sql)
+    print(f"\n{'=' * 60}")
+    print(f"执行迁移文件: {path.name}")
+    print(f"{'=' * 60}")
+    for index, statement in enumerate(statements, 1):
+        try:
+            preview = " ".join(statement.split())[:110]
+            print(f"[{index}/{len(statements)}] {preview}...")
+            async with engine.begin() as conn:
+                await conn.execute(text(statement))
+        except Exception as exc:
+            message = str(exc).lower()
+            if any(token in message for token in ("duplicate column", "already exists", "duplicate key")):
+                print("  字段或对象已存在，跳过")
+                continue
+            raise
+
+
+async def run_migrations() -> None:
+    """Run migrations for the configured database."""
+
+    if _is_sqlite_url(settings.DATABASE_URL):
+        print("检测到 SQLite，执行 Base.metadata.create_all + 轻量迁移。")
+        await init_db()
+        print("SQLite 迁移检查完成。")
+        return
+
+    migration_dir = Path(__file__).parent / "migrations"
+    for filename in MIGRATION_ORDER:
+        path = migration_dir / filename
+        if not path.exists():
+            print(f"跳过缺失迁移文件: {filename}")
+            continue
+        await _run_sql_file(path)
+
+    print(f"\n{'=' * 60}")
+    print("所有迁移文件执行完成。")
+    print(f"{'=' * 60}\n")
 
 
 if __name__ == "__main__":

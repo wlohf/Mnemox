@@ -5,7 +5,7 @@ import remarkMath from 'remark-math'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import { useNavigate } from 'react-router-dom'
-import { Button, Empty, Input, Modal, Select, Space, Tag, Tabs, Typography, Upload, message } from 'antd'
+import { Button, Empty, Input, Modal, Segmented, Select, Space, Tag, Tabs, Typography, Upload, message } from 'antd'
 import {
   CopyOutlined,
   DeleteOutlined,
@@ -21,7 +21,16 @@ import dayjs from 'dayjs'
 import { useOfflineNotes, type OfflineNoteItem } from '../hooks/useOfflineNotes'
 import { uploadImage } from '../services/imageApi'
 import { importObsidianNote } from '../services/obsidianImportApi'
-import { assistNoteWithAI, type NoteAIAssistAction } from '../services/noteApi'
+import {
+  askAgentAboutNote,
+  assistNoteWithAI,
+  draftNoteReviewPrompt,
+  draftTaskFromNoteSelection,
+  type AskAgentFromNoteResult,
+  type NoteAIAssistAction,
+  type NoteActionDraftResult,
+  type NoteLink,
+} from '../services/noteApi'
 import { MarkdownLiveEditor, type MarkdownLiveEditorHandle, type MarkdownLiveEditorImageResult } from '../components/MarkdownLiveEditor'
 import { PageShell } from '../components/PageShell'
 import '../components/ChatMessageBubble.css'
@@ -36,6 +45,9 @@ const NOTE_AI_ACTIONS: Array<{ key: NoteAIAssistAction; label: string; descripti
 ]
 
 type FolderKey = 'all' | 'untagged' | 'pending' | `tag:${string}`
+type EditorMode = 'edit' | 'preview' | 'split'
+
+const NOTE_DRAFT_PREFIX = 'mnemox_note_draft:'
 
 function getNoteExcerpt(content: string) {
   const line = content
@@ -57,6 +69,79 @@ function getFolderTitle(folderKey: FolderKey) {
   return folderKey.replace(/^tag:/, '')
 }
 
+function getDraftKey(localId: string) {
+  return `${NOTE_DRAFT_PREFIX}${localId}`
+}
+
+function parseNumericId(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number.parseInt(trimmed, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function formatLinks(links: NoteLink[]) {
+  return (links || [])
+    .map((link) => `${link.link_type}:${link.link_id}${link.label ? ` ${link.label}` : ''}`)
+    .join('\n')
+}
+
+function parseLinks(text: string): NoteLink[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map<NoteLink | null>((line) => {
+      const [head, ...labelParts] = line.split(/\s+/)
+      const [type, idText] = head.includes(':') ? head.split(':', 2) : ['material', head]
+      const parsedId = Number.parseInt(idText, 10)
+      if (!type || !Number.isFinite(parsedId) || parsedId <= 0) return null
+      return {
+        link_type: type,
+        link_id: parsedId,
+        label: labelParts.join(' ') || null,
+      }
+    })
+    .filter((item): item is NoteLink => item !== null)
+}
+
+function renderMarkdown(content: string) {
+  return (
+    <div className="chat-markdown mnemox-notes-preview">
+      {content.trim() ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeHighlight, rehypeKatex]}
+          skipHtml
+        >
+          {content}
+        </ReactMarkdown>
+      ) : (
+        <Text type="secondary">预览会显示在这里。</Text>
+      )}
+    </div>
+  )
+}
+
+function hasNoteChanged(current: OfflineNoteItem, latest: OfflineNoteItem) {
+  return (
+    current._serverId !== latest._serverId ||
+    current._syncStatus !== latest._syncStatus ||
+    current.title !== latest.title ||
+    current.content !== latest.content ||
+    current.note_type !== latest.note_type ||
+    current.material_id !== latest.material_id ||
+    current.chapter_id !== latest.chapter_id ||
+    current.updated_at !== latest.updated_at ||
+    JSON.stringify(current.tags || []) !== JSON.stringify(latest.tags || []) ||
+    JSON.stringify(current.links || []) !== JSON.stringify(latest.links || [])
+  )
+}
+
+function isAskAgentPreview(result: NoteActionDraftResult | AskAgentFromNoteResult): result is AskAgentFromNoteResult {
+  return Boolean((result as AskAgentFromNoteResult).preview?.agent_prompt_preview)
+}
+
 export function NotesPage() {
   const navigate = useNavigate()
   const [q, setQ] = useState('')
@@ -67,6 +152,12 @@ export function NotesPage() {
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [tagsText, setTagsText] = useState('')
+  const [materialIdText, setMaterialIdText] = useState('')
+  const [chapterIdText, setChapterIdText] = useState('')
+  const [linksText, setLinksText] = useState('')
+  const [editorMode, setEditorMode] = useState<EditorMode>('split')
+  const [draftStatus, setDraftStatus] = useState<'clean' | 'dirty' | 'saved' | 'restored' | 'saving'>('clean')
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
@@ -83,6 +174,10 @@ export function NotesPage() {
   const [importMdFiles, setImportMdFiles] = useState<File[]>([])
   const [importAttachments, setImportAttachments] = useState<File[]>([])
   const [importing, setImporting] = useState(false)
+  const [noteActionLoading, setNoteActionLoading] = useState<'review' | 'task' | 'ask' | null>(null)
+  const [noteActionResult, setNoteActionResult] = useState<NoteActionDraftResult | AskAgentFromNoteResult | null>(null)
+  const [noteActionOpen, setNoteActionOpen] = useState(false)
+  const [agentQuestion, setAgentQuestion] = useState('')
 
   const tagStats = useMemo(() => {
     const counts = new Map<string, number>()
@@ -108,11 +203,42 @@ export function NotesPage() {
     })
   }, [folderKey, notes, q])
 
+  const activeLatest = useMemo(
+    () => active ? notes.find((note) => note._localId === active._localId) || null : null,
+    [active?._localId, notes],
+  )
+
   const openNote = (note: OfflineNoteItem) => {
     setActive(note)
-    setTitle(note.title || '')
-    setContent(note.content || '')
-    setTagsText((note.tags || []).join(', '))
+    let nextTitle = note.title || ''
+    let nextContent = note.content || ''
+    let restored = false
+    const draftText = localStorage.getItem(getDraftKey(note._localId))
+    if (draftText) {
+      try {
+        const draft = JSON.parse(draftText) as { title?: string; content?: string; tagsText?: string; materialIdText?: string; chapterIdText?: string; linksText?: string; savedAt?: string }
+        nextTitle = draft.title ?? nextTitle
+        nextContent = draft.content ?? nextContent
+        setTagsText(draft.tagsText ?? (note.tags || []).join(', '))
+        setMaterialIdText(draft.materialIdText ?? (note.material_id ? String(note.material_id) : ''))
+        setChapterIdText(draft.chapterIdText ?? (note.chapter_id ? String(note.chapter_id) : ''))
+        setLinksText(draft.linksText ?? formatLinks(note.links || []))
+        setDraftSavedAt(draft.savedAt ?? null)
+        restored = true
+      } catch {
+        localStorage.removeItem(getDraftKey(note._localId))
+      }
+    }
+    if (!restored) {
+      setTagsText((note.tags || []).join(', '))
+      setMaterialIdText(note.material_id ? String(note.material_id) : '')
+      setChapterIdText(note.chapter_id ? String(note.chapter_id) : '')
+      setLinksText(formatLinks(note.links || []))
+      setDraftSavedAt(null)
+    }
+    setTitle(nextTitle)
+    setContent(nextContent)
+    setDraftStatus(restored ? 'restored' : 'clean')
   }
 
   const clearActive = () => {
@@ -120,6 +246,11 @@ export function NotesPage() {
     setTitle('')
     setContent('')
     setTagsText('')
+    setMaterialIdText('')
+    setChapterIdText('')
+    setLinksText('')
+    setDraftStatus('clean')
+    setDraftSavedAt(null)
   }
 
   useEffect(() => {
@@ -135,6 +266,54 @@ export function NotesPage() {
       openNote(visibleNotes[0])
     }
   }, [active?._localId, notes.length, visibleNotes.length, folderKey, q])
+
+  useEffect(() => {
+    if (!active || !activeLatest || !hasNoteChanged(active, activeLatest)) return
+    setActive(activeLatest)
+    if (draftStatus === 'clean') {
+      setTitle(activeLatest.title || '')
+      setContent(activeLatest.content || '')
+      setTagsText((activeLatest.tags || []).join(', '))
+      setMaterialIdText(activeLatest.material_id ? String(activeLatest.material_id) : '')
+      setChapterIdText(activeLatest.chapter_id ? String(activeLatest.chapter_id) : '')
+      setLinksText(formatLinks(activeLatest.links || []))
+    }
+  }, [active, activeLatest, draftStatus])
+
+  useEffect(() => {
+    if (!active) return
+    const activeTagsText = (active.tags || []).join(', ')
+    const activeMaterialText = active.material_id ? String(active.material_id) : ''
+    const activeChapterText = active.chapter_id ? String(active.chapter_id) : ''
+    const activeLinksText = formatLinks(active.links || [])
+    const dirty =
+      title !== (active.title || '') ||
+      content !== (active.content || '') ||
+      tagsText !== activeTagsText ||
+      materialIdText !== activeMaterialText ||
+      chapterIdText !== activeChapterText ||
+      linksText !== activeLinksText
+    if (!dirty) {
+      setDraftStatus((prev) => prev === 'restored' ? prev : 'clean')
+      return
+    }
+    setDraftStatus('dirty')
+    const timeoutId = window.setTimeout(() => {
+      const savedAt = new Date().toISOString()
+      localStorage.setItem(getDraftKey(active._localId), JSON.stringify({
+        title,
+        content,
+        tagsText,
+        materialIdText,
+        chapterIdText,
+        linksText,
+        savedAt,
+      }))
+      setDraftSavedAt(savedAt)
+      setDraftStatus('saved')
+    }, 700)
+    return () => window.clearTimeout(timeoutId)
+  }, [active, title, content, tagsText, materialIdText, chapterIdText, linksText])
 
   const doUploadImage = async (file: File) => {
     setUploading(true)
@@ -235,13 +414,26 @@ export function NotesPage() {
       .map((item) => item.trim())
       .filter(Boolean)
       .slice(0, 12)
+    const material_id = parseNumericId(materialIdText)
+    const chapter_id = parseNumericId(chapterIdText)
+    const links = parseLinks(linksText)
     setSaving(true)
-    const saved = await updateNote(active._localId, { title, content, tags })
+    const saved = await updateNote(active._localId, {
+      title,
+      content,
+      tags,
+      material_id,
+      chapter_id,
+      links,
+    })
     setSaving(false)
     if (!saved) {
       message.error('保存失败')
       return
     }
+    localStorage.removeItem(getDraftKey(active._localId))
+    setDraftStatus('clean')
+    setDraftSavedAt(null)
     message.success('已保存')
     openNote(saved)
   }
@@ -351,6 +543,73 @@ export function NotesPage() {
     })
   }
 
+  const requireSyncedServerNote = () => {
+    if (!active) {
+      message.warning('请先选择笔记')
+      return null
+    }
+    if (!active._serverId || active._syncStatus !== 'synced') {
+      message.warning('请先保存并同步笔记后再使用 Agent 动作')
+      return null
+    }
+    return active._serverId
+  }
+
+  const openNoteActionResult = (result: NoteActionDraftResult | AskAgentFromNoteResult | null, fallback: string) => {
+    if (!result) {
+      message.error(fallback)
+      return
+    }
+    setNoteActionResult(result)
+    setNoteActionOpen(true)
+  }
+
+  const draftReviewPrompt = async () => {
+    const serverId = requireSyncedServerNote()
+    if (!serverId) return
+    setNoteActionLoading('review')
+    const result = await draftNoteReviewPrompt(serverId)
+    setNoteActionLoading(null)
+    openNoteActionResult(result, '生成复习提示草案失败')
+  }
+
+  const draftTaskFromSelection = async () => {
+    const serverId = requireSyncedServerNote()
+    if (!serverId) return
+    const selectedText = (editorRef.current?.getSelectedText() || '').trim().slice(0, 3000)
+    if (!selectedText) {
+      message.warning('请先在笔记中选择一段内容')
+      return
+    }
+    setNoteActionLoading('task')
+    const result = await draftTaskFromNoteSelection(serverId, { selected_text: selectedText })
+    setNoteActionLoading(null)
+    openNoteActionResult(result, '生成任务草案失败')
+  }
+
+  const askAgentCurrentNote = async () => {
+    const serverId = requireSyncedServerNote()
+    if (!serverId) return
+    const selectedText = (editorRef.current?.getSelectedText() || '').trim().slice(0, 3000)
+    setNoteActionLoading('ask')
+    const result = await askAgentAboutNote(serverId, {
+      question: agentQuestion.trim() || undefined,
+      selected_text: selectedText || undefined,
+    })
+    setNoteActionLoading(null)
+    openNoteActionResult(result, '询问 Agent 失败')
+  }
+
+  const draftStatusLabel = (() => {
+    if (!active) return '未选择'
+    if (saving) return '正在写入同步队列'
+    if (draftStatus === 'dirty') return '本地草稿待保存'
+    if (draftStatus === 'saved') return draftSavedAt ? `本地草稿 ${dayjs(draftSavedAt).format('HH:mm:ss')}` : '本地草稿已保存'
+    if (draftStatus === 'restored') return '已恢复本地草稿'
+    if (active._syncStatus !== 'synced') return '等待同步'
+    return '已同步'
+  })()
+
   const folderRows: Array<{ key: FolderKey; label: string; count: number }> = [
     { key: 'all', label: '全部笔记', count: notes.length },
     { key: 'untagged', label: '未分类', count: notes.filter((note) => (note.tags || []).length === 0).length },
@@ -456,6 +715,16 @@ export function NotesPage() {
               <div className="mnemox-doc-toolbar">
                 <Space size={6} wrap>
                   {uploading && <Tag color="blue">上传中</Tag>}
+                  <Segmented
+                    size="small"
+                    value={editorMode}
+                    onChange={(value) => setEditorMode(value as EditorMode)}
+                    options={[
+                      { label: '编辑', value: 'edit' },
+                      { label: '预览', value: 'preview' },
+                      { label: '分屏', value: 'split' },
+                    ]}
+                  />
                   <Button size="small" icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
                   <Upload
                     accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
@@ -470,21 +739,27 @@ export function NotesPage() {
                   <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>保存</Button>
                 </Space>
                 <Space size={6} wrap>
+                  <Tag color={draftStatus === 'dirty' ? 'orange' : active._syncStatus === 'synced' ? 'green' : 'gold'}>{draftStatusLabel}</Tag>
                   {(tagsText.split(',').map((item) => item.trim()).filter(Boolean)).map((tag) => (
                     <Tag key={tag}>{tag}</Tag>
                   ))}
                   <Tag>{getWordCount(content)} 字</Tag>
                 </Space>
               </div>
-              <MarkdownLiveEditor
-                ref={editorRef}
-                value={content}
-                onChange={setContent}
-                height="calc(100vh - 360px)"
-                className="mnemox-notes-editor"
-                onUploadImage={handleEditorImageUpload}
-                placeholder="支持 Markdown；可直接输入、粘贴图片、拖拽图片或点击工具栏图片按钮..."
-              />
+              <div className={`mnemox-notes-editor-shell mode-${editorMode}`}>
+                {editorMode !== 'preview' && (
+                  <MarkdownLiveEditor
+                    ref={editorRef}
+                    value={content}
+                    onChange={setContent}
+                    height="calc(100vh - 360px)"
+                    className="mnemox-notes-editor"
+                    onUploadImage={handleEditorImageUpload}
+                    placeholder="支持 Markdown；可直接输入、粘贴图片、拖拽图片或点击工具栏图片按钮..."
+                  />
+                )}
+                {editorMode !== 'edit' && renderMarkdown(content)}
+              </div>
             </>
           ) : (
             <div className="mnemox-notes-empty">
@@ -492,6 +767,89 @@ export function NotesPage() {
             </div>
           )}
         </main>
+
+        <aside className="mnemox-notes-relation-pane">
+          <div className="mnemox-panel-heading">
+            <span>关系与 Agent</span>
+            {active?._serverId ? <Tag color="green">#{active._serverId}</Tag> : <Tag>本地</Tag>}
+          </div>
+          {active ? (
+            <div className="mnemox-note-relations">
+              <label>
+                <span>Goal / Material</span>
+                <Input
+                  size="small"
+                  value={materialIdText}
+                  onChange={(event) => setMaterialIdText(event.target.value)}
+                  placeholder="material_id"
+                />
+              </label>
+              <label>
+                <span>Chapter</span>
+                <Input
+                  size="small"
+                  value={chapterIdText}
+                  onChange={(event) => setChapterIdText(event.target.value)}
+                  placeholder="chapter_id"
+                />
+              </label>
+              <label>
+                <span>Links</span>
+                <Input.TextArea
+                  value={linksText}
+                  onChange={(event) => setLinksText(event.target.value)}
+                  placeholder="goal:1 期末目标&#10;task:8 复盘任务&#10;wrong_question:12 错题"
+                  autoSize={{ minRows: 4, maxRows: 8 }}
+                />
+              </label>
+              <div className="mnemox-note-relation-tags">
+                {parseLinks(linksText).length === 0 ? (
+                  <Text type="secondary">暂无显式关系</Text>
+                ) : (
+                  parseLinks(linksText).map((link) => (
+                    <Tag key={`${link.link_type}-${link.link_id}`}>{link.link_type} #{link.link_id}</Tag>
+                  ))
+                )}
+              </div>
+              <div className="mnemox-note-agent-actions">
+                <Button
+                  size="small"
+                  block
+                  loading={noteActionLoading === 'review'}
+                  onClick={() => void draftReviewPrompt()}
+                >
+                  转复习提示草案
+                </Button>
+                <Button
+                  size="small"
+                  block
+                  loading={noteActionLoading === 'task'}
+                  onClick={() => void draftTaskFromSelection()}
+                >
+                  从选区创建任务草案
+                </Button>
+                <Input.TextArea
+                  value={agentQuestion}
+                  onChange={(event) => setAgentQuestion(event.target.value)}
+                  placeholder="问 Agent 当前笔记，例如：下一步该复习什么？"
+                  autoSize={{ minRows: 2, maxRows: 4 }}
+                />
+                <Button
+                  size="small"
+                  type="primary"
+                  block
+                  icon={<RobotOutlined />}
+                  loading={noteActionLoading === 'ask'}
+                  onClick={() => void askAgentCurrentNote()}
+                >
+                  询问 Agent
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mnemox-pane-empty">选择笔记后显示关系和 Agent 动作</div>
+          )}
+        </aside>
       </div>
 
       <Modal
@@ -580,6 +938,64 @@ export function NotesPage() {
             ]}
           />
         </Space>
+      </Modal>
+
+      <Modal
+        title="Agent 笔记动作"
+        open={noteActionOpen}
+        onCancel={() => setNoteActionOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setNoteActionOpen(false)}>关闭</Button>,
+        ]}
+        width={720}
+      >
+        {noteActionResult ? (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {'answer' in noteActionResult && noteActionResult.answer ? (
+              <div className="chat-markdown mnemox-note-action-result">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeHighlight, rehypeKatex]}
+                  skipHtml
+                >
+                  {noteActionResult.answer}
+                </ReactMarkdown>
+              </div>
+            ) : isAskAgentPreview(noteActionResult) ? (
+              <div className="mnemox-note-action-preview">
+                <div>
+                  <Text strong>问题</Text>
+                  <p>{noteActionResult.preview?.question || '请解释这段笔记的重点，并给出下一步学习建议。'}</p>
+                </div>
+                {noteActionResult.preview?.source_note && (
+                  <div>
+                    <Text strong>证据笔记</Text>
+                    <p>{noteActionResult.preview.source_note.title || '未命名笔记'}</p>
+                    <Text type="secondary">{noteActionResult.preview.source_note.excerpt || '无摘录'}</Text>
+                  </div>
+                )}
+                <div>
+                  <Text strong>安全预览</Text>
+                  <pre className="mnemox-note-action-json">{noteActionResult.preview?.agent_prompt_preview}</pre>
+                </div>
+              </div>
+            ) : (
+              <pre className="mnemox-note-action-json">{JSON.stringify(('draft' in noteActionResult && noteActionResult.draft) ? noteActionResult.draft : noteActionResult, null, 2)}</pre>
+            )}
+            {'requires_confirmation' in noteActionResult && noteActionResult.requires_confirmation && (
+              <Text type="secondary">这是草案预览。需要你在对应流程中确认后才会写入任务、复习或笔记。</Text>
+            )}
+            {'sources' in noteActionResult && noteActionResult.sources && noteActionResult.sources.length > 0 && (
+              <Space wrap>
+                {noteActionResult.sources.slice(0, 6).map((source) => (
+                  <Tag key={`${source.type}-${source.id}`}>{source.type || 'source'} {source.title || source.id}</Tag>
+                ))}
+              </Space>
+            )}
+          </Space>
+        ) : (
+          <Empty description="暂无动作结果" />
+        )}
       </Modal>
 
       <Modal

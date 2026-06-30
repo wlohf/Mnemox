@@ -1,4 +1,5 @@
 """AI 记忆管理路由"""
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,15 @@ from app.models.user import User
 router = APIRouter()
 
 
+def _safe_json_loads(text: str | None, fallback):
+    if not text:
+        return fallback
+    try:
+        return json.loads(text)
+    except Exception:
+        return fallback
+
+
 class MemoryUpdateRequest(BaseModel):
     memory_value: str
     category: str | None = None
@@ -28,7 +38,30 @@ async def get_memories(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return await list_memories(db, user_id=current_user.id)
+    rows = await list_memories(db, user_id=current_user.id)
+    if not rows:
+        return rows
+    result = await db.execute(
+        select(UserMemory).where(
+            UserMemory.user_id == current_user.id,
+            UserMemory.id.in_([row["id"] for row in rows]),
+        )
+    )
+    by_id = {row.id: row for row in result.scalars().all()}
+    for item in rows:
+        memory = by_id.get(item["id"])
+        if not memory:
+            continue
+        item.update(
+            {
+                "source_type": getattr(memory, "source_type", None),
+                "source_id": getattr(memory, "source_id", None),
+                "evidence": _safe_json_loads(getattr(memory, "evidence", None), []),
+                "expires_at": memory.expires_at.isoformat() if getattr(memory, "expires_at", None) else None,
+                "review_status": getattr(memory, "review_status", "confirmed") or "confirmed",
+            }
+        )
+    return rows
 
 
 @router.get("/relevant")

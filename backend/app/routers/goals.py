@@ -14,6 +14,7 @@ from app.models.session import StudySession
 from app.models.material import Material, Chapter
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.learning_event_service import record_learning_event
 
 router = APIRouter()
 
@@ -138,6 +139,16 @@ async def create_goal(
     db.add(goal)
     await db.flush()
     await db.refresh(goal)
+    await record_learning_event(
+        db,
+        int(current_user.id),
+        "goal.created",
+        source="goals_router",
+        payload={"title": goal.title, "deadline": goal.deadline.isoformat() if goal.deadline else None},
+        material_id=goal.material_id,
+        goal_id=int(goal.id),
+        dedupe_key=f"goal.created:{goal.id}",
+    )
     return _goal_item(goal)
 
 
@@ -202,6 +213,7 @@ async def update_task(
     if body.planned_date is not None:
         task.planned_date = body.planned_date
     if body.status is not None:
+        previous_status = task.status
         task.status = body.status
         if body.status == "completed":
             task.completed_at = task.completed_at or datetime.now()
@@ -210,6 +222,28 @@ async def update_task(
 
     await db.flush()
     await db.refresh(task)
+    if body.status == "completed" and previous_status != "completed":
+        await record_learning_event(
+            db,
+            int(current_user.id),
+            "task.completed",
+            source="goals_router",
+            payload={"title": task.title, "planned_date": task.planned_date.isoformat() if task.planned_date else None},
+            goal_id=int(task.goal_id),
+            task_id=int(task.id),
+            dedupe_key=f"task.completed:{task.id}:{task.completed_at.date().isoformat() if task.completed_at else date.today().isoformat()}",
+        )
+    else:
+        await record_learning_event(
+            db,
+            int(current_user.id),
+            "task.updated",
+            source="goals_router",
+            payload={"title": task.title, "status": task.status},
+            goal_id=int(task.goal_id),
+            task_id=int(task.id),
+            dedupe_key=f"task.updated:{task.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        )
     return _task_item(task)
 
 
@@ -306,6 +340,16 @@ async def update_goal(
 
     await db.flush()
     await db.refresh(goal)
+    await record_learning_event(
+        db,
+        int(current_user.id),
+        "goal.updated",
+        source="goals_router",
+        payload={"title": goal.title, "status": goal.status, "deadline": goal.deadline.isoformat() if goal.deadline else None},
+        material_id=goal.material_id,
+        goal_id=int(goal.id),
+        dedupe_key=f"goal.updated:{goal.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
+    )
     return _goal_item(goal)
 
 
@@ -421,6 +465,17 @@ async def create_goal_task(
     db.add(task)
     await db.flush()
     await db.refresh(task)
+    await record_learning_event(
+        db,
+        int(current_user.id),
+        "task.created",
+        source="goals_router",
+        payload={"title": task.title, "planned_date": task.planned_date.isoformat() if task.planned_date else None},
+        chapter_id=task.chapter_id,
+        goal_id=int(goal_id),
+        task_id=int(task.id),
+        dedupe_key=f"task.created:{task.id}",
+    )
     return _task_item(task)
 
 

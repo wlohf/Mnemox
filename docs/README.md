@@ -21,6 +21,7 @@
 - 语音 / RAG 激励 / Agent 正式设计草案：`/docs/superpowers/specs/2026-06-08-voice-rag-motivation-agent-design.md`
 - 自主 Coach Agent 工程设计：`/docs/superpowers/specs/2026-06-15-autonomous-coach-agent-design.md`
 - AI 搜索 / Token 上限 / Coach 自学习路线图：`/docs/superpowers/specs/2026-06-22-search-token-coach-learning-roadmap.md`
+- 中期产品力提升实施方案：`/docs/midterm-product-power-plan-2026-06-22.md`
 
 ## 🎨 UI/体验优化记录（历史参考）
 

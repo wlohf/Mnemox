@@ -1,14 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
-from app.models.chat import ChatConversation
+from app.models.chat import ChatConversation, ChatProject, ChatProjectMaterial
 from app.models.daily_plan import DailyPlan
 from app.models.ai_routing import AIRoutingSetting
 from app.models.ai_settings import AIProviderSetting
@@ -19,6 +19,7 @@ from app.models.user import User
 from app.routers.ai_settings import ProviderCreate, create_provider, delete_provider, list_providers
 from app.routers.agent import AgentWriteExecuteRequest, execute_agent_write
 from app.routers.conversations import delete_conversation
+from app.routers.chat_projects import MaterialBatchUpdate, batch_update_materials
 from app.routers.materials import delete_material, get_material, search_materials
 from app.routers.notes import delete_note, get_note
 from app.routers.system import dismiss_onboarding, get_onboarding_status
@@ -121,6 +122,47 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
 
         async with self.sessionmaker() as session:
             self.assertIsNotNone(await session.get(Material, material_id))
+
+    async def test_project_material_batch_update_persists_and_reindexes_impacted_materials(self):
+        owner = await self._create_user("project_batch_owner")
+        async with self.sessionmaker() as session:
+            project = ChatProject(user_id=owner.id, name="数学项目")
+            mat_keep = Material(user_id=owner.id, title="保留资料", content="keep", file_type="md", content_status="ready")
+            mat_remove = Material(user_id=owner.id, title="移除资料", content="remove", file_type="md", content_status="ready")
+            mat_add = Material(user_id=owner.id, title="新增资料", content="add", file_type="md", content_status="ready")
+            session.add_all([project, mat_keep, mat_remove, mat_add])
+            await session.flush()
+            session.add_all([
+                ChatProjectMaterial(project_id=project.id, material_id=mat_keep.id),
+                ChatProjectMaterial(project_id=project.id, material_id=mat_remove.id),
+            ])
+            project_id = int(project.id)
+            keep_id = int(mat_keep.id)
+            remove_id = int(mat_remove.id)
+            add_id = int(mat_add.id)
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            with patch("app.routers.chat_projects._reindex_material_for_projects", new_callable=AsyncMock) as reindex:
+                result = await batch_update_materials(
+                    project_id,
+                    MaterialBatchUpdate(add_material_ids=[add_id], remove_material_ids=[remove_id]),
+                    db=session,
+                    current_user=owner,
+                )
+                await session.commit()
+
+            self.assertEqual(result["added"], 1)
+            self.assertEqual(result["removed"], 1)
+            self.assertEqual(reindex.await_count, 2)
+
+        async with self.sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(ChatProjectMaterial.material_id).where(ChatProjectMaterial.project_id == project_id)
+                )
+            ).scalars().all()
+            self.assertEqual(set(rows), {keep_id, add_id})
 
     async def test_ai_provider_key_is_encrypted_and_user_scoped(self):
         owner = await self._create_user("ai_owner")

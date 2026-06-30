@@ -16,6 +16,7 @@ from app.models.pomodoro import Pomodoro
 from app.models.question import ReviewSchedule
 from app.models.user import User
 from app.ai.factory import AIProviderFactory
+from app.services.learning_snapshot_service import build_learning_snapshot
 
 router = APIRouter()
 
@@ -124,6 +125,22 @@ def _build_template_report(
 
 
 async def _collect_daily_stats(db: AsyncSession, user_id: int, target_date: date) -> dict:
+    if target_date == date.today():
+        snapshot = await build_learning_snapshot(db, user_id, include_recent_notes=False, include_memories=False)
+        tasks = snapshot.get("tasks") or {}
+        learning = snapshot.get("learning") or {}
+        review = snapshot.get("review") or {}
+        total_tasks = int(tasks.get("today_total_task_count") or 0)
+        completed_tasks = int(tasks.get("today_completed_task_count") or 0)
+        return {
+            "today_minutes": float(learning.get("today_minutes") or 0.0),
+            "pomodoro_count": int(learning.get("today_pomodoro_count") or 0),
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "pending_tasks": int(tasks.get("today_pending_task_count") or max(0, total_tasks - completed_tasks)),
+            "due_review_count": int(review.get("due_review_count") or 0),
+        }
+
     today_str = target_date.isoformat()
 
     pomodoro_result = await db.execute(

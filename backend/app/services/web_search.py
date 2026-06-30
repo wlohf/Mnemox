@@ -1,13 +1,15 @@
 """Small provider-agnostic web search helper used when the LLM provider has no hosted search tool."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 import xml.etree.ElementTree as ET
 
 import httpx
+
+from app.services.search_quality import enhance_search_results
 
 
 @dataclass
@@ -18,6 +20,11 @@ class WebSearchResult:
     source_provider: str = "local"
     score: float | None = None
     published_date: str | None = None
+    canonical_url: str | None = None
+    source_domain: str | None = None
+    credibility_score: float | None = None
+    rank_score: float | None = None
+    merged_from_providers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -218,15 +225,7 @@ def parse_bing_rss(xml_text: str, limit: int = 5) -> list[WebSearchResult]:
 
 
 def _dedupe_results(results: Iterable[WebSearchResult]) -> list[WebSearchResult]:
-    seen: set[str] = set()
-    unique: list[WebSearchResult] = []
-    for result in results:
-        key = result.url.rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(result)
-    return unique
+    return enhance_search_results(results)
 
 
 def _coerce_results(results: Iterable[WebSearchResult | dict]) -> list[WebSearchResult]:
@@ -240,12 +239,19 @@ def _coerce_results(results: Iterable[WebSearchResult | dict]) -> list[WebSearch
         url = str(item.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
             continue
+        score = item.get("score")
+        try:
+            score_value = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score_value = None
         coerced.append(
             WebSearchResult(
                 title=str(item.get("title") or url).strip(),
                 url=url,
                 snippet=str(item.get("snippet") or item.get("content") or "").strip(),
                 source_provider=str(item.get("source_provider") or "local").strip() or "local",
+                score=score_value,
+                published_date=str(item.get("published_date") or "").strip() or None,
             )
         )
     return coerced
@@ -356,7 +362,7 @@ async def search_web(
         try:
             results = _coerce_results(await _search_tavily(query, settings=effective, limit=limit))
             if results:
-                return results
+                return enhance_search_results(results, limit=limit)
             if provider == "tavily" and not effective.fallback_enabled:
                 return []
         except Exception:
@@ -364,10 +370,11 @@ async def search_web(
                 raise
 
     if effective.fallback_enabled or provider in {"auto", "local_fallback"} or not should_try_tavily:
-        return await _search_local_public_web(
+        results = await _search_local_public_web(
             query,
             limit=limit,
             timeout=effective.timeout_seconds or timeout,
         )
+        return enhance_search_results(results, limit=limit)
 
     return []

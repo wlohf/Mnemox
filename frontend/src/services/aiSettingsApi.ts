@@ -282,9 +282,28 @@ export async function getRagSettings(): Promise<RagSettings> {
   return await apiFetch<RagSettings>('/api/rag/settings')
 }
 
+export interface RagSettingsUpdateResult {
+  ok: boolean
+  api_key_masked: string
+  base_url: string
+  model: string
+  requires_reindex?: boolean
+  message?: string
+  total_chunks?: number
+}
+
+export interface RagReindexResult {
+  ok: boolean
+  materials_indexed: number
+  materials_total?: number
+  failed?: number
+  total_chunks: number
+  message?: string
+}
+
 export async function updateRagSettings(
   data: RagSettingsUpdate
-): Promise<{ ok: boolean; api_key_masked: string; base_url: string; model: string }> {
+): Promise<RagSettingsUpdateResult> {
   return await apiFetch('/api/rag/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -294,4 +313,8 @@ export async function updateRagSettings(
 
 export async function testRagEmbedding(): Promise<TestResult> {
   return await apiFetch<TestResult>('/api/rag/test-embedding', { method: 'POST' })
+}
+
+export async function reindexAllRagMaterials(): Promise<RagReindexResult> {
+  return await apiFetch<RagReindexResult>('/api/rag/reindex-all', { method: 'POST' })
 }

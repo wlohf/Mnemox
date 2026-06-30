@@ -9,6 +9,13 @@ export interface MemoryItem {
   status?: 'active' | 'ignored' | string
   is_locked?: number
   source_conversation_id?: number | null
+  source_type?: string | null
+  source_id?: string | number | null
+  evidence?: string[] | string | null
+  expires_at?: string | null
+  review_status?: 'staged' | 'confirmed' | 'ignored' | 'inaccurate' | string | null
+  memory_type?: string | null
+  material_id?: number | null
   last_seen_at?: string | null
 }
 

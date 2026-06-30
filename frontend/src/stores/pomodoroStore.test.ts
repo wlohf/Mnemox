@@ -18,7 +18,14 @@ const reminderMock = vi.hoisted(() => ({
 
 vi.mock('../services/desktopReminder', () => reminderMock)
 
-import { usePomodoroStore } from './pomodoroStore'
+const desktopPreferencesMock = vi.hoisted(() => ({
+  getDesktopPreference: vi.fn().mockResolvedValue(null),
+  setDesktopPreference: vi.fn().mockResolvedValue(true),
+}))
+
+vi.mock('../services/desktopPreferences', () => desktopPreferencesMock)
+
+import { POMODORO_BACKGROUND_PREFERENCE_KEY, usePomodoroStore } from './pomodoroStore'
 
 describe('pomodoro desktop reminder sync', () => {
   beforeEach(() => {
@@ -173,5 +180,49 @@ describe('pomodoro desktop reminder sync', () => {
 
     const resetStored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
     expect(resetStored.state.backgroundImage).toBeNull()
+  })
+
+  it('saves custom background changes to desktop preferences', () => {
+    const backgroundImage = '/api/images/pomodoro-new/raw'
+
+    usePomodoroStore.getState().setBackgroundImage(backgroundImage)
+
+    expect(desktopPreferencesMock.setDesktopPreference).toHaveBeenCalledWith(
+      POMODORO_BACKGROUND_PREFERENCE_KEY,
+      { backgroundImage },
+    )
+
+    usePomodoroStore.getState().setBackgroundImage(null)
+
+    expect(desktopPreferencesMock.setDesktopPreference).toHaveBeenLastCalledWith(
+      POMODORO_BACKGROUND_PREFERENCE_KEY,
+      { backgroundImage: null },
+    )
+  })
+
+  it('loads custom background from desktop preferences over stale current-origin storage', async () => {
+    const staleBackground = '/api/images/pomodoro-old/raw'
+    const desktopBackground = '/api/images/pomodoro-new/raw'
+    usePomodoroStore.setState({ backgroundImage: staleBackground })
+    desktopPreferencesMock.getDesktopPreference.mockResolvedValueOnce({ backgroundImage: desktopBackground })
+
+    await usePomodoroStore.getState().loadBackgroundImagePreference()
+
+    expect(usePomodoroStore.getState().backgroundImage).toBe(desktopBackground)
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    expect(stored.state.backgroundImage).toBe(desktopBackground)
+    expect(desktopPreferencesMock.setDesktopPreference).not.toHaveBeenCalled()
+  })
+
+  it('keeps an explicit default background from desktop preferences from reviving stale storage', async () => {
+    usePomodoroStore.setState({ backgroundImage: '/api/images/pomodoro-old/raw' })
+    desktopPreferencesMock.getDesktopPreference.mockResolvedValueOnce({ backgroundImage: null })
+
+    await usePomodoroStore.getState().loadBackgroundImagePreference()
+
+    expect(usePomodoroStore.getState().backgroundImage).toBeNull()
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    expect(stored.state.backgroundImage).toBeNull()
+    expect(desktopPreferencesMock.setDesktopPreference).not.toHaveBeenCalled()
   })
 })

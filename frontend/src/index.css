@@ -2279,21 +2279,23 @@ html .ant-notification-notice {
 }
 
 .mnemox-notes-workbench {
-  grid-template-columns: 260px 320px minmax(0, 1fr);
+  grid-template-columns: 240px 300px minmax(0, 1fr) 280px;
 }
 
 .mnemox-plan-sidebar,
 .mnemox-plan-list-pane,
 .mnemox-plan-context-pane,
 .mnemox-notes-folder-pane,
-.mnemox-notes-file-pane {
+.mnemox-notes-file-pane,
+.mnemox-notes-relation-pane {
   min-height: 0;
   overflow: auto;
   border-right: 1px solid var(--border-light);
   background: color-mix(in srgb, var(--bg-elevated) 62%, var(--bg-surface));
 }
 
-.mnemox-plan-context-pane {
+.mnemox-plan-context-pane,
+.mnemox-notes-relation-pane {
   border-right: 0;
   border-left: 1px solid var(--border-light);
 }
@@ -2618,6 +2620,104 @@ html .ant-notification-notice {
   place-items: center;
 }
 
+.mnemox-notes-editor-shell {
+  min-height: calc(100vh - 360px);
+}
+
+.mnemox-notes-editor-shell.mode-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.92fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.mnemox-notes-editor-shell.mode-preview {
+  display: block;
+}
+
+.mnemox-notes-preview {
+  min-height: calc(100vh - 360px);
+  max-height: calc(100vh - 360px);
+  overflow: auto;
+  padding: 18px 20px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.mnemox-notes-preview p,
+.mnemox-note-action-result p {
+  max-width: 72ch;
+}
+
+.mnemox-note-relations {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.mnemox-note-relations label {
+  display: grid;
+  gap: 6px;
+}
+
+.mnemox-note-relations label > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mnemox-note-relation-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 30px;
+  padding-top: 2px;
+}
+
+.mnemox-note-agent-actions {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.mnemox-note-action-result {
+  max-height: 460px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.mnemox-note-action-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.mnemox-note-action-preview p {
+  margin: 6px 0 0;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.mnemox-note-action-json {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 1320px) {
   .mnemox-pomodoro-workbench {
     grid-template-columns: 320px minmax(0, 1fr);
@@ -2632,7 +2732,23 @@ html .ant-notification-notice {
   }
 
   .mnemox-notes-workbench {
-    grid-template-columns: 230px 300px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr) 260px;
+  }
+
+  .mnemox-notes-folder-pane {
+    display: none;
+  }
+
+  .mnemox-notes-relation-pane {
+    border-left: 1px solid var(--border-light);
+  }
+
+  .mnemox-note-relations {
+    grid-template-columns: 1fr;
+  }
+
+  .mnemox-note-agent-actions {
+    grid-column: auto;
   }
 }
 
@@ -2703,18 +2819,32 @@ html .ant-notification-notice {
   .mnemox-plan-list-pane,
   .mnemox-plan-context-pane,
   .mnemox-notes-folder-pane,
-  .mnemox-notes-file-pane {
+  .mnemox-notes-file-pane,
+  .mnemox-notes-relation-pane {
     max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--border-light);
   }
 
-  .mnemox-plan-context-pane {
+  .mnemox-notes-folder-pane {
+    display: block;
+  }
+
+  .mnemox-plan-context-pane,
+  .mnemox-notes-relation-pane {
     border-left: 0;
   }
 
   .mnemox-plan-document,
   .mnemox-notes-document {
     padding: 22px 18px 28px;
+  }
+
+  .mnemox-notes-editor-shell.mode-split {
+    grid-template-columns: 1fr;
+  }
+
+  .mnemox-note-relations {
+    grid-template-columns: 1fr;
   }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Modal, Tabs, Radio, Space, Select, Switch, Divider, Button, message, Slider, InputNumber } from 'antd'
+import { Modal, Tabs, Radio, Space, Select, Switch, Divider, Button, message, Slider, InputNumber, TimePicker } from 'antd'
 import {
   BgColorsOutlined,
   ApiOutlined,
@@ -16,8 +16,11 @@ import {
 import { useThemeStore, type ThemeMode } from '../stores/themeStore'
 import { AISettingsDrawer } from './AISettingsDrawer'
 import { generateAIQuote } from '../services/motivationApi'
+import { getCoachPreferences, updateCoachPreferences, type CoachChannel, type CoachPreferences } from '../services/coachApi'
+import { isDesktopCoachNotificationAvailable } from '../services/desktopCoach'
 import { checkSystemUpdate, getSystemVersion, type SystemUpdateInfo } from '../services/systemApi'
-import { getApiErrorMessage } from '../services/apiClient'
+import { getApiErrorMessage, withAuthQuery } from '../services/apiClient'
+import { uploadBackgroundImageStrict } from '../services/imageApi'
 import {
   checkForDesktopUpdate,
   downloadInstallerAndRunDesktopUpdate,
@@ -39,6 +42,7 @@ import {
   isDesktopUpdateAvailable,
 } from '../services/updateDisplay'
 import { useNavigate } from 'react-router-dom'
+import dayjs from 'dayjs'
 
 interface SettingsModalProps {
   open: boolean
@@ -57,18 +61,32 @@ function parseIntWithDefault(value: string | null, fallback: number) {
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { mode, setMode, bgImage, bgOpacity, setBgImage, setBgOpacity, resetToDefault } = useThemeStore()
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false)
+  const [bgUploading, setBgUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
 
-  const handleBgUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBgUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.size > 5 * 1024 * 1024) { message.warning('图片不能超过 5MB'); return }
-    const reader = new FileReader()
-    reader.onload = (ev) => setBgImage(ev.target?.result as string)
-    reader.readAsDataURL(file)
     e.target.value = ''
+    if (!file.type.startsWith('image/')) {
+      message.warning('请选择图片文件')
+      return
+    }
+
+    setBgUploading(true)
+    try {
+      const result = await uploadBackgroundImageStrict(file)
+      setBgImage(result.raw_url)
+      message.success('背景图已更新')
+    } catch (error) {
+      showApiError(error, '背景图上传失败')
+    } finally {
+      setBgUploading(false)
+    }
   }
+
+  const bgImageUrl = bgImage ? withAuthQuery(bgImage) : null
 
   const themeOptions: { value: ThemeMode; label: React.ReactNode; desc: string }[] = [
     {
@@ -129,7 +147,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           </div>
           <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" style={{ display: 'none' }} onChange={handleBgUpload} />
           <Space wrap>
-            <Button icon={<PictureOutlined />} size="small" onClick={() => fileInputRef.current?.click()}>
+            <Button icon={<PictureOutlined />} size="small" loading={bgUploading} onClick={() => fileInputRef.current?.click()}>
               {bgImage ? '更换图片' : '上传图片'}
             </Button>
             {bgImage && (
@@ -141,7 +159,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               恢复默认设置
             </Button>
           </Space>
-          {bgImage && (
+          {bgImageUrl && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
                 透明度（越小越浅）：{Math.round(bgOpacity * 100)}%
@@ -152,7 +170,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 style={{ width: '100%' }}
               />
               <div style={{ marginTop: 8, borderRadius: 6, overflow: 'hidden', height: 60, position: 'relative', border: '1px solid var(--border-color)' }}>
-                <img src={bgImage} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: bgOpacity }} alt="preview" />
+                <img src={bgImageUrl} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: bgOpacity }} alt="preview" />
               </div>
             </div>
           )}
@@ -558,12 +576,38 @@ function AgentSettings() {
   const [interventionInterval, setInterventionInterval] = useState(() =>
     parseIntWithDefault(localStorage.getItem('intervention_interval_min'), 30)
   )
+  const [coachPreferences, setCoachPreferences] = useState<CoachPreferences | null>(null)
+  const [coachSaving, setCoachSaving] = useState(false)
+  const desktopCoachAvailable = isDesktopCoachNotificationAvailable()
 
-  const save = () => {
+  useEffect(() => {
+    let cancelled = false
+    getCoachPreferences().then((prefs) => {
+      if (!cancelled && prefs) setCoachPreferences(prefs)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const updateCoachPref = (patch: Partial<CoachPreferences>) => {
+    setCoachPreferences((prev) => prev ? { ...prev, ...patch } : prev)
+  }
+
+  const save = async () => {
     localStorage.setItem('intervention_enabled', String(interventionEnabled))
     localStorage.setItem('intervention_interval_min', String(interventionInterval))
     window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_enabled', newValue: String(interventionEnabled) }))
     window.dispatchEvent(new StorageEvent('storage', { key: 'intervention_interval_min', newValue: String(interventionInterval) }))
+    if (coachPreferences) {
+      setCoachSaving(true)
+      const saved = await updateCoachPreferences(coachPreferences)
+      setCoachSaving(false)
+      if (!saved) {
+        message.error('Coach 设置保存失败')
+        return
+      }
+      setCoachPreferences(saved)
+      window.dispatchEvent(new StorageEvent('storage', { key: 'coach_preferences_updated', newValue: String(Date.now()) }))
+    }
     message.success('Agent 设置已保存')
   }
 
@@ -576,6 +620,23 @@ function AgentSettings() {
       <div className="mnemox-settings-row-control">{control}</div>
     </div>
   )
+
+  const channelOptions: Array<{ label: string; value: CoachChannel; disabled?: boolean }> = [
+    { label: '聊天内', value: 'chat_inline' },
+    { label: '应用内通知', value: 'in_app_nudge' },
+    { label: 'Agent 面板', value: 'agent_panel' },
+    { label: '桌面通知', value: 'desktop_notification', disabled: !desktopCoachAvailable },
+  ]
+
+  const parseQuietTime = (value?: string | null) => {
+    if (!value) return null
+    const [hourText, minuteText] = value.split(':')
+    const hour = Number(hourText)
+    const minute = Number(minuteText)
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+    return dayjs().hour(hour).minute(minute).second(0).millisecond(0)
+  }
 
   return (
     <div style={{ padding: '8px 0' }}>
@@ -594,7 +655,94 @@ function AgentSettings() {
         />
       )}
       <Divider style={{ margin: '12px 0' }} />
-      <Button type="primary" size="small" onClick={save}>保存设置</Button>
+      <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 10 }}>自主 Coach Kernel</div>
+      {coachPreferences ? (
+        <>
+          {row('启用 Coach', '允许 Coach 根据事件生成低频学习 nudges',
+            <Switch size="small" checked={coachPreferences.enabled} onChange={(enabled) => updateCoachPref({ enabled })} />
+          )}
+          {row('定时评估', '按冷却间隔低频检查学习状态；默认关闭',
+            <Switch
+              size="small"
+              checked={coachPreferences.proactive_enabled}
+              onChange={(proactive_enabled) => updateCoachPref({ proactive_enabled })}
+            />
+          )}
+          {row('桌面主动通知', desktopCoachAvailable ? '开启后仍受免打扰与冷却限制' : '仅 Mnemox 桌面版可用',
+            <Switch
+              size="small"
+              disabled={!desktopCoachAvailable}
+              checked={coachPreferences.desktop_notifications_enabled}
+              onChange={(desktop_notifications_enabled) => updateCoachPref({
+                desktop_notifications_enabled,
+                proactive_enabled: desktop_notifications_enabled ? true : coachPreferences.proactive_enabled,
+                allowed_channels: desktop_notifications_enabled && !coachPreferences.allowed_channels.includes('desktop_notification')
+                  ? [...coachPreferences.allowed_channels, 'desktop_notification']
+                  : coachPreferences.allowed_channels.filter((channel) => desktop_notifications_enabled || channel !== 'desktop_notification'),
+              })}
+            />
+          )}
+          {row('允许渠道', '控制 Coach 可以在哪些位置出现',
+            <Select
+              size="small"
+              mode="multiple"
+              options={channelOptions}
+              value={coachPreferences.allowed_channels}
+              onChange={(allowed_channels) => updateCoachPref({ allowed_channels })}
+              style={{ minWidth: 220 }}
+              maxTagCount="responsive"
+            />
+          )}
+          {row('免打扰时段', '此时段内不发送主动桌面通知',
+            <Space size={6}>
+              <TimePicker
+                size="small"
+                format="HH:mm"
+                minuteStep={15}
+                value={parseQuietTime(coachPreferences.quiet_hours_start)}
+                onChange={(value) => updateCoachPref({ quiet_hours_start: value ? value.format('HH:mm') : null })}
+                placeholder="开始"
+                style={{ width: 92 }}
+              />
+              <TimePicker
+                size="small"
+                format="HH:mm"
+                minuteStep={15}
+                value={parseQuietTime(coachPreferences.quiet_hours_end)}
+                onChange={(value) => updateCoachPref({ quiet_hours_end: value ? value.format('HH:mm') : null })}
+                placeholder="结束"
+                style={{ width: 92 }}
+              />
+            </Space>
+          )}
+          {row('每日上限', '当天最多显示多少条 Coach nudge',
+            <InputNumber
+              size="small"
+              min={1}
+              max={10}
+              value={coachPreferences.max_nudges_per_day}
+              onChange={(v) => updateCoachPref({ max_nudges_per_day: v ?? 3 })}
+              addonAfter="条"
+              style={{ width: 100 }}
+            />
+          )}
+          {row('最小间隔', '两次 Coach nudge 之间至少间隔多少分钟',
+            <InputNumber
+              size="small"
+              min={0}
+              max={1440}
+              value={coachPreferences.min_minutes_between_nudges}
+              onChange={(v) => updateCoachPref({ min_minutes_between_nudges: v ?? 60 })}
+              addonAfter="分钟"
+              style={{ width: 112 }}
+            />
+          )}
+        </>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Coach 设置加载中...</div>
+      )}
+      <Divider style={{ margin: '12px 0' }} />
+      <Button type="primary" size="small" loading={coachSaving} onClick={() => void save()}>保存设置</Button>
     </div>
   )
 }

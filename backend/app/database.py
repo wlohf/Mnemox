@@ -75,9 +75,9 @@ async def _run_lightweight_migrations(conn):
         "materials", "goals", "chat_projects", "chat_conversations",
         "notes", "pomodoros", "daily_stats", "study_sessions",
         "questions", "wrong_questions", "review_schedule",
-        "ai_provider_settings", "ai_routing_settings", "ai_search_settings",
+        "ai_provider_settings", "ai_routing_settings", "ai_search_settings", "web_search_cache",
         "user_memories", "conversation_summaries", "daily_plans",
-        "agent_jobs", "agent_execution_logs",
+        "agent_jobs", "agent_execution_logs", "coach_skill_stats",
     ]
 
     for table in user_id_tables:
@@ -98,6 +98,11 @@ async def _run_lightweight_migrations(conn):
     other_migrations = [
         ("user_memories", "material_id", "INTEGER"),
         ("user_memories", "memory_type", "VARCHAR(20) DEFAULT 'semantic'"),
+        ("user_memories", "source_type", "VARCHAR(50)"),
+        ("user_memories", "source_id", "VARCHAR(100)"),
+        ("user_memories", "evidence", "TEXT"),
+        ("user_memories", "expires_at", "DATETIME"),
+        ("user_memories", "review_status", "VARCHAR(20) DEFAULT 'confirmed'"),
         ("conversation_summaries", "questions_asked", "TEXT"),
         ("conversation_summaries", "confusions", "TEXT"),
         ("conversation_summaries", "misconceptions", "TEXT"),
@@ -128,6 +133,12 @@ async def _run_lightweight_migrations(conn):
         ("ai_provider_settings", "max_context_tokens", "INTEGER"),
         ("ai_provider_settings", "max_output_tokens", "INTEGER"),
         ("ai_routing_settings", "model", "VARCHAR(100)"),
+        ("learning_events", "source", "VARCHAR(50)"),
+        ("learning_events", "dedupe_key", "VARCHAR(160)"),
+        ("learning_events", "goal_id", "INTEGER"),
+        ("learning_events", "task_id", "INTEGER"),
+        ("learning_events", "note_id", "INTEGER"),
+        ("learning_events", "wrong_question_id", "INTEGER"),
     ]
 
     for table, column, col_type in other_migrations:
@@ -140,6 +151,26 @@ async def _run_lightweight_migrations(conn):
                 ))
         except Exception:
             pass
+
+    try:
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_learning_events_user_type_time "
+            "ON learning_events(user_id, event_type, timestamp)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_learning_events_dedupe_key "
+            "ON learning_events(dedupe_key)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_user_memories_user_review_status "
+            "ON user_memories(user_id, review_status, status)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_user_memories_user_source "
+            "ON user_memories(user_id, source_type, source_id)"
+        ))
+    except Exception:
+        pass
 
     # Backfill updated_at from created_at for existing rows
     for table in ("goals", "tasks", "notes"):

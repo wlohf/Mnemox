@@ -7,7 +7,7 @@ from sqlalchemy import select
 from typing import Optional, List
 
 from app.config import settings
-from app.ai.rag_service import get_rag_service, load_rag_settings, save_rag_settings
+from app.ai.rag_service import create_embedding_model, get_rag_service, load_rag_settings, save_rag_settings
 from app.database import get_db
 from app.models.material import Material
 from app.models.chat import ChatProjectMaterial, ChatProject
@@ -25,6 +25,41 @@ def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "****"
     return key[:3] + "****" + key[-4:]
+
+
+def _coerce_rag_number(value, fallback, cast_type):
+    if value is None:
+        return fallback
+    try:
+        return cast_type(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _validate_rag_runtime_settings(config: dict) -> dict:
+    chunk_size = _coerce_rag_number(config.get("chunk_size"), settings.RAG_CHUNK_SIZE, int)
+    chunk_overlap = _coerce_rag_number(config.get("chunk_overlap"), settings.RAG_CHUNK_OVERLAP, int)
+    top_k = _coerce_rag_number(config.get("top_k"), settings.RAG_TOP_K, int)
+    similarity_threshold = _coerce_rag_number(
+        config.get("similarity_threshold"),
+        settings.RAG_SIMILARITY_THRESHOLD,
+        float,
+    )
+
+    if chunk_size < 64 or chunk_size > 4096:
+        raise HTTPException(status_code=400, detail="Chunk Size 必须在 64 到 4096 之间")
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise HTTPException(status_code=400, detail="Chunk Overlap 必须大于等于 0 且小于 Chunk Size")
+    if top_k < 1 or top_k > 50:
+        raise HTTPException(status_code=400, detail="Top K 必须在 1 到 50 之间")
+    if similarity_threshold < 0 or similarity_threshold > 1:
+        raise HTTPException(status_code=400, detail="Similarity Threshold 必须在 0 到 1 之间")
+
+    config["chunk_size"] = chunk_size
+    config["chunk_overlap"] = chunk_overlap
+    config["top_k"] = top_k
+    config["similarity_threshold"] = similarity_threshold
+    return config
 
 
 # ------------------------------------------------------------------
@@ -94,6 +129,7 @@ async def update_rag_settings(
     if body.similarity_threshold is not None:
         current["similarity_threshold"] = body.similarity_threshold
 
+    current = _validate_rag_runtime_settings(current)
     save_rag_settings(current)
 
     # 热重载 RAG 服务
@@ -111,12 +147,17 @@ async def update_rag_settings(
         top_k=current.get("top_k"),
         similarity_threshold=current.get("similarity_threshold"),
     )
+    status = await rag.get_status(int(current_user.id))
+    status_message = (status.get("last_retrieval_status") or {}).get("message", "")
 
     return {
         "ok": True,
         "api_key_masked": _mask_key(api_key),
         "base_url": base_url,
         "model": model,
+        "requires_reindex": "重新索引" in status_message,
+        "message": status_message,
+        "total_chunks": status.get("total_chunks", 0),
     }
 
 
@@ -136,13 +177,10 @@ async def test_rag_embedding(
     import asyncio
 
     def _test():
-        from llama_index.embeddings.openai import OpenAIEmbedding
-
-        api_base = base_url if base_url != "https://api.openai.com/v1" else None
-        embed = OpenAIEmbedding(
-            model_name=model,
+        embed = create_embedding_model(
+            model=model,
             api_key=api_key,
-            api_base=api_base,
+            base_url=base_url,
         )
         result = embed.get_text_embedding("Hello, this is a test.")
         return len(result)
@@ -214,6 +252,12 @@ async def reindex_material(
         project_ids=project_ids,
         user_id=current_user.id,
     )
+    if count <= 0:
+        status = await rag.get_status(int(current_user.id))
+        last_error = status.get("last_error", "")
+        if last_error:
+            return {"ok": False, "chunk_count": 0, "message": f"索引失败: {last_error}"}
+        return {"ok": False, "chunk_count": 0, "message": "未生成可索引片段，请检查资料内容或 Embedding 配置。"}
     return {"ok": True, "chunk_count": count}
 
 
@@ -243,6 +287,9 @@ async def reindex_all(
             "total_chunks": 0,
             "message": "未配置 embedding API Key，已跳过向量索引；资料仍可通过普通关键词/全文上下文使用。",
         }
+    await rag.reset_index("正在重建 RAG 向量索引。", user_id=int(current_user.id))
+    materials_indexed = 0
+    failed = 0
     total_chunks = 0
     for mat in materials:
         project_ids = await _get_material_project_ids(db, mat.id, current_user.id)
@@ -254,12 +301,23 @@ async def reindex_all(
             project_ids=project_ids,
             user_id=current_user.id,
         )
-        total_chunks += count
+        if count > 0:
+            materials_indexed += 1
+            total_chunks += count
+        else:
+            failed += 1
 
     return {
-        "ok": True,
-        "materials_indexed": len(materials),
+        "ok": failed == 0,
+        "materials_indexed": materials_indexed,
+        "materials_total": len(materials),
+        "failed": failed,
         "total_chunks": total_chunks,
+        "message": (
+            f"已重建 {materials_indexed}/{len(materials)} 份资料，共 {total_chunks} 个片段"
+            if failed == 0
+            else f"重建完成但有 {failed} 份资料索引失败，请查看 RAG 最近错误"
+        ),
     }
 async def _get_material_project_ids(db: AsyncSession, material_id: int, user_id: int) -> List[int]:
     result = await db.execute(

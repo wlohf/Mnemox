@@ -39,7 +39,7 @@ import ReactECharts from 'echarts-for-react'
 import { usePomodoroStore, type DateRange, type PomodoroRecord } from '../stores/pomodoroStore'
 import { PageShell } from '../components/PageShell'
 import { getApiErrorMessage, withAuthQuery } from '../services/apiClient'
-import { uploadImageStrict } from '../services/imageApi'
+import { uploadBackgroundImageStrict } from '../services/imageApi'
 import { getCurrentQuote, type MotivationQuote } from '../services/motivationApi'
 
 const TASK_STORAGE_KEY = 'mnemox_pomodoro_focus_tasks'
@@ -210,6 +210,7 @@ export function PomodoroPage() {
     resetTimer,
     backgroundImage,
     setBackgroundImage,
+    loadBackgroundImagePreference,
   } = usePomodoroStore()
 
   const [range, setRange] = useState<DateRange>('week')
@@ -241,6 +242,10 @@ export function PomodoroPage() {
   useEffect(() => {
     void getCurrentQuote().then(setQuote).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    void loadBackgroundImagePreference()
+  }, [loadBackgroundImagePreference])
 
   useEffect(() => {
     try {
@@ -508,7 +513,7 @@ export function PomodoroPage() {
 
     setBackgroundUploading(true)
     try {
-      const result = await uploadImageStrict(file)
+      const result = await uploadBackgroundImageStrict(file)
       setBackgroundImage(result.raw_url)
       message.success('番茄背景已更新')
     } catch (error) {

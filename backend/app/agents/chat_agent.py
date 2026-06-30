@@ -11,9 +11,11 @@ from app.agents.base import AgentRunContext, AgentResult, BaseAgent
 from app.models.goal import Goal, Task
 from app.models.material import Material
 from app.models.memory import UserMemory
-from app.models.note import Note
 from app.models.question import Question, WrongQuestion
 from app.models.user_profile import UserProfile
+from app.services.note_retriever import NoteRetriever
+
+CONFIRMED_REVIEW_STATUS = "confirmed"
 
 
 class ChatAgent(BaseAgent):
@@ -56,14 +58,18 @@ class ChatAgent(BaseAgent):
         return {"tool": tool, "items": [], "error": "unsupported_tool"}
 
     async def _search_notes(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
-        stmt = select(Note).where(Note.user_id == ctx.user_id)
-        if query:
-            like = f"%{query}%"
-            stmt = stmt.where(or_(Note.title.ilike(like), Note.content.ilike(like), Note.tags.ilike(like)))
-        result = await ctx.db.execute(stmt.order_by(Note.updated_at.desc(), Note.id.desc()).limit(limit))
+        notes = await NoteRetriever.retrieve_notes(ctx.db, ctx.user_id, query, limit=limit)
         return {"tool": "search_notes", "query": query, "items": [
-            {"id": note.id, "title": note.title, "content_preview": (note.content or "")[:240], "route": "/notes"}
-            for note in result.scalars().all()
+            {
+                "id": note["id"],
+                "title": note["title"],
+                "content_preview": note.get("excerpt", ""),
+                "note_type": note.get("note_type"),
+                "score": note.get("score"),
+                "reason": note.get("reason"),
+                "route": note.get("route", "/notes"),
+            }
+            for note in notes
         ]}
 
     async def _search_materials(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
@@ -90,7 +96,11 @@ class ChatAgent(BaseAgent):
         return {"tool": "search_wrong_questions", "query": query, "items": items}
 
     async def _search_memories(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
-        stmt = select(UserMemory).where(UserMemory.user_id == ctx.user_id, UserMemory.status == "active")
+        stmt = select(UserMemory).where(
+            UserMemory.user_id == ctx.user_id,
+            UserMemory.status == "active",
+            UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+        )
         if query:
             like = f"%{query}%"
             stmt = stmt.where(or_(UserMemory.memory_key.ilike(like), UserMemory.memory_value.ilike(like), UserMemory.category.ilike(like)))
@@ -127,6 +137,7 @@ class ChatAgent(BaseAgent):
                 UserMemory.user_id == ctx.user_id,
                 UserMemory.memory_key == "agent_learning_profile",
                 UserMemory.status == "active",
+                UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
             )
         )
         item = result.scalar_one_or_none()
@@ -141,7 +152,12 @@ class ChatAgent(BaseAgent):
     async def _get_recent_feedback(self, ctx: AgentRunContext, limit: int) -> dict:
         result = await ctx.db.execute(
             select(UserMemory)
-            .where(UserMemory.user_id == ctx.user_id, UserMemory.status == "active", UserMemory.category == "agent_feedback")
+            .where(
+                UserMemory.user_id == ctx.user_id,
+                UserMemory.status == "active",
+                UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+                UserMemory.category == "agent_feedback",
+            )
             .order_by(UserMemory.last_seen_at.desc(), UserMemory.id.desc())
             .limit(limit)
         )

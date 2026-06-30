@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+import httpx
+
 from app.config import settings
+from app.utils.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils.paths import get_chromadb_dir, get_data_dir
 
 
@@ -17,24 +20,157 @@ def _get_rag_settings_path():
     return get_data_dir() / "rag_settings.json"
 
 
-def load_rag_settings() -> Dict[str, str]:
+def load_rag_settings() -> Dict[str, Any]:
     """从 data/rag_settings.json 读取 RAG embedding 配置，不存在则返回空 dict。"""
     path = _get_rag_settings_path()
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                if "api_key" in data:
+                    data["api_key"] = decrypt_secret(data.get("api_key"))
+                return data
         except Exception as e:
             logger.warning("读取 RAG 配置文件失败: %s", e)
     return {}
 
 
-def save_rag_settings(data: Dict[str, str]) -> None:
+def save_rag_settings(data: Dict[str, Any]) -> None:
     """将 RAG embedding 配置写入 data/rag_settings.json。"""
     path = _get_rag_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(data)
+    if payload.get("api_key"):
+        payload["api_key"] = encrypt_secret(str(payload["api_key"]))
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+class OpenAICompatibleEmbedding:
+    """Small OpenAI-compatible embedding client with tolerant response parsing.
+
+    LlamaIndex delegates to the OpenAI SDK, which can surface obscure attribute
+    errors when a relay returns JSON as a string. This client keeps RAG on the
+    simple /embeddings contract and validates the shape before Chroma sees it.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        timeout: float = 30.0,
+        batch_size: int = 32,
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self.batch_size = max(1, min(int(batch_size), 128))
+
+    @property
+    def embeddings_url(self) -> str:
+        if self.base_url.endswith("/embeddings"):
+            return self.base_url
+        return f"{self.base_url}/embeddings"
+
+    @staticmethod
+    def _decode_json_string(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return value
+
+    @classmethod
+    def _extract_error_message(cls, payload: Any) -> str:
+        payload = cls._decode_json_string(payload)
+        if isinstance(payload, dict):
+            detail = payload.get("error") or payload.get("detail") or payload.get("message")
+            detail = cls._decode_json_string(detail)
+            if isinstance(detail, dict):
+                message = detail.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()
+        return ""
+
+    @classmethod
+    def _extract_embeddings(cls, payload: Any, expected_count: int) -> List[List[float]]:
+        payload = cls._decode_json_string(payload)
+        if not isinstance(payload, dict):
+            raise ValueError("Embedding 服务返回的数据格式不对：响应不是 JSON 对象。")
+
+        data = cls._decode_json_string(payload.get("data"))
+        if data is None and "embeddings" in payload:
+            data = cls._decode_json_string(payload.get("embeddings"))
+
+        if not isinstance(data, list):
+            message = cls._extract_error_message(payload)
+            suffix = f"：{message}" if message else "，缺少 data 数组。"
+            raise ValueError(f"Embedding 服务返回的数据格式不对{suffix}")
+
+        embeddings: List[List[float]] = []
+        for item in data:
+            item = cls._decode_json_string(item)
+            embedding = item.get("embedding") if isinstance(item, dict) else item
+            embedding = cls._decode_json_string(embedding)
+            if not isinstance(embedding, list) or not embedding:
+                raise ValueError("Embedding 服务返回的数据格式不对：embedding 不是数组。")
+            try:
+                embeddings.append([float(value) for value in embedding])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Embedding 服务返回的数据格式不对：embedding 包含非数字值。") from exc
+
+        if len(embeddings) != expected_count:
+            raise ValueError(
+                f"Embedding 服务返回数量不匹配：请求 {expected_count} 条，返回 {len(embeddings)} 条。"
+            )
+        return embeddings
+
+    def _request_embeddings(self, texts: Sequence[str]) -> List[List[float]]:
+        inputs = [str(text) for text in texts]
+        payload = {"model": self.model, "input": inputs}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(self.embeddings_url, headers=headers, json=payload)
+
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = response.text
+
+        if response.status_code >= 400:
+            message = self._extract_error_message(body) or response.text.strip()
+            raise ValueError(f"Embedding 服务请求失败 ({response.status_code}): {message}")
+
+        return self._extract_embeddings(body, expected_count=len(inputs))
+
+    def get_text_embedding(self, text: str) -> List[float]:
+        return self._request_embeddings([text])[0]
+
+    def get_text_embedding_batch(self, texts: Sequence[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        embeddings: List[List[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            embeddings.extend(self._request_embeddings(texts[start:start + self.batch_size]))
+        return embeddings
+
+
+def create_embedding_model(api_key: str, base_url: str, model: str) -> OpenAICompatibleEmbedding:
+    return OpenAICompatibleEmbedding(api_key=api_key, base_url=base_url, model=model)
 
 
 class RAGService:
@@ -52,6 +188,64 @@ class RAGService:
         self._last_error: str = ""
         self._last_retrieval_status: Dict[str, Any] = {"ok": True, "mode": "not_run", "message": "尚未检索"}
         self._last_retrieval_status_by_user: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure_chroma_collection(self):
+        if self._chroma_client is None:
+            import chromadb
+
+            chroma_path = str(get_chromadb_dir())
+            self._chroma_client = chromadb.PersistentClient(path=chroma_path)
+        if self._collection is None:
+            self._collection = self._chroma_client.get_or_create_collection(
+                name=settings.RAG_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        return self._collection
+
+    def _reset_chroma_collection(self):
+        if self._chroma_client is None:
+            import chromadb
+
+            chroma_path = str(get_chromadb_dir())
+            self._chroma_client = chromadb.PersistentClient(path=chroma_path)
+        try:
+            self._chroma_client.delete_collection(name=settings.RAG_COLLECTION_NAME)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "does not exist" not in text and "not found" not in text:
+                logger.warning("清空 RAG Chroma collection 时遇到异常: %s", exc)
+        self._collection = self._chroma_client.get_or_create_collection(
+            name=settings.RAG_COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        return self._collection
+
+    @staticmethod
+    def _looks_like_dimension_mismatch(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "dimension" in text
+            and (
+                "dimensionality" in text
+                or "collection" in text
+                or "embedding" in text
+                or "expect" in text
+            )
+        )
+
+    async def reset_index(self, message: Optional[str] = None, user_id: Optional[int] = None) -> None:
+        """清空 Chroma collection。用于 embedding 模型维度变化后的安全重建。"""
+        await asyncio.to_thread(self._reset_chroma_collection)
+        self._initialized = True
+        self._last_error = ""
+        self._set_retrieval_status(
+            {
+                "ok": False,
+                "mode": "fallback",
+                "message": message or "RAG 向量库已清空，请重新索引资料。",
+            },
+            user_id,
+        )
 
     # ------------------------------------------------------------------
     # 解析配置（JSON 文件 > config.py 默认值）
@@ -111,25 +305,16 @@ class RAGService:
             cfg = self._resolve_config()
 
             def _init():
-                import chromadb
                 from llama_index.core.node_parser import SentenceSplitter
 
-                chroma_path = str(get_chromadb_dir())
-                self._chroma_client = chromadb.PersistentClient(path=chroma_path)
-                self._collection = self._chroma_client.get_or_create_collection(
-                    name=settings.RAG_COLLECTION_NAME,
-                    metadata={"hnsw:space": "cosine"},
-                )
+                self._ensure_chroma_collection()
 
                 self._embed_model = None
                 if cfg["embedding_enabled"]:
-                    from llama_index.embeddings.openai import OpenAIEmbedding
-
-                    api_base = cfg["base_url"] if cfg["base_url"] != "https://api.openai.com/v1" else None
-                    self._embed_model = OpenAIEmbedding(
-                        model_name=cfg["model"],
+                    self._embed_model = create_embedding_model(
                         api_key=cfg["api_key"],
-                        api_base=api_base,
+                        base_url=cfg["base_url"],
+                        model=cfg["model"],
                     )
                 self._splitter = SentenceSplitter(
                     chunk_size=cfg["chunk_size"],
@@ -166,8 +351,24 @@ class RAGService:
         similarity_threshold: Optional[float] = None,
     ) -> None:
         """使用新的 embedding 配置重建模型，不影响 ChromaDB 数据。"""
-        new_chunk_size = chunk_size or getattr(self, '_chunk_size', settings.RAG_CHUNK_SIZE)
-        new_chunk_overlap = chunk_overlap or getattr(self, '_chunk_overlap', settings.RAG_CHUNK_OVERLAP)
+        new_chunk_size = int(chunk_size or getattr(self, '_chunk_size', settings.RAG_CHUNK_SIZE))
+        new_chunk_overlap = int(chunk_overlap or getattr(self, '_chunk_overlap', settings.RAG_CHUNK_OVERLAP))
+        old_base_url = (getattr(self, '_current_base_url', "") or "").rstrip("/")
+        old_model = getattr(self, '_current_model', "") or ""
+        old_chunk_size = getattr(self, '_chunk_size', None)
+        old_chunk_overlap = getattr(self, '_chunk_overlap', None)
+        new_base_url = (base_url or "").rstrip("/")
+        should_reset_index = (
+            self._initialized
+            and bool(api_key)
+            and bool(old_model)
+            and (
+                old_base_url != new_base_url
+                or old_model != model
+                or old_chunk_size != new_chunk_size
+                or old_chunk_overlap != new_chunk_overlap
+            )
+        )
         rebuild_splitter = (
             new_chunk_size != getattr(self, '_chunk_size', None)
             or new_chunk_overlap != getattr(self, '_chunk_overlap', None)
@@ -177,25 +378,14 @@ class RAGService:
         def _reinit():
             self._embed_model = None
             if api_key:
-                from llama_index.embeddings.openai import OpenAIEmbedding
-
-                api_base = base_url if base_url != "https://api.openai.com/v1" else None
-                self._embed_model = OpenAIEmbedding(
-                    model_name=model,
+                self._embed_model = create_embedding_model(
                     api_key=api_key,
-                    api_base=api_base,
+                    base_url=base_url,
+                    model=model,
                 )
 
             # 确保 ChromaDB client 和 collection 存在
-            if self._chroma_client is None:
-                import chromadb
-                chroma_path = str(get_chromadb_dir())
-                self._chroma_client = chromadb.PersistentClient(path=chroma_path)
-            if self._collection is None:
-                self._collection = self._chroma_client.get_or_create_collection(
-                    name=settings.RAG_COLLECTION_NAME,
-                    metadata={"hnsw:space": "cosine"},
-                )
+            self._ensure_chroma_collection()
             if rebuild_splitter or self._splitter is None:
                 from llama_index.core.node_parser import SentenceSplitter
                 self._splitter = SentenceSplitter(
@@ -216,9 +406,14 @@ class RAGService:
         )
         self._embedding_enabled = bool(api_key)
         self._initialized = True
-        self._set_retrieval_status(
-            {"ok": bool(api_key), "mode": "not_run", "message": "RAG 配置已更新，尚未检索" if api_key else "未配置 embedding API Key，将使用普通资料上下文 fallback"}
-        )
+        if should_reset_index:
+            await self.reset_index(
+                "RAG Embedding 配置已变更，旧向量库已清空；请重新索引资料以启用语义检索。"
+            )
+        else:
+            self._set_retrieval_status(
+                {"ok": bool(api_key), "mode": "not_run", "message": "RAG 配置已更新，尚未检索" if api_key else "未配置 embedding API Key，将使用普通资料上下文 fallback"}
+            )
         logger.info("RAG 服务重新初始化完成 (model=%s, embedding_enabled=%s)", model, bool(api_key))
 
     # ------------------------------------------------------------------
@@ -281,10 +476,27 @@ class RAGService:
         try:
             count = await asyncio.to_thread(_index)
         except Exception as exc:
-            self._last_error = str(exc)[:500]
-            logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, exc)
+            if self._looks_like_dimension_mismatch(exc):
+                reset_message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引所有资料。"
+                logger.warning("RAG 索引遇到向量维度不匹配，准备清空旧索引后重试: %s", exc)
+                await self.reset_index(reset_message, user_id=user_id)
+                try:
+                    count = await asyncio.to_thread(_index)
+                except Exception as retry_exc:
+                    self._last_error = str(retry_exc)[:500]
+                    logger.warning("资料 '%s' (id=%d) 索引重试失败: %s", title, material_id, retry_exc)
+                    return 0
+            else:
+                self._last_error = str(exc)[:500]
+                logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, exc)
+                return 0
+        if count <= 0:
             return 0
         self._last_error = ""
+        self._set_retrieval_status(
+            {"ok": True, "mode": "not_run", "message": f"资料 '{title}' 已索引 {count} 个片段，尚未检索"},
+            user_id,
+        )
         logger.info("资料 '%s' (id=%d) 索引完成，共 %d 个 chunk", title, material_id, count)
         return count
 
@@ -391,6 +603,11 @@ class RAGService:
                 self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 未命中相关片段，已回退到普通资料上下文"}, user_id)
             return items
         except Exception as exc:
+            if self._looks_like_dimension_mismatch(exc):
+                message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引资料后再使用语义检索。"
+                await self.reset_index(message, user_id=user_id)
+                logger.warning("RAG 检索遇到向量维度不匹配，已清空旧索引并返回 fallback: %s", exc)
+                return []
             self._last_error = str(exc)[:500]
             self._set_retrieval_status({"ok": False, "mode": "fallback", "message": f"RAG 检索失败，已回退到普通资料上下文: {self._last_error}"}, user_id)
             logger.warning("RAG 检索失败，已返回空结果: %s", exc)

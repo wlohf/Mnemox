@@ -1,23 +1,40 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Card, Col, Collapse, Dropdown, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
-import { BulbOutlined, ExperimentOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Col, Collapse, Dropdown, Empty, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
+import { BulbOutlined, CheckCircleOutlined, CloseCircleOutlined, ExperimentOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { PageShell } from '../components/PageShell'
 import {
   controlAgentProfileItem,
   executeAgentAction,
   getAgentActionDraft,
   getAgentBrief,
+  getAgentCoreProfile,
+  getAgentGoalContext,
+  getAgentGoalContextActionDraft,
   getAgentStatus,
+  ignoreAgentMemoryCandidate,
+  listAgentMemoryCandidates,
   recordAgentActionFeedback,
+  runAgentMemoryLearning,
   triggerAgentTask,
+  confirmAgentMemoryCandidate,
   type AgentAction,
   type AgentActionDraftResponse,
   type AgentBrief,
+  type AgentCoreProfile,
+  type AgentGoalContext,
+  type AgentGoalContextItem,
+  type AgentMemoryCandidate,
   type AgentNegativeReasonCode,
   type AgentPersonalizationItem,
   type AgentRuntimeInfo,
 } from '../services/agentApi'
+import {
+  listCoachNudges,
+  recordCoachNudgeFeedback,
+  type CoachFeedbackOutcome,
+  type CoachNudge,
+} from '../services/coachApi'
 
 const { Paragraph, Text } = Typography
 
@@ -59,6 +76,71 @@ function autonomyLabel(level?: string) {
   return 'Observe｜观察学习'
 }
 
+function formatCompactValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.map(formatCompactValue).filter(Boolean).join('；')
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${key}: ${formatCompactValue(item)}`)
+      .filter((item) => !item.endsWith(': '))
+    return entries.join('，')
+  }
+  return String(value)
+}
+
+function parseEvidence(evidence: AgentMemoryCandidate['evidence'] | AgentCoreProfile['evidence']): string[] {
+  if (!evidence) return []
+  if (Array.isArray(evidence)) return evidence.map(formatCompactValue).filter(Boolean)
+  if (typeof evidence !== 'string') return [formatCompactValue(evidence)].filter(Boolean)
+  const trimmed = evidence.trim()
+  if (!trimmed) return []
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (Array.isArray(parsed)) return parsed.map(formatCompactValue).filter(Boolean)
+    if (parsed && typeof parsed === 'object') {
+      return Object.entries(parsed).map(([key, value]) => `${key}: ${formatCompactValue(value)}`).filter(Boolean)
+    }
+  } catch {
+    // Evidence may already be a plain human-readable sentence.
+  }
+  return [trimmed]
+}
+
+function confidenceLabel(value?: number | null) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
+  return `${Math.round(Number(value) * 100)}%`
+}
+
+function coreProfileLines(profile: AgentCoreProfile | null): string[] {
+  if (!profile?.memory_value) return []
+  const raw = profile.memory_value.trim()
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean)
+    if (parsed && typeof parsed === 'object') {
+      const summary = (parsed as { summary?: unknown }).summary
+      if (Array.isArray(summary)) {
+        const summaryLines = summary.flatMap((group) => {
+          if (!group || typeof group !== 'object') return [formatCompactValue(group)]
+          const category = String((group as { category?: unknown }).category || 'profile')
+          const items = (group as { items?: unknown }).items
+          if (Array.isArray(items)) return items.slice(0, 4).map((item) => `${category}: ${formatCompactValue(item)}`)
+          return [`${category}: ${formatCompactValue(group)}`]
+        }).filter(Boolean)
+        if (summaryLines.length > 0) return summaryLines
+      }
+      return Object.entries(parsed)
+        .filter(([key]) => key !== 'summary')
+        .map(([key, value]) => `${key}: ${formatCompactValue(value)}`)
+        .filter(Boolean)
+    }
+  } catch {
+    // Core profile may be a curated plain-text summary.
+  }
+  return raw.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
 export function AgentPage() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
@@ -68,19 +150,52 @@ export function AgentPage() {
   const [draft, setDraft] = useState<AgentActionDraftResponse | null>(null)
   const [executeLoading, setExecuteLoading] = useState(false)
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
+  const [goalContext, setGoalContext] = useState<AgentGoalContext | null>(null)
+  const [coachNudges, setCoachNudges] = useState<CoachNudge[]>([])
   const [agentLoading, setAgentLoading] = useState<string | null>(null)
   const [showDebug, setShowDebug] = useState(false)
+  const [memoryCandidates, setMemoryCandidates] = useState<AgentMemoryCandidate[]>([])
+  const [coreProfile, setCoreProfile] = useState<AgentCoreProfile | null>(null)
+  const [memoryReviewLoading, setMemoryReviewLoading] = useState(false)
+  const [memoryActionLoading, setMemoryActionLoading] = useState<number | 'run' | null>(null)
 
   const loadRuntime = async () => {
     const data = await getAgentStatus()
     if (data) setRuntime(data)
   }
 
+  const loadCoachNudges = async () => {
+    const data = await listCoachNudges(undefined, 8)
+    if (data) setCoachNudges(data)
+  }
+
+  const loadAgentMemoryReview = async () => {
+    setMemoryReviewLoading(true)
+    const [candidates, profile] = await Promise.all([
+      listAgentMemoryCandidates(),
+      getAgentCoreProfile(),
+    ])
+    setMemoryCandidates(candidates || [])
+    setCoreProfile(profile)
+    setMemoryReviewLoading(false)
+  }
+
   const load = async (llm = useLlm) => {
     setLoading(true)
-    const [data, runtimeData] = await Promise.all([getAgentBrief(llm), getAgentStatus()])
+    const [data, runtimeData, nudgesData, goalData, candidatesData, profileData] = await Promise.all([
+      getAgentBrief(llm),
+      getAgentStatus(),
+      listCoachNudges(undefined, 8),
+      getAgentGoalContext().catch(() => null),
+      listAgentMemoryCandidates(),
+      getAgentCoreProfile(),
+    ])
     setLoading(false)
     if (runtimeData) setRuntime(runtimeData)
+    if (nudgesData) setCoachNudges(nudgesData)
+    if (goalData) setGoalContext(goalData)
+    setMemoryCandidates(candidatesData || [])
+    setCoreProfile(profileData)
     if (!data) {
       message.error('加载 Agent 简报失败')
       return
@@ -138,6 +253,69 @@ export function AgentPage() {
     if (agent !== 'chat') await load()
   }
 
+  const openGoalFocusDraft = async () => {
+    const focus = goalContext?.today_focus
+    if (!focus) return
+    if (!focus.requires_confirmation) {
+      navigate(focus.route || '/agent')
+      return
+    }
+    setDraftLoading(true)
+    const data = await getAgentGoalContextActionDraft(focus.action_id)
+    setDraftLoading(false)
+    if (!data) {
+      message.error('生成目标行动草案失败，请刷新后重试')
+      return
+    }
+    setDraft(data)
+  }
+
+  const sendCoachFeedback = async (nudge: CoachNudge, outcome: CoachFeedbackOutcome) => {
+    const result = await recordCoachNudgeFeedback(nudge.id, { outcome })
+    if (!result) {
+      message.error('Coach 反馈记录失败')
+      return
+    }
+    message.success('已记录 Coach 反馈')
+    await loadCoachNudges()
+  }
+
+  const runMemoryLearning = async () => {
+    setMemoryActionLoading('run')
+    const result = await runAgentMemoryLearning()
+    setMemoryActionLoading(null)
+    if (!result) {
+      message.error('长期记忆学习失败，请稍后重试')
+      return
+    }
+    message.success(result.message || `已检查长期记忆：确认 ${result.confirmed ?? 0}，待确认 ${result.staged ?? 0}`)
+    await loadAgentMemoryReview()
+  }
+
+  const confirmMemoryCandidate = async (candidate: AgentMemoryCandidate, lock = false) => {
+    setMemoryActionLoading(candidate.id)
+    const result = await confirmAgentMemoryCandidate(candidate.id, { lock })
+    setMemoryActionLoading(null)
+    if (!result) {
+      message.error('确认记忆失败，请稍后重试')
+      return
+    }
+    message.success(lock ? '已确认并锁定这条长期记忆' : '已确认这条长期记忆')
+    await loadAgentMemoryReview()
+  }
+
+  const ignoreMemoryCandidate = async (candidate: AgentMemoryCandidate, reason: 'ignored' | 'inaccurate') => {
+    setMemoryActionLoading(candidate.id)
+    const result = await ignoreAgentMemoryCandidate(candidate.id, { reason })
+    setMemoryActionLoading(null)
+    if (!result) {
+      message.error('更新待确认记忆失败，请稍后重试')
+      return
+    }
+    message.success(reason === 'inaccurate' ? '已标记为不准确' : '已忽略这条记忆')
+    await loadAgentMemoryReview()
+  }
+
   const tasks = brief?.context?.tasks || {}
   const review = brief?.context?.review || {}
   const learning = brief?.context?.learning || {}
@@ -190,6 +368,73 @@ export function AgentPage() {
     </List.Item>
   )
 
+  const renderMemoryCandidate = (candidate: AgentMemoryCandidate) => {
+    const evidence = parseEvidence(candidate.evidence)
+    return (
+      <List.Item
+        actions={[
+          <Button
+            key="confirm"
+            size="small"
+            type="primary"
+            icon={<CheckCircleOutlined />}
+            loading={memoryActionLoading === candidate.id}
+            onClick={() => void confirmMemoryCandidate(candidate)}
+          >
+            确认
+          </Button>,
+          <Button
+            key="lock"
+            size="small"
+            icon={<LockOutlined />}
+            loading={memoryActionLoading === candidate.id}
+            onClick={() => void confirmMemoryCandidate(candidate, true)}
+          >
+            确认并锁定
+          </Button>,
+          <Popconfirm
+            key="inaccurate"
+            title="把这条候选记忆标记为不准确？"
+            description="Agent 不会把它加入长期记忆。"
+            okText="标记"
+            cancelText="取消"
+            onConfirm={() => void ignoreMemoryCandidate(candidate, 'inaccurate')}
+          >
+            <Button size="small" danger icon={<CloseCircleOutlined />} loading={memoryActionLoading === candidate.id}>
+              不准确
+            </Button>
+          </Popconfirm>,
+          <Popconfirm
+            key="ignore"
+            title="忽略这条候选记忆？"
+            description="它会从待确认列表移除，不影响其他记忆。"
+            okText="忽略"
+            cancelText="取消"
+            onConfirm={() => void ignoreMemoryCandidate(candidate, 'ignored')}
+          >
+            <Button size="small" loading={memoryActionLoading === candidate.id}>忽略</Button>
+          </Popconfirm>,
+        ]}
+      >
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Space wrap>
+            <Text strong>{candidate.memory_value}</Text>
+            <Tag color="blue">{candidate.category || 'memory'}</Tag>
+            {candidate.memory_type && <Tag>{candidate.memory_type}</Tag>}
+            <Tag color="gold">置信度 {confidenceLabel(candidate.confidence)}</Tag>
+            {candidate.source_type && <Tag color="purple">{candidate.source_type}{candidate.source_id ? ` #${candidate.source_id}` : ''}</Tag>}
+          </Space>
+          {evidence.length > 0 && (
+            <Space wrap>
+              {evidence.slice(0, 4).map((item) => <Tag key={item}>{item}</Tag>)}
+            </Space>
+          )}
+          {candidate.expires_at && <Text type="secondary">有效期至：{candidate.expires_at}</Text>}
+        </Space>
+      </List.Item>
+    )
+  }
+
   const sendFeedback = async (action: AgentAction, outcome: 'helpful' | 'later' | 'useless' | 'dismissed', reasonCode?: AgentNegativeReasonCode) => {
     const notesMap = {
       helpful: '用户认为该建议有帮助',
@@ -215,6 +460,8 @@ export function AgentPage() {
     items: negativeReasonOptions.map((reason) => ({ key: reason.key, label: reason.label })),
     onClick: ({ key }: { key: string }) => void sendFeedback(action, outcome, key as AgentNegativeReasonCode),
   })
+
+  const supportingCount = (items?: AgentGoalContextItem[]) => (items || []).length
 
   return (
     <PageShell
@@ -254,6 +501,157 @@ export function AgentPage() {
           />
         )}
 
+        <Card
+          size="small"
+          loading={loading}
+          title="Current Goal"
+          extra={<Button size="small" onClick={() => navigate(goalContext?.active_goal?.route || goalContext?.goal_creation?.route || '/goals')}>打开目标</Button>}
+        >
+          {goalContext?.active_goal ? (
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Row gutter={[12, 12]}>
+                <Col xs={24} md={9}>
+                  <Space direction="vertical" size={4}>
+                    <Space wrap>
+                      <Text strong>{goalContext.active_goal.title}</Text>
+                      {goalContext.active_goal.deadline && <Tag color="blue">截止 {goalContext.active_goal.deadline}</Tag>}
+                      {goalContext.active_goal.target_level && <Tag>{goalContext.active_goal.target_level}</Tag>}
+                    </Space>
+                    <Space wrap>
+                      <Tag>待办 {goalContext.active_goal.progress?.pending_task_count ?? 0}</Tag>
+                      <Tag color={goalContext.active_goal.progress?.today_task_count ? 'green' : 'default'}>今日 {goalContext.active_goal.progress?.today_task_count ?? 0}</Tag>
+                      <Tag color={goalContext.active_goal.progress?.overdue_task_count ? 'red' : 'default'}>过期 {goalContext.active_goal.progress?.overdue_task_count ?? 0}</Tag>
+                      <Tag color="cyan">已完成 {goalContext.active_goal.progress?.completed_today_count ?? 0}</Tag>
+                    </Space>
+                  </Space>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">Today's Smallest Useful Action</Text>
+                    <Text strong>{goalContext.today_focus?.title}</Text>
+                    <Text type="secondary">{goalContext.today_focus?.estimated_minutes} 分钟 · {goalContext.today_focus?.reason}</Text>
+                  </Space>
+                </Col>
+                <Col xs={24} md={7}>
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space wrap>
+                      {goalContext.risk_flags?.no_daily_plan && <Tag color="orange">无今日计划</Tag>}
+                      {goalContext.risk_flags?.review_debt_high && <Tag color="red">复习积压高</Tag>}
+                      {goalContext.risk_flags?.goal_stale && <Tag color="gold">目标偏久未推进</Tag>}
+                      {!goalContext.risk_flags?.no_daily_plan && !goalContext.risk_flags?.review_debt_high && !goalContext.risk_flags?.goal_stale && <Tag color="green">无高风险信号</Tag>}
+                    </Space>
+                    <Button
+                      type="primary"
+                      size="small"
+                      loading={draftLoading}
+                      onClick={() => void openGoalFocusDraft()}
+                    >
+                      {goalContext.today_focus?.requires_confirmation ? '生成草案' : '开始行动'}
+                    </Button>
+                  </Space>
+                </Col>
+              </Row>
+
+              <Row gutter={[12, 12]}>
+                <Col xs={24} md={12}>
+                  <Text strong>Evidence</Text>
+                  <Space wrap style={{ marginTop: 8 }}>
+                    {(goalContext.evidence || []).map((item) => <Tag key={item}>{item}</Tag>)}
+                  </Space>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Text strong>Supporting Context</Text>
+                  <Space wrap style={{ marginTop: 8 }}>
+                    <Tag color={supportingCount(goalContext.supporting_context?.notes) ? 'blue' : 'default'}>笔记 {supportingCount(goalContext.supporting_context?.notes)}</Tag>
+                    <Tag color={supportingCount(goalContext.supporting_context?.materials) ? 'purple' : 'default'}>资料 {supportingCount(goalContext.supporting_context?.materials)}</Tag>
+                    <Tag color={supportingCount(goalContext.supporting_context?.wrong_questions) ? 'red' : 'default'}>错题 {supportingCount(goalContext.supporting_context?.wrong_questions)}</Tag>
+                    <Tag color={supportingCount(goalContext.supporting_context?.review_items) ? 'orange' : 'default'}>复习 {supportingCount(goalContext.supporting_context?.review_items)}</Tag>
+                  </Space>
+                  <List
+                    size="small"
+                    dataSource={[
+                      ...(goalContext.supporting_context?.notes || []).slice(0, 2).map((item) => ({ ...item, _kind: '笔记' })),
+                      ...(goalContext.supporting_context?.wrong_questions || []).slice(0, 2).map((item) => ({ ...item, _kind: '错题' })),
+                    ]}
+                    locale={{ emptyText: '暂未找到直接支持该目标的笔记或错题。' }}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <Space wrap>
+                          <Tag>{String(item._kind || '证据')}</Tag>
+                          <Text>{String(item.title || item.id || '-')}</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                </Col>
+              </Row>
+            </Space>
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message={goalContext?.goal_creation?.title || '创建当前主目标'}
+              description={goalContext?.goal_creation?.message || '当前没有活跃目标。先创建一个目标后，Agent 会把任务、笔记、错题和复习证据组织到同一个 cockpit。'}
+              action={<Button size="small" type="primary" onClick={() => navigate('/goals')}>创建目标</Button>}
+            />
+          )}
+        </Card>
+
+        <Card
+          size="small"
+          title={<><BulbOutlined style={{ marginRight: 8 }} />Coach Nudges</>}
+          extra={<Button size="small" onClick={() => void loadCoachNudges()}>刷新</Button>}
+        >
+          <List
+            size="small"
+            dataSource={coachNudges.filter((item) => item.status !== 'dismissed' && item.status !== 'completed')}
+            locale={{ emptyText: '暂无 Coach nudge。聊天低动力、番茄中断或复习积压时会出现在这里。' }}
+            renderItem={(nudge) => (
+              <List.Item
+                actions={[
+                  nudge.route || nudge.suggested_action?.route ? (
+                    <Button
+                      key="open"
+                      size="small"
+                      type="primary"
+                      onClick={() => {
+                        void sendCoachFeedback(nudge, 'accepted')
+                        navigate(nudge.route || nudge.suggested_action?.route || '/agent')
+                      }}
+                    >
+                      {nudge.suggested_action?.label || '去处理'}
+                    </Button>
+                  ) : null,
+                  <Button key="helpful" size="small" onClick={() => void sendCoachFeedback(nudge, 'helpful')}>有帮助</Button>,
+                  <Button key="later" size="small" onClick={() => void sendCoachFeedback(nudge, 'later')}>稍后</Button>,
+                  <Button key="dismiss" size="small" danger onClick={() => void sendCoachFeedback(nudge, 'too_disruptive')}>太打扰</Button>,
+                ].filter(Boolean)}
+              >
+                <Space direction="vertical" size={4}>
+                  <Space wrap>
+                    <Tag color={priorityColor(nudge.priority)}>{nudge.priority}</Tag>
+                    <Tag>{nudge.skill_id}</Tag>
+                    <Text strong>{nudge.title}</Text>
+                  </Space>
+                  <Paragraph style={{ marginBottom: 0 }}>{nudge.body}</Paragraph>
+                  {nudge.explainability?.reason && (
+                    <Text type="secondary">{nudge.explainability.reason}</Text>
+                  )}
+                  {(nudge.explainability?.sources || []).length > 0 && (
+                    <Space wrap>
+                      {(nudge.explainability?.sources || []).slice(0, 4).map((source) => (
+                        <Tag key={`${source.type}-${source.id}`} color={source.type === 'note' ? 'blue' : 'purple'}>
+                          {source.type === 'note' ? '笔记' : '记忆'}：{source.title || source.id}
+                        </Tag>
+                      ))}
+                    </Space>
+                  )}
+                </Space>
+              </List.Item>
+            )}
+          />
+        </Card>
+
         <Row gutter={[12, 12]}>
           <Col xs={24} md={8}>
             <Card size="small" loading={loading}>
@@ -282,6 +680,54 @@ export function AgentPage() {
             </Card>
           </Col>
         </Row>
+
+        <Card
+          size="small"
+          title={<><UserOutlined style={{ marginRight: 8 }} />长期记忆审核</>}
+          loading={memoryReviewLoading}
+          extra={(
+            <Space>
+              <Tag color={memoryCandidates.length ? 'gold' : 'green'}>待确认 {memoryCandidates.length}</Tag>
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={memoryActionLoading === 'run'}
+                onClick={() => void runMemoryLearning()}
+              >
+                运行学习
+              </Button>
+            </Space>
+          )}
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Row gutter={[12, 12]}>
+              <Col xs={24} md={9}>
+                <Space direction="vertical" size={4}>
+                  <Text type="secondary">Core Profile</Text>
+                  <Text strong>{coreProfile ? `更新于 ${coreProfile.updated_at || '-'}` : '暂无核心画像'}</Text>
+                  <Text type="secondary">只汇总高置信长期信号，不包含原始笔记正文或敏感材料。</Text>
+                </Space>
+              </Col>
+              <Col xs={24} md={15}>
+                {coreProfileLines(coreProfile).length > 0 ? (
+                  <Space wrap>
+                    {coreProfileLines(coreProfile).slice(0, 8).map((line) => (
+                      <Tag key={line} color="cyan">{line}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="继续学习、反馈和整理笔记后会生成核心画像" />
+                )}
+              </Col>
+            </Row>
+            <List
+              size="small"
+              dataSource={memoryCandidates}
+              locale={{ emptyText: '没有待确认记忆。低风险聚合记忆会自动提交；敏感或主观推断会在这里等待你确认。' }}
+              renderItem={renderMemoryCandidate}
+            />
+          </Space>
+        </Card>
 
         <Card size="small" title={<><UserOutlined style={{ marginRight: 8 }} />我对你的了解</>} loading={loading}>
           <Space direction="vertical" size={10} style={{ width: '100%' }}>

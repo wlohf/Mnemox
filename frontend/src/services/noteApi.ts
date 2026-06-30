@@ -2,8 +2,19 @@ import { apiFetch } from './apiClient'
 
 export interface NoteLink {
   id?: number
-  link_type: 'task' | 'session' | 'material' | 'chapter' | string
+  link_type:
+    | 'goal'
+    | 'task'
+    | 'session'
+    | 'material'
+    | 'chapter'
+    | 'wrong_question'
+    | 'conversation'
+    | 'pomodoro'
+    | 'review_schedule'
+    | string
   link_id: number
+  label?: string | null
 }
 
 export interface NoteItem {
@@ -44,8 +55,8 @@ export async function createNote(data: {
   title: string
   content: string
   note_type?: string
-  material_id?: number
-  chapter_id?: number
+  material_id?: number | null
+  chapter_id?: number | null
   tags?: string[]
   links?: NoteLink[]
 }): Promise<NoteItem | null> {
@@ -130,5 +141,83 @@ export async function assistNoteWithAI(
       suggestion: '',
       message: detail,
     }
+  }
+}
+
+export interface NoteActionDraftResult {
+  ok?: boolean
+  action?: string
+  note_id?: number
+  title?: string
+  summary?: string
+  draft?: Record<string, unknown>
+  route?: string
+  requires_confirmation?: boolean
+  message?: string
+}
+
+export async function draftNoteReviewPrompt(id: number): Promise<NoteActionDraftResult | null> {
+  try {
+    return await apiFetch<NoteActionDraftResult>(`/api/notes/${id}/actions/review-prompt/draft`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function draftTaskFromNoteSelection(
+  id: number,
+  data: { selected_text?: string; title?: string } = {},
+): Promise<NoteActionDraftResult | null> {
+  try {
+    return await apiFetch<NoteActionDraftResult>(`/api/notes/${id}/actions/task-from-selection/draft`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  } catch {
+    return null
+  }
+}
+
+export interface AskAgentFromNoteResult {
+  ok?: boolean
+  action?: string
+  note_id?: number
+  question?: string
+  answer?: string
+  preview?: {
+    question?: string
+    source_note?: {
+      id?: number
+      title?: string
+      note_type?: string | null
+      excerpt?: string
+      route?: string
+    }
+    agent_prompt_preview?: string
+    links?: NoteLink[]
+  }
+  route?: string
+  sources?: Array<{ id?: number | string; title?: string; type?: string }>
+  requires_confirmation?: boolean
+  message?: string
+}
+
+export async function askAgentAboutNote(
+  id: number,
+  data: { question?: string; selected_text?: string } = {},
+): Promise<AskAgentFromNoteResult | null> {
+  try {
+    return await apiFetch<AskAgentFromNoteResult>(`/api/notes/${id}/actions/ask-agent`, {
+      method: 'POST',
+      body: JSON.stringify({
+        instruction: data.question,
+        selected_text: data.selected_text,
+      }),
+    })
+  } catch {
+    return null
   }
 }

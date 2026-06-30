@@ -20,6 +20,8 @@ from app.services.agent_service import (
     remember_agent_feedback,
     update_agent_profile_item,
 )
+from app.services.goal_context_service import build_goal_context
+from app.services.learning_event_service import record_learning_event
 
 router = APIRouter()
 
@@ -72,6 +74,10 @@ class AgentWriteDraftRequest(BaseModel):
 class AgentWriteExecuteRequest(BaseModel):
     intent: Literal["create_note", "create_goal_tasks", "add_daily_plan_items"]
     draft: dict[str, Any]
+
+
+class AgentGoalActionDraftRequest(BaseModel):
+    message: str | None = None
 
 
 class AgentTaskTriggerRequest(BaseModel):
@@ -175,6 +181,16 @@ async def get_agent_brief(
     return await build_agent_brief(db, int(current_user.id), use_llm=use_llm)
 
 
+@router.get("/goal-context")
+async def get_agent_goal_context(
+    goal_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取以当前目标为中心的 Agent cockpit 上下文。"""
+    return await build_goal_context(db, int(current_user.id), goal_id=goal_id)
+
+
 @router.post("/write/draft")
 async def draft_agent_write(
     body: AgentWriteDraftRequest,
@@ -196,6 +212,51 @@ async def execute_agent_write(
     """确认执行自然语言写入草案。"""
     try:
         result = await execute_agent_write_draft(db, int(current_user.id), body.intent, body.draft)
+        created = result.get("created") or {}
+        if body.intent == "create_note" and (created.get("note") or {}).get("id"):
+            note = created["note"]
+            await record_learning_event(
+                db,
+                int(current_user.id),
+                "note.created",
+                source="agent_write",
+                payload={"title": note.get("title"), "intent": body.intent},
+                note_id=int(note["id"]),
+                dedupe_key=f"agent:note.created:{note['id']}",
+            )
+        elif body.intent == "create_goal_tasks" and (created.get("goal") or {}).get("id"):
+            goal = created["goal"]
+            await record_learning_event(
+                db,
+                int(current_user.id),
+                "goal.created" if not body.draft.get("existing_goal_id") else "goal.updated",
+                source="agent_write",
+                payload={"title": goal.get("title"), "task_count": len(created.get("tasks") or [])},
+                goal_id=int(goal["id"]),
+                dedupe_key=f"agent:goal_tasks:{goal['id']}:{len(created.get('tasks') or [])}",
+            )
+            for task in created.get("tasks") or []:
+                if task.get("id"):
+                    await record_learning_event(
+                        db,
+                        int(current_user.id),
+                        "task.created",
+                        source="agent_write",
+                        payload={"title": task.get("title"), "planned_date": task.get("planned_date")},
+                        goal_id=int(goal["id"]),
+                        task_id=int(task["id"]),
+                        dedupe_key=f"agent:task.created:{task['id']}",
+                    )
+        elif body.intent == "add_daily_plan_items" and (created.get("plan") or {}).get("id"):
+            plan = created["plan"]
+            await record_learning_event(
+                db,
+                int(current_user.id),
+                "daily_plan.updated",
+                source="agent_write",
+                payload={"date": plan.get("date"), "item_count": len(created.get("items") or [])},
+                dedupe_key=f"agent:daily_plan.updated:{plan['id']}:{len(created.get('items') or [])}",
+            )
         await db.commit()
         return result
     except ValueError as exc:
@@ -226,6 +287,71 @@ async def get_agent_action_draft(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/goal-context/actions/{action_id}/draft")
+async def draft_agent_goal_context_action(
+    action_id: str,
+    body: AgentGoalActionDraftRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Goal cockpit 的行动草案入口；复用现有 Agent 草稿契约。"""
+    if body and body.message and body.message.strip():
+        return await build_agent_write_draft(db, int(current_user.id), body.message)
+    try:
+        return await build_agent_action_draft(db, int(current_user.id), action_id, use_llm=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/goal-context/actions/{action_id}/feedback")
+async def record_agent_goal_context_action_feedback(
+    action_id: str,
+    body: AgentFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """记录用户对目标 cockpit 行动的反馈。"""
+    effectiveness = body.effectiveness
+    if effectiveness is not None:
+        effectiveness = max(0.0, min(1.0, float(effectiveness)))
+    action = None
+    try:
+        context = await build_goal_context(db, int(current_user.id))
+        focus = context.get("today_focus") or {}
+        if focus.get("action_id") == action_id or focus.get("id") == action_id:
+            action = {
+                "id": action_id,
+                "title": focus.get("title"),
+                "reason": focus.get("reason"),
+                "action_type": "goal_context",
+                "route": focus.get("route"),
+                "target": focus.get("target"),
+                "source": "goal_context",
+            }
+    except Exception:
+        action = None
+    result = await remember_agent_feedback(
+        db,
+        int(current_user.id),
+        action_id,
+        body.outcome,
+        body.notes,
+        effectiveness,
+        action,
+        body.reason_code,
+    )
+    await record_learning_event(
+        db,
+        int(current_user.id),
+        "agent.action_feedback",
+        source="agent_goal_context",
+        payload={"action_id": action_id, "outcome": body.outcome, "reason_code": body.reason_code},
+        dedupe_key=f"agent.goal_context.feedback:{action_id}:{body.outcome}:{body.reason_code or ''}",
+    )
+    await db.commit()
+    return result
+
+
 @router.post("/actions/{action_id}/execute", response_model=AgentActionExecuteResponse)
 async def execute_agent_action_endpoint(
     action_id: str,
@@ -235,7 +361,43 @@ async def execute_agent_action_endpoint(
 ):
     """确认执行一个 Agent 行动。当前只自动创建低风险任务，其余行动记录反馈后跳转。"""
     try:
-        return await execute_agent_action(db, int(current_user.id), action_id, use_llm=use_llm)
+        user_id = int(current_user.id)
+        result = await execute_agent_action(db, user_id, action_id, use_llm=use_llm)
+        action = result.get("action") or {}
+        created_task = result.get("created_task") or {}
+        if created_task.get("id"):
+            await record_learning_event(
+                db,
+                user_id,
+                "task.created",
+                source="agent_action_execute",
+                payload={
+                    "title": created_task.get("title"),
+                    "action_id": action_id,
+                    "action_type": action.get("action_type"),
+                    "planned_date": created_task.get("planned_date"),
+                },
+                goal_id=int(created_task["goal_id"]) if created_task.get("goal_id") else None,
+                task_id=int(created_task["id"]),
+                dedupe_key=f"agent:action:{action_id}:task.created:{created_task['id']}",
+            )
+        await record_learning_event(
+            db,
+            user_id,
+            "agent.action_feedback",
+            source="agent_action_execute",
+            payload={
+                "action_id": action_id,
+                "action_type": action.get("action_type"),
+                "outcome": "accepted" if result.get("status") == "created" else result.get("status"),
+                "route": result.get("route"),
+            },
+            goal_id=int(created_task["goal_id"]) if created_task.get("goal_id") else None,
+            task_id=int(created_task["id"]) if created_task.get("id") else None,
+            dedupe_key=f"agent:action:{action_id}:feedback:{result.get('status')}",
+        )
+        await db.commit()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -257,7 +419,7 @@ async def record_agent_action_feedback(
         action = next((item for item in brief.get("next_actions", []) if item.get("id") == action_id), None)
     except Exception:
         action = None
-    return await remember_agent_feedback(
+    result = await remember_agent_feedback(
         db,
         int(current_user.id),
         action_id,
@@ -267,6 +429,16 @@ async def record_agent_action_feedback(
         action,
         body.reason_code,
     )
+    await record_learning_event(
+        db,
+        int(current_user.id),
+        "agent.action_feedback",
+        source="agent_actions",
+        payload={"action_id": action_id, "outcome": body.outcome, "reason_code": body.reason_code},
+        dedupe_key=f"agent.actions.feedback:{action_id}:{body.outcome}:{body.reason_code or ''}",
+    )
+    await db.commit()
+    return result
 
 
 

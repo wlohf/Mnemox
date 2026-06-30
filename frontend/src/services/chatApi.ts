@@ -1,4 +1,5 @@
 import { getToken } from './apiClient'
+import type { WebSearchMode } from './aiSettingsApi'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -28,6 +29,14 @@ export interface WebSearchResult {
   title: string
   url: string
   snippet?: string
+  source_provider?: string
+  score?: number | null
+  published_date?: string | null
+  canonical_url?: string | null
+  source_domain?: string | null
+  credibility_score?: number | null
+  rank_score?: number | null
+  merged_from_providers?: string[]
 }
 
 function enhanceChatErrorMessage(error: string) {
@@ -69,6 +78,8 @@ export async function sendMessageStream(
   providerName?: string,
   model?: string,
   webSearchEnabled?: boolean,
+  webSearchMode?: WebSearchMode,
+  webSearchProviderName?: string,
   onWebSearchResults?: (results: WebSearchResult[]) => void,
   onWebSearchNotice?: (notice: string) => void,
 ): Promise<void> {
@@ -100,6 +111,12 @@ export async function sendMessageStream(
     }
     if (webSearchEnabled) {
       payload.web_search_enabled = true
+      if (webSearchMode) {
+        payload.web_search_mode = webSearchMode
+      }
+      if (webSearchProviderName?.trim()) {
+        payload.web_search_provider_name = webSearchProviderName.trim()
+      }
     }
     const token = getToken()
     const res = await fetch('/api/chat/send', {

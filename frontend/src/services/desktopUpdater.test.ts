@@ -14,6 +14,7 @@ describe('desktop updater bridge', () => {
     const setUpdateSettings = vi.fn().mockResolvedValue({ autoCheck: false, intervalMinutes: 30, lastCheckedAt: null })
     const onUpdateState = vi.fn().mockReturnValue(() => {})
     const downloadUpdate = vi.fn().mockResolvedValue({ phase: 'downloading' })
+    const downloadInstallerAndRun = vi.fn().mockResolvedValue({ phase: 'downloading' })
     const quitAndInstall = vi.fn().mockResolvedValue(undefined)
 
     ;(window as Window & { mnemoxDesktop?: unknown }).mnemoxDesktop = {
@@ -23,6 +24,7 @@ describe('desktop updater bridge', () => {
       setUpdateSettings,
       onUpdateState,
       downloadUpdate,
+      downloadInstallerAndRun,
       quitAndInstall,
     }
 
@@ -34,6 +36,7 @@ describe('desktop updater bridge', () => {
     expect(await mod.getDesktopUpdateSettings()).toEqual({ autoCheck: true, intervalMinutes: 360, lastCheckedAt: null })
     expect(await mod.setDesktopUpdateSettings({ autoCheck: false, intervalMinutes: 30 })).toEqual({ autoCheck: false, intervalMinutes: 30, lastCheckedAt: null })
     expect(await mod.downloadDesktopUpdate()).toEqual({ phase: 'downloading' })
+    expect(await mod.downloadInstallerAndRunDesktopUpdate({ url: 'https://example.test/mnemox.exe', version: '1.1.1' })).toEqual({ phase: 'downloading' })
     const unsubscribe = mod.subscribeDesktopUpdateState(() => {})
     expect(typeof unsubscribe).toBe('function')
     expect(onUpdateState).toHaveBeenCalled()

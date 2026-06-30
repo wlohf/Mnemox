@@ -52,7 +52,10 @@ export const notesSyncAdapter: ModuleSyncAdapter = {
     if (payload.title !== undefined) body.title = payload.title
     if (payload.content !== undefined) body.content = payload.content
     if (payload.note_type !== undefined) body.note_type = payload.note_type
+    if (payload.material_id !== undefined) body.material_id = payload.material_id
+    if (payload.chapter_id !== undefined) body.chapter_id = payload.chapter_id
     if (payload.tags !== undefined) body.tags = JSON.parse(payload.tags as string)
+    if (payload.links !== undefined) body.links = JSON.parse(payload.links as string)
 
     const server = await apiFetch<ServerNote>(`/api/notes/${local._serverId}`, {
       method: 'PUT',

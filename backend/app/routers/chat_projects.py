@@ -456,6 +456,10 @@ async def batch_update_materials(
         current_user.id,
     )
 
+    added = 0
+    removed = 0
+    impacted_ids = sorted(set(body.add_material_ids) | set(body.remove_material_ids))
+
     # 移除关联
     if body.remove_material_ids:
         for mid in body.remove_material_ids:
@@ -484,7 +488,6 @@ async def batch_update_materials(
                 added += 1
 
     await db.flush()
-    impacted_ids = valid_ids
     for mid in impacted_ids:
         await _reindex_material_for_projects(db, mid, current_user.id)
     return {

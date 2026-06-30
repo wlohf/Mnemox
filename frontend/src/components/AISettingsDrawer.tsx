@@ -24,6 +24,7 @@ import {
   DatabaseOutlined,
   SearchOutlined,
   DeleteOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import {
   getAllProviders,
@@ -40,6 +41,7 @@ import {
   getStoredWebSearchProviderName,
   updateRagSettings,
   testRagEmbedding,
+  reindexAllRagMaterials,
   testSearchSettings,
   searchProviderModels,
   notifyAIProvidersUpdated,
@@ -189,6 +191,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
   })
   const [savingRag, setSavingRag] = useState(false)
   const [testingRag, setTestingRag] = useState(false)
+  const [reindexingRag, setReindexingRag] = useState(false)
 
   const loadProviders = async () => {
     setLoading(true)
@@ -596,11 +599,24 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
               base_url: result.base_url,
               model: result.model,
               initialized: true,
+              total_chunks: result.total_chunks ?? prev.total_chunks,
+              fallback_active: result.requires_reindex ? true : prev.fallback_active,
+              last_retrieval_status: result.message
+                ? {
+                    ok: !result.requires_reindex,
+                    mode: result.requires_reindex ? 'fallback' : 'not_run',
+                    message: result.message,
+                  }
+                : prev.last_retrieval_status,
             }
           : prev
       )
       setRagEdit((prev) => ({ ...prev, api_key: '' }))
-      message.success('RAG 设置已保存并生效')
+      if (result.requires_reindex) {
+        message.warning(result.message || 'RAG 设置已保存，请重建索引')
+      } else {
+        message.success('RAG 设置已保存并生效')
+      }
     } catch (error) {
       showApiError(error, 'RAG 设置保存失败')
     } finally {
@@ -621,6 +637,34 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
       showApiError(error, '测试请求失败，请检查后端是否运行')
     } finally {
       setTestingRag(false)
+    }
+  }
+
+  const handleRagReindex = async () => {
+    setReindexingRag(true)
+    try {
+      const result = await reindexAllRagMaterials()
+      if (result.ok) {
+        message.success(result.message || `RAG 索引已重建，共 ${result.total_chunks} 个片段`)
+      } else {
+        message.warning(result.message || 'RAG 索引重建未完全成功')
+      }
+      const latest = await getRagSettings()
+      setRagSettings(latest)
+      setRagEdit((prev) => ({
+        ...prev,
+        api_key: '',
+        base_url: latest.base_url,
+        model: latest.model,
+        chunk_size: latest.chunk_size ?? prev.chunk_size,
+        chunk_overlap: latest.chunk_overlap ?? prev.chunk_overlap,
+        top_k: latest.top_k ?? prev.top_k,
+        similarity_threshold: latest.similarity_threshold ?? prev.similarity_threshold,
+      }))
+    } catch (error) {
+      showApiError(error, 'RAG 索引重建失败')
+    } finally {
+      setReindexingRag(false)
     }
   }
 
@@ -1286,6 +1330,13 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                   onClick={handleRagTest}
                 >
                   测试连接
+                </Button>
+                <Button
+                  icon={<ReloadOutlined />}
+                  loading={reindexingRag}
+                  onClick={handleRagReindex}
+                >
+                  重建索引
                 </Button>
               </Space>
             </div>
