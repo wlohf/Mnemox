@@ -60,6 +60,6 @@
 
 ## 已知说明
 
-- 本次 GitHub Release 发布源码、tag 和发布说明。
-- 本地 `release/desktop` 只有旧版 `Mnemox-Setup-1.0.9.exe`，没有 v1.2.0 安装包，因此本次不上传陈旧安装器。
-- 如需 Windows 安装包，建议从干净的 `v1.2.0` tag 单独构建并验证后再补充上传资产。
+- 本次 GitHub Release 发布源码、tag、发布说明和 Windows 桌面安装包资产。
+- Windows 桌面更新需要同时发布 `Mnemox-Setup-1.2.0.exe`、`latest.yml` 和 `Mnemox-Setup-1.2.0.exe.blockmap`。
+- `release-manifest/latest.json` 的 `downloads.windows` 指向 `v1.2.0` 安装包，用于应用内兜底直接下载。

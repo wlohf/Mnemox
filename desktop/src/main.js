@@ -109,6 +109,7 @@ async function startBackend() {
     userData,
     frontendDistDir,
     secretKey,
+    appVersion: app.getVersion(),
   })
   const args = [
     ...getBackendArgs({ isPackaged: app.isPackaged, appPath }),
