@@ -4,13 +4,19 @@
 
 ## ✅ 推荐路径（先看这些）
 
-1. **启动与运行**
+1. **当前项目状态**
+   - 需求基线：`/docs/requirements.md`
+   - 技术基线：`/docs/technical.md`
+   - 项目进度：`/docs/progress.md`
+
+2. **启动与运行**
    - 启动指南（主文档）：`/启动指南.md`
    - 后端说明：`/backend/README.md`
    - 前端说明：`/frontend/README.md`
 
-2. **系统设计**
-   - 总体架构：`/docs/system-design.md`
+3. **系统设计**
+   - 当前技术基线：`/docs/technical.md`
+   - 早期总体设计（历史参考）：`/docs/system-design.md`
 
 ## 📦 规划/方案类（保留作参考）
 
