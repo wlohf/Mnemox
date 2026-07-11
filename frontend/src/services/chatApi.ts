@@ -19,6 +19,15 @@ export interface MemoryIndicator {
   memory_type?: string
 }
 
+export interface NoteContextIndicator {
+  id: number
+  title: string
+  excerpt: string
+  tags?: string[]
+  reason?: string
+  score?: number
+}
+
 export interface ProgressFeedback {
   feedback_type: 'understanding' | 'persistence' | 'correction_accepted' | 'milestone'
   message: string
@@ -74,6 +83,7 @@ export async function sendMessageStream(
   studySessionId?: number,
   chatMode?: string,
   onMemoryIndicators?: (memories: MemoryIndicator[]) => void,
+  onNoteContextIndicators?: (notes: NoteContextIndicator[]) => void,
   onProgressFeedback?: (feedback: ProgressFeedback) => void,
   providerName?: string,
   model?: string,
@@ -174,6 +184,10 @@ export async function sendMessageStream(
           }
           if (parsed.type === 'memory_indicators' && parsed.memories) {
             onMemoryIndicators?.(parsed.memories as MemoryIndicator[])
+            continue
+          }
+          if (parsed.type === 'note_context_indicators' && parsed.notes) {
+            onNoteContextIndicators?.(parsed.notes as NoteContextIndicator[])
             continue
           }
           if (parsed.type === 'progress_feedback' && parsed.feedback) {

@@ -31,6 +31,11 @@ from app.services.memory_service import (
     upsert_conversation_summary,
     upsert_user_memories_from_turn,
 )
+from app.services.note_context_service import (
+    build_note_context_prompt,
+    search_note_context,
+    to_note_context_indicators,
+)
 from app.services.search_settings_service import get_search_settings_dict
 from app.services.search_cache_service import search_web_with_cache
 from app.services.web_search import SearchProviderSettings, WebSearchResult, search_web
@@ -1229,6 +1234,21 @@ async def chat_send(
         chat_mode=body.chat_mode or "normal",
     )
 
+    note_context_hits = []
+    try:
+        note_context_hits = await search_note_context(
+            db,
+            user_id=current_user.id,
+            query=body.message,
+            limit=3,
+        )
+        note_prompt = build_note_context_prompt(note_context_hits, max_chars=1800)
+        if note_prompt:
+            system_prompt = f"{system_prompt or ''}{note_prompt}"
+    except Exception as exc:
+        logger.warning("构建笔记上下文失败: %s", exc)
+        note_context_hits = []
+
     # Fetch memory indicators for SSE
     memory_indicators = []
     try:
@@ -1307,6 +1327,16 @@ async def chat_send(
                 ensure_ascii=False,
             )
             yield f"data: {mem_data}\n\n"
+
+        if note_context_hits:
+            note_data = json.dumps(
+                {
+                    "type": "note_context_indicators",
+                    "notes": to_note_context_indicators(note_context_hits),
+                },
+                ensure_ascii=False,
+            )
+            yield f"data: {note_data}\n\n"
 
         try:
             effective_system_prompt = system_prompt
@@ -1502,6 +1532,19 @@ async def chat_send_sync(
         user_id=current_user.id,
         chat_mode=body.chat_mode or "normal",
     )
+
+    try:
+        note_context_hits = await search_note_context(
+            db,
+            user_id=current_user.id,
+            query=body.message,
+            limit=3,
+        )
+        note_prompt = build_note_context_prompt(note_context_hits, max_chars=1800)
+        if note_prompt:
+            system_prompt = f"{system_prompt or ''}{note_prompt}"
+    except Exception as exc:
+        logger.warning("构建同步对话笔记上下文失败: %s", exc)
 
     messages = []
     if body.history:
