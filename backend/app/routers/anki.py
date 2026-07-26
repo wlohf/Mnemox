@@ -1,7 +1,7 @@
 """Anki 风格记忆卡路由"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import re
 import csv
@@ -18,6 +18,8 @@ from app.database import get_db
 from app.models.anki import AnkiCard
 from app.models.user import User
 from app.ai.factory import AIProviderFactory
+from app.services.review_scheduler import apply_review
+from app.utils.prompt_safety import wrap_untrusted_context
 
 
 router = APIRouter()
@@ -58,28 +60,11 @@ def _to_item(card: AnkiCard) -> dict:
         "ease_factor": card.ease_factor,
         "repetitions": card.repetitions,
         "last_quality": card.last_quality,
+        "stability": card.stability,
+        "difficulty": card.difficulty,
         "created_at": card.created_at.isoformat() if card.created_at else None,
         "updated_at": card.updated_at.isoformat() if card.updated_at else None,
     }
-
-
-def _sm2_update(interval_days: int, repetitions: int, ease_factor_scaled: int, quality: int):
-    ef = (ease_factor_scaled or 250) / 100.0
-    ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-    ef = max(1.3, ef)
-
-    if quality < 3:
-        return 1, 0, int(round(ef * 100))
-
-    if repetitions <= 0:
-        next_interval = 1
-    elif repetitions == 1:
-        next_interval = 6
-    else:
-        base = interval_days or 1
-        next_interval = max(1, int(round(base * ef)))
-
-    return next_interval, repetitions + 1, int(round(ef * 100))
 
 
 def _extract_json(text: str) -> str:
@@ -143,17 +128,7 @@ async def review_card(
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
 
-    next_interval, next_repetitions, next_ef = _sm2_update(
-        card.interval_days or 1,
-        card.repetitions or 0,
-        card.ease_factor or 250,
-        body.quality,
-    )
-    card.interval_days = next_interval
-    card.repetitions = next_repetitions
-    card.ease_factor = next_ef
-    card.last_quality = body.quality
-    card.due_at = datetime.now() + timedelta(days=next_interval)
+    apply_review(card, body.quality, datetime.now(), due_attr="due_at")
 
     await db.flush()
     await db.refresh(card)
@@ -168,10 +143,16 @@ async def ai_generate_cards(
 ):
     source_text = (body.source_text or "").strip()
     prompt = (
-        "你是一名学习卡片助手。请根据主题和素材，生成适合记忆复习的问答卡片。"
-        f"\n主题: {body.topic.strip()}"
-        f"\n素材:\n{source_text if source_text else '（无素材，基于主题生成）'}"
-        f"\n数量: {body.count}"
+        "你是一名学习卡片助手。请根据主题和素材，生成适合记忆复习的问答卡片。\n"
+        + wrap_untrusted_context(
+            "卡片素材",
+            (
+                f"主题: {body.topic.strip()}\n"
+                f"素材:\n{source_text if source_text else '（无素材，基于主题生成）'}"
+            ),
+            source=f"anki_generate:{current_user.id}",
+        )
+        + f"\n数量: {body.count}"
         "\n输出要求：只输出 JSON 数组，不要额外解释。"
         "\n格式：[{'front':'问题','back':'答案'}]"
     )

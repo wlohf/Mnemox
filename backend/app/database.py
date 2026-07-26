@@ -139,6 +139,21 @@ async def _run_lightweight_migrations(conn):
         ("learning_events", "task_id", "INTEGER"),
         ("learning_events", "note_id", "INTEGER"),
         ("learning_events", "wrong_question_id", "INTEGER"),
+        # FSRS 调度字段（决策 D1，legacy SM-2 字段保留过渡）
+        ("anki_cards", "stability", "REAL"),
+        ("anki_cards", "difficulty", "REAL"),
+        ("anki_cards", "fsrs_state", "INTEGER"),
+        ("anki_cards", "fsrs_step", "INTEGER"),
+        ("anki_cards", "last_review_at", "DATETIME"),
+        ("review_schedule", "stability", "REAL"),
+        ("review_schedule", "difficulty", "REAL"),
+        ("review_schedule", "fsrs_state", "INTEGER"),
+        ("review_schedule", "fsrs_step", "INTEGER"),
+        ("review_schedule", "last_review_at", "DATETIME"),
+        # 概念图谱（决策 D1/D2）：错题挂概念外键
+        ("wrong_questions", "concept_id", "INTEGER"),
+        # Obsidian 增量同步（决策 D6）：笔记外部来源路径
+        ("notes", "source_path", "VARCHAR(500)"),
     ]
 
     for table, column, col_type in other_migrations:

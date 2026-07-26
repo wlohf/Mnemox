@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    # Obsidian vault 同步根目录白名单；生产环境必须配置后才允许 vault 同步（决策 D6）
+    OBSIDIAN_VAULT_ROOT: str = ""
     
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]

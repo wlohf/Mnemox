@@ -14,6 +14,8 @@ from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.models.material import Chapter, Material
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.review_scheduler import apply_review
+from app.utils.prompt_safety import wrap_untrusted_context
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,31 +27,6 @@ class ReviewCompleteRequest(BaseModel):
 
 class ChapterEnqueueRequest(BaseModel):
     scheduled_date: Optional[datetime] = None
-
-
-def _sm2_update(interval_days: int, repetitions: int, ease_factor_scaled: int, quality: int):
-    """SM-2 更新（ease_factor 使用 *100 的整数存储）。"""
-    ef = (ease_factor_scaled or 250) / 100.0
-
-    # 原始 SM-2 EF 更新公式
-    ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-    ef = max(1.3, ef)
-
-    if quality < 3:
-        # 低质量复习：重置 repetitions
-        new_repetitions = 0
-        new_interval = 1
-    else:
-        if repetitions <= 0:
-            new_interval = 1
-        elif repetitions == 1:
-            new_interval = 6
-        else:
-            base = interval_days or 1
-            new_interval = max(1, int(round(base * ef)))
-        new_repetitions = repetitions + 1
-
-    return new_interval, new_repetitions, int(round(ef * 100))
 
 
 def _calc_mastery_status(quality: int) -> str:
@@ -299,24 +276,18 @@ async def complete_review_task(
         raise HTTPException(status_code=400, detail="暂不支持该任务类型")
 
     now = datetime.now()
-    current_interval = int(getattr(task, "interval_days", 1) or 1)
-    current_reps = int(getattr(task, "repetitions", 0) or 0)
-    current_ef = int(getattr(task, "ease_factor", 250) or 250)
-    days, new_reps, new_ef = _sm2_update(current_interval, current_reps, current_ef, body.quality)
-    next_review_at = now + timedelta(days=days)
+    schedule = apply_review(task, body.quality, now, due_attr="scheduled_date")
+    next_review_at = schedule.due_at
 
     # 更新复习计划（公共部分）
-    task.repetitions = new_reps
-    task.last_quality = body.quality
-    task.interval_days = days
     task.completed_at = now
-    task.scheduled_date = next_review_at
     task.status = "pending"
-    task.ease_factor = new_ef
 
     if task_type == "chapter":
         chapter_result = await db.execute(
-            select(Chapter).where(Chapter.id == task.item_id)
+            select(Chapter)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(Chapter.id == task.item_id, Material.user_id == current_user.id)
         )
         chapter = chapter_result.scalar_one_or_none()
         if not chapter:
@@ -478,11 +449,14 @@ async def get_review_content(
         raise HTTPException(status_code=404, detail="章节不存在")
     chapter, _material = row
     
+    chapter_block = wrap_untrusted_context(
+        "章节内容",
+        f"章节标题：{chapter.title}\n章节内容：\n{chapter.content or '（无详细内容）'}",
+        source=f"chapter:{chapter.id}",
+    )
     prompt = f"""你是一位专业的学习助手。用户正在复习以下章节：
 
-章节标题：{chapter.title}
-章节内容：
-{chapter.content or '（无详细内容）'}
+{chapter_block}
 
 请生成：
 1. 该章节的核心知识点总结（3-5条，每条一句话）
@@ -601,13 +575,18 @@ async def submit_review_answers(
         for i, ans in enumerate(body.answers)
     ])
     
-    prompt = f"""你是一位专业的学习评估专家。用户刚完成了章节「{chapter.title}」的复习测验。
+    quiz_block = wrap_untrusted_context(
+        "章节内容与答题记录",
+        (
+            f"章节标题：{chapter.title}\n"
+            f"章节内容：\n{chapter.content or '（无详细内容）'}\n\n"
+            f"用户的答题情况：\n{answers_text}"
+        ),
+        source=f"chapter:{chapter.id}",
+    )
+    prompt = f"""你是一位专业的学习评估专家。用户刚完成了章节复习测验。
 
-章节内容：
-{chapter.content or '（无详细内容）'}
-
-用户的答题情况：
-{answers_text}
+{quiz_block}
 
 请评估用户的掌握程度，返回JSON格式：
 {{
@@ -656,33 +635,22 @@ async def submit_review_answers(
         quality = 3
         feedback = "评估完成，建议继续复习巩固"
     
-    # Update review schedule using SM-2
-    interval, reps, ef = _sm2_update(
-        task.interval_days or 1,
-        task.repetitions or 0,
-        task.ease_factor or 250,
-        quality,
-    )
-    
+    # 更新复习调度（FSRS 优先，SM-2 兜底）
     now = datetime.now()
-    task.repetitions = reps
-    task.last_quality = quality
-    task.interval_days = interval
+    schedule = apply_review(task, quality, now, due_attr="scheduled_date")
     task.completed_at = now
-    task.scheduled_date = now + timedelta(days=interval)
     task.status = "pending"
-    task.ease_factor = ef
-    
+
     # Update chapter mastery
     old_mastery = float(chapter.mastery_level or 0)
     new_mastery = old_mastery * 0.7 + score * 0.3
     chapter.mastery_level = new_mastery
-    
+
     await db.flush()
-    
+
     return {
         "score": score,
         "quality": quality,
         "feedback": feedback,
-        "next_review_date": (now + timedelta(days=interval)).isoformat(),
+        "next_review_date": schedule.due_at.isoformat(),
     }

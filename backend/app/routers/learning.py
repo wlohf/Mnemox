@@ -2,6 +2,7 @@
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 import json
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,9 +18,11 @@ from app.models.material import Chapter, Material
 from app.models.progress import MaterialProfile, OutputEvaluation
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
+from app.utils.prompt_safety import wrap_untrusted_context
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class OutputEvaluateRequest(BaseModel):
@@ -508,8 +511,11 @@ async def analyze_material_for_progress(
         "只输出 JSON："
         "{\"is_textbook\":true/false,\"confidence\":0~1,\"chapters\":[{\"title\":\"...\",\"key_points\":[...],\"question_types\":[...]}]}\n"
         "要求：chapters 最多 20 条，key_points 和 question_types 各最多 8 条。\n"
-        f"标题：{material.title}\n"
-        f"内容片段：{(material.content or '')[:6000]}"
+        + wrap_untrusted_context(
+            "资料内容",
+            f"标题：{material.title}\n内容片段：{(material.content or '')[:6000]}",
+            source=f"material:{material.id}",
+        )
     )
 
     try:
@@ -550,6 +556,18 @@ async def analyze_material_for_progress(
     if is_textbook and chapters:
         created_chapters = await _sync_chapters_from_structure(material_id, chapters, db)
 
+    # 概念图谱：把分析产出的 key_points 直接入图（零额外 LLM 成本，失败不阻塞分析）
+    ingested_concepts = 0
+    if chapters:
+        try:
+            from app.services.concept_service import ingest_structure_concepts
+
+            ingested_concepts = await ingest_structure_concepts(
+                db, int(current_user.id), material_id, chapters
+            )
+        except Exception as exc:
+            logger.warning("概念入图失败 material_id=%s err=%s", material_id, exc)
+
     # Auto-create goal and tasks for the material
     goal_id, auto_tasks = await _auto_create_goal_and_tasks(material_id, db, user_id=current_user.id)
 
@@ -559,6 +577,7 @@ async def analyze_material_for_progress(
         "confidence": float(profile.confidence or 0.0),
         "created_chapters": created_chapters,
         "chapter_count": len(chapters),
+        "ingested_concepts": ingested_concepts,
         "goal_id": goal_id,
         "auto_created_tasks": auto_tasks,
     }
@@ -1053,7 +1072,11 @@ async def _ensure_goal_for_material(material_id: int, db: AsyncSession, user_id:
     if goal:
         return goal
 
-    mat_result = await db.execute(select(Material).where(Material.id == material_id))
+    mat_query = select(Material).where(Material.id == material_id)
+    if user_id:
+        # 资料归属校验：避免为他人资料创建目标或读取他人章节
+        mat_query = mat_query.where(Material.user_id == user_id)
+    mat_result = await db.execute(mat_query)
     material = mat_result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="资料不存在")
@@ -1290,10 +1313,16 @@ async def evaluate_output(
         "只返回 JSON："
         "{\"score\":0-100,\"strengths\":[...],\"gaps\":[...],\"next_actions\":[...],\"verdict\":\"通过|接近通过|需改进\"}\n"
         "要求：strengths/gaps/next_actions 各给 2-4 条，简短可执行。\n"
-        f"任务标题：{task.title}\n"
-        f"任务类型：{task.task_type or 'learn'}\n"
-        f"评估标准：{body.rubric or '准确性、结构清晰、覆盖关键点、可复述性'}\n"
-        f"用户产出：{body.output_text[:5000]}"
+        + wrap_untrusted_context(
+            "待评估学习产出",
+            (
+                f"任务标题：{task.title}\n"
+                f"任务类型：{task.task_type or 'learn'}\n"
+                f"评估标准：{body.rubric or '准确性、结构清晰、覆盖关键点、可复述性'}\n"
+                f"用户产出：{body.output_text[:5000]}"
+            ),
+            source=f"task:{task.id}",
+        )
     )
 
     result_obj = None

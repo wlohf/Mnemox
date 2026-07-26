@@ -1,7 +1,14 @@
 """Frustration and discouragement support skill."""
 from __future__ import annotations
 
-from app.services.coach_skills.base import CoachSkill, CoachSkillContext, CoachSkillResult, explain_with_context, trim_text
+from app.services.coach_skills.base import (
+    CoachSkill,
+    CoachSkillContext,
+    CoachSkillResult,
+    explain_with_context,
+    render_note_quote,
+    trim_text,
+)
 
 
 class FrustrationSupportSkill(CoachSkill):
@@ -43,10 +50,15 @@ class FrustrationSupportSkill(CoachSkill):
             action = {"type": "start_focus", "label": "5分钟重启", "route": "/pomodoro", "minutes": 5}
             signals = ["无明确待办"]
 
+        body, used_quote = render_note_quote(ctx, body, signals)
+        explainability = explain_with_context(ctx, "你表达了挫败或自我否定，Coach 优先降低任务难度。", signals)
+        if used_quote:
+            explainability["note_quote"] = used_quote
+
         return CoachSkillResult(
             title="先降难度",
             body=body,
             suggested_action=action,
             route=action.get("route"),
-            explainability=explain_with_context(ctx, "你表达了挫败或自我否定，Coach 优先降低任务难度。", signals),
+            explainability=explainability,
         )

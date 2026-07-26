@@ -20,3 +20,5 @@ from app.models.learning_event import LearningEvent  # noqa: F401
 from app.models.anki import AnkiCard  # noqa: F401
 from app.models.agent import AgentJob, AgentExecutionLog  # noqa: F401
 from app.models.coach import CoachEvent, CoachNudge, CoachPreference, CoachSkillStats, CoachWorkflow  # noqa: F401
+from app.models.note_quote import NoteQuoteUsage  # noqa: F401
+from app.models.concept import Concept, ConceptEdge, ConceptLink  # noqa: F401
