@@ -1,0 +1,147 @@
+"""Obsidian vault 增量同步测试（决策 D6）。"""
+import tempfile
+import unittest
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.database import Base
+from app.models.concept import ConceptLink
+from app.models.note import Note
+from app.models.user import User
+from app.services.concept_service import upsert_concept
+from app.services.obsidian_sync_service import VaultPathError, sync_vault, validate_vault_path
+
+
+class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        base = Path(self.tmpdir.name)
+        db_path = base / "vault_sync.sqlite3"
+        self.vault = base / "vault"
+        (self.vault / "folder").mkdir(parents=True)
+        (self.vault / ".obsidian").mkdir()
+
+        self.engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.sessionmaker = async_sessionmaker(self.engine, expire_on_commit=False)
+
+    async def asyncTearDown(self):
+        await self.engine.dispose()
+        self.tmpdir.cleanup()
+
+    async def _create_user(self, username: str) -> int:
+        async with self.sessionmaker() as session:
+            user = User(username=username, email=f"{username}@example.com", hashed_password="hash", is_active=True)
+            session.add(user)
+            await session.flush()
+            user_id = int(user.id)
+            await session.commit()
+            return user_id
+
+    def _write(self, relative: str, content: str) -> None:
+        target = self.vault / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    async def test_first_sync_creates_notes_and_config_dirs_are_skipped(self):
+        # Arrange
+        user_id = await self._create_user("vault_user")
+        self._write("每日复盘.md", "今天复盘了条件概率")
+        self._write("folder/读书笔记.md", "# 心得\n坚持比方法重要")
+        self._write(".obsidian/config.md", "不应被导入")
+
+        # Act
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        # Assert
+        self.assertEqual(stats["created"], 2)
+        self.assertEqual(stats["failed"], 0)
+        async with self.sessionmaker() as session:
+            notes = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalars().all()
+        titles = {n.title for n in notes}
+        self.assertEqual(titles, {"每日复盘", "读书笔记"})
+        paths = {n.source_path for n in notes}
+        self.assertIn("folder/读书笔记.md", paths)
+
+    async def test_second_sync_skips_unchanged_and_updates_changed(self):
+        # Arrange
+        user_id = await self._create_user("vault_incr_user")
+        self._write("a.md", "版本一")
+        self._write("b.md", "保持不变")
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self._write("a.md", "版本二：新增了贝叶斯内容")
+
+        # Act
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        # Assert
+        self.assertEqual(stats["created"], 0)
+        self.assertEqual(stats["updated"], 1)
+        self.assertEqual(stats["skipped"], 1)
+        async with self.sessionmaker() as session:
+            note = (
+                await session.execute(
+                    select(Note).where(Note.user_id == user_id, Note.source_path == "a.md")
+                )
+            ).scalar_one()
+        self.assertIn("版本二", note.content)
+
+    async def test_synced_note_attaches_to_existing_concepts(self):
+        # Arrange：先有概念"条件概率"，vault 文件提到它
+        user_id = await self._create_user("vault_concept_user")
+        async with self.sessionmaker() as session:
+            concept = await upsert_concept(session, user_id, "条件概率")
+            await session.commit()
+            concept_id = concept.id
+        self._write("学习记录.md", "今天搞懂了条件概率的定义")
+
+        # Act
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        # Assert
+        async with self.sessionmaker() as session:
+            link = (
+                await session.execute(
+                    select(ConceptLink).where(
+                        ConceptLink.user_id == user_id,
+                        ConceptLink.concept_id == concept_id,
+                        ConceptLink.target_type == "note",
+                    )
+                )
+            ).scalar_one_or_none()
+        self.assertIsNotNone(link)
+
+    async def test_invalid_vault_path_raises(self):
+        with self.assertRaises(VaultPathError):
+            validate_vault_path("")
+        with self.assertRaises(VaultPathError):
+            validate_vault_path(str(Path(self.tmpdir.name) / "not-exists"))
+
+    async def test_production_requires_configured_root(self):
+        from app.services import obsidian_sync_service
+
+        original = obsidian_sync_service.settings.ENVIRONMENT
+        obsidian_sync_service.settings.ENVIRONMENT = "production"
+        try:
+            with self.assertRaises(VaultPathError):
+                validate_vault_path(str(self.vault))
+        finally:
+            obsidian_sync_service.settings.ENVIRONMENT = original
+
+
+if __name__ == "__main__":
+    unittest.main()

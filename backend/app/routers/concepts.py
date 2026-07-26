@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models.material import Chapter, Material
 from app.models.user import User
+from app.services.association_service import find_associations
 from app.services.concept_service import (
     backfill_wrong_question_concepts,
     extract_chapter_concepts_llm,
@@ -112,3 +114,23 @@ async def backfill_wrong_questions(
 ):
     """把存量错题的知识点字符串回填为概念实体（决策 D1 数据迁移）。"""
     return await backfill_wrong_question_concepts(db, int(current_user.id))
+
+
+class AssociateRequest(BaseModel):
+    text: str
+    limit: int = 3
+
+
+@router.post("/associate")
+async def associate_text(
+    body: AssociateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """联想引擎：对一段新内容返回与旧知识的关联（概念、证据、先修缺口）。"""
+    if not (body.text or "").strip():
+        raise HTTPException(status_code=400, detail="text 不能为空")
+    associations = await find_associations(
+        db, int(current_user.id), body.text, limit=body.limit
+    )
+    return {"associations": associations}

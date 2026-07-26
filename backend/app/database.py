@@ -152,6 +152,8 @@ async def _run_lightweight_migrations(conn):
         ("review_schedule", "last_review_at", "DATETIME"),
         # 概念图谱（决策 D1/D2）：错题挂概念外键
         ("wrong_questions", "concept_id", "INTEGER"),
+        # Obsidian 增量同步（决策 D6）：笔记外部来源路径
+        ("notes", "source_path", "VARCHAR(500)"),
     ]
 
     for table, column, col_type in other_migrations:

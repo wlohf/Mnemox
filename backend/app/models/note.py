@@ -17,6 +17,7 @@ class Note(Base):
     content = Column(Text, comment="Markdown 内容")
     tags = Column(Text, comment="JSON 标签数组")
     note_type = Column(String(20), comment="笔记类型: general, summary, review")
+    source_path = Column(String(500), nullable=True, index=True, comment="外部来源路径（Obsidian vault 相对路径，用于增量同步幂等键）")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
     

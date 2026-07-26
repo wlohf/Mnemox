@@ -456,7 +456,25 @@ async def create_note(
     saved = await _get_note_for_response(db, note.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="笔记保存失败")
-    return _to_item(saved)
+
+    # 联想引擎：新笔记挂图 + 关联旧知识（失败不影响保存主流程）
+    associations = []
+    try:
+        from app.services.association_service import attach_note_to_concepts, find_associations
+
+        await attach_note_to_concepts(db, int(current_user.id), note)
+        associations = await find_associations(
+            db,
+            int(current_user.id),
+            f"{note.title or ''}\n{note.content or ''}",
+            exclude_note_id=int(note.id),
+        )
+    except Exception as exc:
+        logger.warning("笔记联想失败 note_id=%s err=%s", note.id, exc)
+
+    item = _to_item(saved)
+    item["associations"] = associations
+    return item
 
 
 @router.put("/{note_id}")
