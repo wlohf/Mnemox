@@ -75,10 +75,17 @@ def to_repo_relative(path: Path) -> str:
 
 
 def from_repo_relative(rel_path: str) -> Path:
-    """将数据库里保存的相对路径，解析成绝对路径。"""
+    """将数据库里保存的相对路径，解析成绝对路径。
+
+    与 to_repo_relative 对称：优先按项目根解析（"data/uploads/x.md"）。
+    找不到时回退按数据根解析，兼容历史保存的 "uploads/x.md" 形式。
+    """
 
     p = Path(rel_path)
     if p.is_absolute():
         return p
+    project_candidate = get_project_root() / p
+    if project_candidate.exists():
+        return project_candidate
     return get_runtime_data_root() / p
 
