@@ -204,9 +204,40 @@ app.include_router(system.router, prefix="/api/system", tags=["系统"])
 ensure_data_dirs()
 
 
+async def _is_upload_owned_by_user(session, user_id: int, relative_path) -> bool:
+    """上传文件归属校验：图片按用户目录隔离，资料文件绑定 Material 归属。
+
+    - images/{user_id}/...：目录名必须等于当前用户 id。
+    - images/{filename}：早期 Obsidian 附件无归属元数据，保持旧行为（仅登录可见）。
+    - 其余文件：必须能在当前用户的 Material.file_path 中按文件名匹配到。
+    """
+    from sqlalchemy import select
+
+    from app.models.material import Material
+
+    parts = relative_path.parts
+    if parts and parts[0] == "images":
+        if len(parts) >= 3:
+            return parts[1] == str(user_id)
+        return True
+
+    filename = relative_path.name
+    if not filename:
+        return False
+    result = await session.execute(
+        select(Material.id)
+        .where(
+            Material.user_id == user_id,
+            Material.file_path.ilike(f"%{filename}"),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 @app.get("/api/uploads/{file_path:path}")
 async def get_uploaded_file(file_path: str, request: Request):
-    """Serve uploaded files only to authenticated users."""
+    """Serve uploaded files only to their owner (authenticated + ownership bound)."""
     from urllib.parse import unquote
 
     from fastapi import HTTPException, status
@@ -228,17 +259,22 @@ async def get_uploaded_file(file_path: str, request: Request):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    async with async_session_maker() as session:
-        await get_user_from_token(token, session)
-
     uploads_root = get_uploads_dir().resolve()
     target = (uploads_root / unquote(file_path)).resolve()
     try:
-        target.relative_to(uploads_root)
+        relative = target.relative_to(uploads_root)
     except ValueError:
         raise HTTPException(status_code=404, detail="文件不存在")
 
     if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    async with async_session_maker() as session:
+        user = await get_user_from_token(token, session)
+        owned = await _is_upload_owned_by_user(session, int(user.id), relative)
+
+    if not owned:
+        # 与不存在同样返回 404，避免泄露他人文件是否存在
         raise HTTPException(status_code=404, detail="文件不存在")
 
     return FileResponse(target)

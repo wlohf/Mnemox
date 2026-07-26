@@ -284,7 +284,9 @@ async def complete_review_task(
 
     if task_type == "chapter":
         chapter_result = await db.execute(
-            select(Chapter).where(Chapter.id == task.item_id)
+            select(Chapter)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(Chapter.id == task.item_id, Material.user_id == current_user.id)
         )
         chapter = chapter_result.scalar_one_or_none()
         if not chapter:

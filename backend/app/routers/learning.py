@@ -1053,7 +1053,11 @@ async def _ensure_goal_for_material(material_id: int, db: AsyncSession, user_id:
     if goal:
         return goal
 
-    mat_result = await db.execute(select(Material).where(Material.id == material_id))
+    mat_query = select(Material).where(Material.id == material_id)
+    if user_id:
+        # 资料归属校验：避免为他人资料创建目标或读取他人章节
+        mat_query = mat_query.where(Material.user_id == user_id)
+    mat_result = await db.execute(mat_query)
     material = mat_result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="资料不存在")
