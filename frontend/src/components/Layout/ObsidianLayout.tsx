@@ -813,7 +813,6 @@ export function ObsidianLayout() {
     }
     void loadAll()
     // Intentionally run once when backend becomes ready; conversation switches are handled elsewhere.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backendReady])
 
   useEffect(() => {

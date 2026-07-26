@@ -131,7 +131,7 @@ describe('chatStore conversation restore', () => {
       messages: [{ role: 'assistant', content: 'old chat' }],
     })
 
-    let resolveSlow: ((value: ConversationDetail) => void) | null = null
+    let resolveSlow: (value: ConversationDetail) => void = () => {}
     conversationApiMock.getConversation.mockImplementation((id: number) => {
       if (id === 9) {
         return new Promise<ConversationDetail>((resolve) => {
@@ -147,7 +147,7 @@ describe('chatStore conversation restore', () => {
     expect(useChatStore.getState().activeConversationId).toBe(11)
     expect(useChatStore.getState().messages).toEqual([{ role: 'user', content: 'hello', image_data: undefined }])
 
-    resolveSlow?.(conversationDetail(9))
+    resolveSlow(conversationDetail(9))
     const slowOk = await slowPromise
 
     expect(slowOk).toBe(false)
