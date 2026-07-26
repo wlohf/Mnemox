@@ -1,11 +1,12 @@
 """对话管理路由"""
 import json
+import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, func
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Optional, List
 
 from app.database import get_db
 from app.models.chat import ChatConversation, ChatMessage
@@ -13,6 +14,30 @@ from app.auth import get_current_user
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _parse_message_image_data(raw: Any) -> Optional[List[str]]:
+    """Best-effort parse of stored image_data. Never fail conversation load for bad rows."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return [str(item) for item in raw if item is not None]
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Invalid chat_messages.image_data JSON; returning null")
+        return None
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed if item is not None]
+    if isinstance(parsed, str) and parsed:
+        return [parsed]
+    return None
 
 
 # ---- Schemas ----
@@ -212,7 +237,7 @@ async def get_conversation(
                 "id": m.id,
                 "role": m.role,
                 "content": m.content,
-                "image_data": json.loads(m.image_data) if m.image_data else None,
+                "image_data": _parse_message_image_data(m.image_data),
                 "created_at": str(m.created_at or ""),
             }
             for m in messages

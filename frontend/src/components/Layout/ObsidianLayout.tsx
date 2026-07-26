@@ -775,14 +775,19 @@ export function ObsidianLayout() {
 
   // Once backend is ready, load only first-screen essentials immediately.
   // Secondary dashboard/agent signals are deferred so the chat shell becomes usable first.
+  // Route-targeted conversations are loaded by the route effect below; skip local restore
+  // there so two concurrent setActiveConversation calls cannot race.
   useEffect(() => {
-    if (!backendReady) return
+    if (!backendReady || initialConversationRestoreRef.current) return
+    initialConversationRestoreRef.current = true
     const loadAll = async () => {
-      const shouldRestoreConversation = !initialConversationRestoreRef.current && !!activeConversationId
-      initialConversationRestoreRef.current = true
+      const hasRouteTarget = routedConversationId !== null
+      const shouldRestoreConversation = !!activeConversationId && !hasRouteTarget
       void Promise.allSettled([
         loadMaterials(),
-        shouldRestoreConversation ? restoreActiveConversation() : reconcilePersistedSelections(),
+        shouldRestoreConversation
+          ? restoreActiveConversation()
+          : reconcilePersistedSelections(),
       ])
 
       window.setTimeout(() => {
@@ -807,7 +812,9 @@ export function ObsidianLayout() {
       }, 1600)
     }
     void loadAll()
-  }, [backendReady, loadMaterials, reconcilePersistedSelections, restoreActiveConversation, syncPendingRecords])
+    // Intentionally run once when backend becomes ready; conversation switches are handled elsewhere.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backendReady])
 
   useEffect(() => {
     if (routeConversationIdParam !== undefined && routedConversationId === null) {
@@ -820,12 +827,18 @@ export function ObsidianLayout() {
       return
     }
 
+    let cancelled = false
     void setActiveConversation(routedConversationId).then((ok) => {
+      if (cancelled) return
       if (!ok) {
-        message.error('加载历史对话失败，请稍后重试')
+        const detail = useChatStore.getState().lastConversationError
+        message.error(detail || '加载历史对话失败，请稍后重试')
         navigate('/', { replace: true })
       }
     })
+    return () => {
+      cancelled = true
+    }
   }, [activeConversationId, backendReady, navigate, routedConversationId, setActiveConversation])
 
   useEffect(() => {

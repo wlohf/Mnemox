@@ -200,7 +200,8 @@ export function ConversationSidebar({
     try {
       const ok = await setActiveConversation(id)
       if (!ok) {
-        message.error('加载历史对话失败，请稍后重试')
+        const detail = useChatStore.getState().lastConversationError
+        message.error(detail || '加载历史对话失败，请稍后重试')
         return
       }
       onConversationOpened?.(id)
