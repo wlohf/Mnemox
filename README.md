@@ -22,8 +22,10 @@
 
 - 文档导航：`/docs/README.md`
 - 当前需求基线：`/docs/requirements.md`
+- 路线图（阶段顺序与冻结清单的权威来源）：`/docs/roadmap.md`
 - 当前技术基线：`/docs/technical.md`
 - 当前项目进度：`/docs/progress.md`
+- 架构决策（2026-07-26，知识层 / 检索底座 / Agent）：`/docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md`
 - 功能更新记录：`/docs/updates/README.md`
 - 日常功能新增、优化和修复，统一记录到 `docs/updates/` 下的周期文档中，默认按周拆分，避免长期堆积在单一说明文件里。
 
@@ -680,18 +682,15 @@ Mnemox/
 
 ### 接下来计划
 
-- [ ] 继续扩大多用户越权审计：系统性检查所有详情、更新、删除接口是否严格绑定 `current_user.id`
-- [ ] Prompt injection 防护：把资料内容、笔记内容和工具返回统一标记为不可信上下文，避免资料中的恶意指令影响系统提示
-- [ ] 前端 RAG 状态提示：展示语义检索是否可用、是否正在使用关键词 fallback、最近 embedding 错误
-- [ ] 搜索质量优化：搜索结果去重、来源可信度排序、搜索摘要缓存和引用 UI 展示
-- [ ] Token 预算细分：把聊天历史、RAG 资料、记忆和网页搜索结果拆成独立预算池
-- [ ] AI Provider 连接测试增强：进一步区分 chat、embedding、streaming、Responses API / Web Search 能力是否可用
-- [ ] 自学习 Coach：沉淀干预策略效果、用户反馈统计和个性化提醒频率
-- [ ] pytest 自动化测试扩面：继续覆盖 auth、RAG fallback、上传限制、Agent feedback、Planner timeout 和前端关键交互
-- [ ] 聊天框场景模式选择器（费曼 / 苏格拉底 / 教练 快速切换）
-- [ ] 多人共同学习 / 好友监督：支持学习伙伴、学习房间、共同番茄钟、好友提醒和轻量打卡监督；默认以用户授权、低打扰和隐私可控为前提
-- [ ] Demo 数据 / 一键体验模式，方便论坛用户无需大量配置即可看到完整效果
-- [ ] 自动更新包分发与发布清单维护
+2026-07-26 起，项目方向已固化为「把学习科学变成默认行为」：以行为转化为北极星（建议执行率、中断恢复时长、复习按时率、每周有效学习时段数），按五条轨道推进。阶段顺序、完成标准与冻结清单见 [路线图](docs/roadmap.md)，选型依据见 [架构决策](docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md)。
+
+- [ ] **立即（小胜利）**：自引激励收尾（低动力时引用用户自己的笔记原文并注明出处）；`py-fsrs` 替换手写 SM-2 复习调度
+- [ ] **Phase 0 · Beta 稳定化**：多用户越权审计、统一 Prompt Injection 防护、RAG 状态前端可见化、关键路径 E2E、仓库卫生
+- [ ] **Phase 1 · 知识层**：概念图谱（知识点成为一等实体，先修/相关关系互联）、`ContextStore` 统一检索底座（OpenViking spike 定选型）、Obsidian vault 持续同步、联想引擎（学新知识时自动关联旧笔记旧错题）、概念级掌握度下钻
+- [ ] **Phase 2 · Agent 升级**：AgentKernel 多步工具循环、后台调度器（复习到期/任务积压主动评估）、干预效果自学习、夜间知识巩固与知识周报
+- [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
+
+默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、通用 agent 框架引入、未完成隐私设计前的多人共学。
 
 ---
 

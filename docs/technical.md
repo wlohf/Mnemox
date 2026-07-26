@@ -2,12 +2,14 @@
 
 > 状态：维护中
 >
-> 基线日期：2026-07-11
+> 基线日期：2026-07-26
 >
 > 当前版本：v1.3.0
 > 代码范围：`main` 分支
 
 本文件描述当前仓库中已存在的技术实现、运行边界和维护约定。历史方案位于 `docs/superpowers/` 和其他设计文档中；它们用于理解决策过程，不应替代本技术基线。
+
+面向下一阶段的目标架构与选型结论见 [2026-07-26 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md)（概念图谱、ContextStore 检索底座、AgentKernel、自学习），执行顺序见 [路线图](roadmap.md)。本文件只在相应实现合入后更新对应章节。
 
 ## 1. 系统概览
 
@@ -200,7 +202,22 @@ npm test
 | P0 | 统一 Prompt Injection 防护 | RAG、笔记、搜索和工具返回均会进入模型上下文。 |
 | P0 | RAG 状态前端可见化 | 当前后端已可降级，用户仍需知道回答是否基于语义检索。 |
 | P1 | 拆分超大模块 | `learning`、`analytics`、Agent/Coach 相关实现的复杂度持续上升。 |
-| P1 | 独立 token 预算 | 聊天历史、RAG、记忆和搜索内容需要明确的上下文配额。 |
+| P1 | 独立 token 预算 | 聊天历史、RAG、记忆和搜索内容需要明确的上下文配额。规划由 `ContextStore` 分层加载能力承接（决策文档 D3）。 |
+| P1 | 检索碎片化 | RAG（Chroma）、笔记（关键词）、记忆（SQL）三套检索并存，将统一收敛到 `ContextStore` 接口之后（决策文档 D3）。 |
 | P1 | 离线冲突处理 UI | 现有同步队列可重试，但服务端与本地并发修改的用户决策仍需完善。 |
 | P1 | 后台任务与可观测性 | 长耗时索引、AI 处理、重试需要结构化日志、状态和失败可视化。 |
 | P2 | Alembic 迁移规范收敛 | 生产数据库升级应避免依赖 `create_all` 或临时迁移。 |
+
+## 9. 演进方向（2026-07-26 基线，未实现）
+
+以下内容已在 [2026-07-26 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md) 中采纳，尚未落地；实现合入后迁入上文对应章节：
+
+| 方向 | 摘要 | 决策 | 阶段 |
+| --- | --- | --- | --- |
+| 数据底盘 | 关系型核心保留；新增 `concepts` / `concept_edges` / `concept_links` 表；复习表增加 FSRS 字段；`wrong_questions.knowledge_point` 回填为 `concept_id` | D1/D2 | 立即 + Phase 1 |
+| 复习调度 | `py-fsrs` 替换手写 SM-2 风格调度 | D1/D6 | 立即 |
+| 检索底座 | `ContextStore` 薄接口（ingest / retrieve / load_tiered / forget）收敛三套检索；OpenViking spike 三道验收关决定实现（Chroma+SQLite 为保底） | D3 | Phase 1 |
+| 概念图谱应用 | 联想引擎（事件触发 + 价值判定 + Coach 治理）与薄弱点下钻 | D2 | Phase 1 |
+| Obsidian 同步 | watchdog 监听 vault 增量索引替代一次性导入；Phase 2 增加写回 | D6 | Phase 1–2 |
+| AgentKernel | 自研多步工具循环替代一次性 Planner；APScheduler 进程内调度支撑后台任务；不引入外部 agent 框架/运行时 | D4 | Phase 2 |
+| 自学习 | 干预效果分桶统计 → bandit 技能选择；评测护栏与北极星指标看板；安全规则不在学习空间内 | D5 | Phase 2 |
