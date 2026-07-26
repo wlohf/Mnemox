@@ -69,19 +69,26 @@ class WrongQuestion(Base):
 
 
 class ReviewSchedule(Base):
-    """复习计划表（SM-2 算法）"""
+    """复习计划表（FSRS 调度，legacy SM-2 字段保留一个版本周期，见决策 D1）"""
     __tablename__ = "review_schedule"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
     item_type = Column(String(20), comment="复习项类型: chapter, question")
     item_id = Column(Integer, comment="复习项ID")
     scheduled_date = Column(DateTime, index=True, comment="计划复习日期")
     interval_days = Column(Integer, comment="当前间隔天数")
-    ease_factor = Column(Integer, default=2.5, comment="SM-2 难度因子")
+    ease_factor = Column(Integer, default=250, comment="SM-2 难度因子 *100（legacy）")
     repetitions = Column(Integer, default=0, comment="复习次数")
     last_quality = Column(Integer, comment="上次复习质量 0-5")
     status = Column(String(20), default="pending", index=True, comment="状态: pending, completed, skipped")
     completed_at = Column(DateTime, comment="完成时间")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     is_archived = Column(Boolean, default=False, nullable=False, comment="是否已归档（用户手动删除）")
+
+    # FSRS 调度字段
+    stability = Column(Float, nullable=True, comment="FSRS 记忆稳定性（天）")
+    difficulty = Column(Float, nullable=True, comment="FSRS 难度 1-10")
+    fsrs_state = Column(Integer, nullable=True, comment="FSRS 状态 1=Learning 2=Review 3=Relearning")
+    fsrs_step = Column(Integer, nullable=True, comment="FSRS 学习步骤")
+    last_review_at = Column(DateTime, nullable=True, comment="最近一次复习时间")

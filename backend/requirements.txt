@@ -30,6 +30,9 @@ openpyxl>=3.1.0
 PyPDF2>=3.0.0
 python-docx>=1.0.0
 
+# Spaced repetition scheduling
+fsrs>=5.0.0
+
 # Auth
 python-jose[cryptography]>=3.3.0
 bcrypt>=4.0.0
