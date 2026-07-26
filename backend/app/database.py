@@ -150,6 +150,8 @@ async def _run_lightweight_migrations(conn):
         ("review_schedule", "fsrs_state", "INTEGER"),
         ("review_schedule", "fsrs_step", "INTEGER"),
         ("review_schedule", "last_review_at", "DATETIME"),
+        # 概念图谱（决策 D1/D2）：错题挂概念外键
+        ("wrong_questions", "concept_id", "INTEGER"),
     ]
 
     for table, column, col_type in other_migrations:

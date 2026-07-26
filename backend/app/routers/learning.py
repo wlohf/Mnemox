@@ -2,6 +2,7 @@
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 import json
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +22,7 @@ from app.utils.prompt_safety import wrap_untrusted_context
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class OutputEvaluateRequest(BaseModel):
@@ -554,6 +556,18 @@ async def analyze_material_for_progress(
     if is_textbook and chapters:
         created_chapters = await _sync_chapters_from_structure(material_id, chapters, db)
 
+    # 概念图谱：把分析产出的 key_points 直接入图（零额外 LLM 成本，失败不阻塞分析）
+    ingested_concepts = 0
+    if chapters:
+        try:
+            from app.services.concept_service import ingest_structure_concepts
+
+            ingested_concepts = await ingest_structure_concepts(
+                db, int(current_user.id), material_id, chapters
+            )
+        except Exception as exc:
+            logger.warning("概念入图失败 material_id=%s err=%s", material_id, exc)
+
     # Auto-create goal and tasks for the material
     goal_id, auto_tasks = await _auto_create_goal_and_tasks(material_id, db, user_id=current_user.id)
 
@@ -563,6 +577,7 @@ async def analyze_material_for_progress(
         "confidence": float(profile.confidence or 0.0),
         "created_chapters": created_chapters,
         "chapter_count": len(chapters),
+        "ingested_concepts": ingested_concepts,
         "goal_id": goal_id,
         "auto_created_tasks": auto_tasks,
     }

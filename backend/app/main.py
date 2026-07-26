@@ -169,7 +169,7 @@ async def health():
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -200,6 +200,7 @@ app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
+app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"])
 
 ensure_data_dirs()
 

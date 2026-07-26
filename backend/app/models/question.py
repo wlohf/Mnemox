@@ -56,7 +56,8 @@ class WrongQuestion(Base):
     mastery_status = Column(String(20), default="not_mastered", comment="掌握状态: not_mastered, partial, mastered")
     next_review_at = Column(DateTime, index=True, comment="下次复习时间")
     review_count = Column(Integer, default=0, comment="复习次数")
-    knowledge_point = Column(String(100), comment="知识点标签")
+    knowledge_point = Column(String(100), comment="知识点标签（legacy 字符串，保留一个版本周期）")
+    concept_id = Column(Integer, ForeignKey("concepts.id"), nullable=True, index=True, comment="关联概念（决策 D1 回填）")
     recall_difficulty = Column(
         String(20),
         comment="回忆难度标签: easy(很快做出来) / hard(有点卡但能做出来) / forgot(完全想不起来)"
