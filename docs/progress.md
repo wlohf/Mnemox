@@ -56,12 +56,14 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 阶段顺序、完成标准与冻结清单以 [路线图](roadmap.md) 为唯一权威来源，此处仅保留执行快照：
 
-| 轨道 | 主题 | 状态 |
+| 轨道 | 主题 | 状态（2026-07-26 实施轮） |
 | --- | --- | --- |
-| 立即（小胜利） | 自引激励收尾（接入低动力 Coach 技能 + 防疲劳 + 反馈）、FSRS 替换 SM-2 调度 | 未开始 |
-| Phase 0 | Beta 稳定化：授权审计、注入防护、RAG 可见化、关键路径 E2E、仓库卫生 | 未开始（与"立即"并行） |
-| Phase 1 | 知识层：OpenViking spike、ContextStore、概念图谱 MVP、Obsidian 同步、联想引擎、概念级掌握度 | 未开始 |
+| 立即（小胜利） | 自引激励收尾（接入低动力 Coach 技能 + 防疲劳 + 反馈）、FSRS 替换 SM-2 调度 | ✅ 完成 |
+| Phase 0 | Beta 稳定化：授权审计、注入防护、RAG 可见化、关键路径冒烟、仓库卫生 | ✅ 主体完成（1 HIGH + 5 MEDIUM 越权修复、10 处注入包装、冒烟测试、快照清理；RAG 可见化核查确认已于 v1.2.0 落地） |
+| Phase 1 | 知识层：OpenViking spike、ContextStore、概念图谱 MVP、Obsidian 同步、联想引擎、概念级掌握度 | 🔶 后端完成；spike 关 1 不通过已裁决走保底；概念级掌握度前端 UI 待做 |
 | Phase 2 | Agent 升级：AgentKernel 循环、后台调度器、干预效果自学习、知识巩固与周报 | 未开始 |
 | Phase 3 | 生态：MCP Server、语音、AnkiConnect 评估、一键 Demo、发布自动化 | 未开始 |
+
+2026-07-26 实施轮验证：后端全量回归通过（含新增 FSRS、自引激励、授权加固、注入边界、冒烟、概念图谱、ContextStore、联想引擎、vault 同步共 8 个新测试文件）。冒烟测试额外发现并修复了上传文件相对路径解析不对称 bug（data/data 双重目录）。
 
 原 P1"闭环效果优化"中的 token 预算分层由 ContextStore 承接（决策文档 D3），Coach 效果评估并入 Phase 2 自学习；搜索质量与离线冲突处理作为持续项随相关阶段推进。

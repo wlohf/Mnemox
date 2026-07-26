@@ -20,13 +20,13 @@
 
 ## 1. 轨道总览
 
-| 轨道 | 主题 | 前置 |
-| --- | --- | --- |
-| 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 |
-| Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） |
-| Phase 1 | 知识层：底座选型、概念图谱、Obsidian 同步、联想引擎 | Phase 0 主体完成 |
-| Phase 2 | Agent 升级：agentic loop、后台调度、自学习、知识巩固 | Phase 1 |
-| Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 |
+| 轨道 | 主题 | 前置 | 状态（2026-07-26） |
+| --- | --- | --- | --- |
+| 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | ✅ 已完成 |
+| Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | ✅ 主体完成（越权修复+回归、注入防护+样例测试、冒烟、卫生；RAG 可见化经核查已在 v1.2.0 落地） |
+| Phase 1 | 知识层：底座选型、概念图谱、Obsidian 同步、联想引擎 | Phase 0 主体完成 | 🔶 后端完成（spike 已裁决走保底、图谱/联想/同步已落地）；概念级掌握度前端 UI 待做 |
+| Phase 2 | Agent 升级：agentic loop、后台调度、自学习、知识巩固 | Phase 1 | 未开始 |
+| Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
 ## 2. 立即（小胜利轨道）
 
@@ -53,14 +53,14 @@
 
 目标：让"知识点"成为一等实体，资料/笔记/错题/卡片通过概念互联，并首次产生"联想"能力。
 
-| # | 事项 | 完成标准 |
-| --- | --- | --- |
-| 1 | OpenViking spike（1–2 天） | 三道验收关出结果（Windows 打包 / 无 embedding 降级 / 检索质量），形成 go/no-go 决定 |
-| 2 | `ContextStore` 接口落地 | 业务代码仅依赖接口；OpenViking 或 Chroma+SQLite 其一实现 |
-| 3 | 概念图谱 MVP | `concepts`/`concept_edges`/`concept_links` 三表 + 上传抽取管线 + 错题知识点回填 + 概念归一；抽取失败不阻塞上传 |
-| 4 | Obsidian vault 持续同步 | watchdog 监听增量索引，替代一次性导入；新笔记自动抽概念挂图谱 |
-| 5 | 联想引擎 v1 | 事件触发 → 图查询 → 价值判定 → 经 Coach 治理呈现；用户可反馈"有用/没用" |
-| 6 | 概念级掌握度 | 掌握度地图从章节级升级为概念级；错题→先修缺口→资料小节下钻可用 |
+| # | 事项 | 完成标准 | 状态 |
+| --- | --- | --- | --- |
+| 1 | OpenViking spike（1–2 天） | 三道验收关出结果（Windows 打包 / 无 embedding 降级 / 检索质量），形成 go/no-go 决定 | ✅ 关 1 不通过，裁决走保底路径，见 [spike 结论](superpowers/specs/2026-07-26-openviking-spike-result.md) |
+| 2 | `ContextStore` 接口落地 | 业务代码仅依赖接口；OpenViking 或 Chroma+SQLite 其一实现 | ✅ 接口 + 关键词保底实现（`services/context_store.py`）；既有调用点迁移随 Phase 2 推进 |
+| 3 | 概念图谱 MVP | `concepts`/`concept_edges`/`concept_links` 三表 + 上传抽取管线 + 错题知识点回填 + 概念归一；抽取失败不阻塞上传 | ✅ 三表 + 资料分析零成本入图 + 每章 LLM 深抽取接口 + 回填接口 + 归一去重 |
+| 4 | Obsidian vault 持续同步 | watchdog 监听增量索引，替代一次性导入；新笔记自动抽概念挂图谱 | ✅ 拉取式增量同步（source_path 幂等键，`/api/obsidian/sync-vault`）；watchdog 实时监听为后续增强，同步核心已就绪 |
+| 5 | 联想引擎 v1 | 事件触发 → 图查询 → 价值判定 → 经 Coach 治理呈现；用户可反馈"有用/没用" | ✅ 笔记保存触发 + `/api/concepts/associate`；证据/先修价值门槛；Coach nudge 通道与反馈接入随 Phase 2 |
+| 6 | 概念级掌握度 | 掌握度地图从章节级升级为概念级；错题→先修缺口→资料小节下钻可用 | 🔶 后端就绪（概念 mastery 字段 + 邻域/证据查询）；前端地图 UI 待做 |
 
 阶段验收：上传一份新资料后 5 分钟内可看到概念图与挂接内容（冷启动改善）；联想提示采纳率有基线数据。
 

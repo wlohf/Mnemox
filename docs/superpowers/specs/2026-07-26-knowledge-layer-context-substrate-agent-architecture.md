@@ -85,6 +85,8 @@ OpenViking（火山引擎 2026-01 开源，Apache-2.0）的统一上下文模型
 
 **通过** → OpenViking 实现 `ContextStore`，资料/笔记/记忆检索逐步迁入；**不通过** → 同一接口下用 Chroma + SQLite 保底实现，损失分层加载但架构不变。两条路径下，概念图谱、联想引擎、Agent 设计均不受影响。
 
+> **Spike 结论（2026-07-26）**：验收关 1（Windows 桌面打包）不通过——约 90 个传递依赖、客户端/服务器架构、安装即改写宿主核心依赖版本。已按保底路径执行，详见 [spike 结论记录](2026-07-26-openviking-spike-result.md)。
+
 ## D4. Agent：自研 agentic loop，不引入外部 agent 框架/运行时
 
 ### 重申并扩展 2026-06-08 的结论
