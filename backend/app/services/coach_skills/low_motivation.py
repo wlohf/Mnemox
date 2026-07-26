@@ -1,7 +1,14 @@
 """Low motivation coaching skill."""
 from __future__ import annotations
 
-from app.services.coach_skills.base import CoachSkill, CoachSkillContext, CoachSkillResult, explain_with_context, trim_text
+from app.services.coach_skills.base import (
+    CoachSkill,
+    CoachSkillContext,
+    CoachSkillResult,
+    explain_with_context,
+    render_note_quote,
+    trim_text,
+)
 
 
 class LowMotivationSkill(CoachSkill):
@@ -10,7 +17,7 @@ class LowMotivationSkill(CoachSkill):
     description = "用户表达学不进去、没动力或难以继续时，给一个很小的下一步。"
     trigger_event_types = {"chat.low_motivation_detected", "chat.frustration_detected"}
     required_context = {"tasks", "review", "daily_plan", "memory"}
-    tone_rules = ["一句承认状态", "避免说教", "只给一个最小动作"]
+    tone_rules = ["一句承认状态", "避免说教", "只给一个最小动作", "引用用户笔记时只用原文并注明出处"]
     safety_rules = ["不提供临床心理建议", "不编造用户历史"]
 
     async def generate(self, ctx: CoachSkillContext) -> CoachSkillResult:
@@ -46,10 +53,15 @@ class LowMotivationSkill(CoachSkill):
             body = "状态低的时候，把目标降到10分钟：打开番茄钟，只做一个能开始的动作。"
             signals = ["无明确今日任务"]
 
+        body, used_quote = render_note_quote(ctx, body, signals)
+        explainability = explain_with_context(ctx, "你表达了低动力或难以开始，Coach 只给一个小动作。", signals)
+        if used_quote:
+            explainability["note_quote"] = used_quote
+
         return CoachSkillResult(
             title="先做最小一步",
             body=body,
             suggested_action=action,
             route=action.get("route"),
-            explainability=explain_with_context(ctx, "你表达了低动力或难以开始，Coach 只给一个小动作。", signals),
+            explainability=explainability,
         )

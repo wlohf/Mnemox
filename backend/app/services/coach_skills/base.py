@@ -53,3 +53,18 @@ def explain_with_context(ctx: CoachSkillContext, reason: str, signals: list[str]
         "sources": sources if isinstance(sources, list) else [],
         "context_terms": coach_context.get("query_terms", []) if isinstance(coach_context, dict) else [],
     }
+
+
+def render_note_quote(ctx: CoachSkillContext, body: str, signals: list[str]) -> tuple[str, dict[str, Any] | None]:
+    """若 snapshot 携带用户笔记引用，则以原文+出处的形式附加到 body 末尾。
+
+    返回 (新 body, 使用的引用 dict 或 None)。使用方应把引用放入
+    explainability["note_quote"]，路由层据此记录使用（冷却与反馈回写）。
+    """
+    quote = ctx.snapshot.get("note_quote") if isinstance(ctx.snapshot, dict) else None
+    if not isinstance(quote, dict) or not str(quote.get("excerpt") or "").strip():
+        return body, None
+    from app.services.note_quote_service import format_note_quote_line
+
+    signals.append("引用了你自己的笔记")
+    return f"{body}\n\n{format_note_quote_line(quote)}", quote

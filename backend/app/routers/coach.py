@@ -1,6 +1,7 @@
 """Autonomous coach runtime API."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,8 +22,17 @@ from app.services.coach_skills.registry import coach_skill_registry
 from app.services.coach_context_retriever import retrieve_coach_context
 from app.services.coach_workflow_service import advance_coach_workflow, list_coach_workflows, start_coach_workflow
 from app.services.learning_snapshot_service import build_learning_snapshot
+from app.services.note_quote_service import (
+    attach_note_quote_feedback,
+    record_note_quote_usage,
+    select_note_quote,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# 低动力场景技能：生成 nudge 时尝试引用用户自己的笔记（自引激励）
+NOTE_QUOTE_SKILL_IDS = {"low_motivation", "frustration_support", "restart_after_interruption"}
 
 
 class CoachEventCreateRequest(BaseModel):
@@ -169,6 +179,14 @@ async def evaluate_coach(
     coach_context = await retrieve_coach_context(db, user_id, event, snapshot)
     snapshot["coach_context"] = coach_context
 
+    if skill_id in NOTE_QUOTE_SKILL_IDS:
+        try:
+            note_quote = await select_note_quote(db, user_id)
+            if note_quote:
+                snapshot["note_quote"] = note_quote
+        except Exception as exc:  # 引用失败不影响 nudge 主流程
+            logger.warning("笔记自引选取失败 user_id=%s err=%s", user_id, exc)
+
     result = await skill.generate(
         CoachSkillContext(
             user_id=user_id,
@@ -186,6 +204,20 @@ async def evaluate_coach(
         policy=policy,
         result=result,
     )
+
+    used_quote = (result.explainability or {}).get("note_quote")
+    if isinstance(used_quote, dict):
+        try:
+            await record_note_quote_usage(
+                db,
+                user_id,
+                used_quote,
+                channel="coach",
+                nudge_id=str(nudge.get("id") or "") or None,
+            )
+        except Exception as exc:  # 使用记录失败不影响 nudge 主流程
+            logger.warning("笔记自引使用记录失败 user_id=%s err=%s", user_id, exc)
+
     return {"nudge": nudge, "policy": policy, "event": event}
 
 
@@ -228,9 +260,15 @@ async def feedback_nudge(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return await record_coach_feedback(db, int(current_user.id), nudge_id, body.outcome, body.notes)
+        feedback = await record_coach_feedback(db, int(current_user.id), nudge_id, body.outcome, body.notes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        await attach_note_quote_feedback(db, int(current_user.id), nudge_id, body.outcome)
+    except Exception as exc:  # 引用反馈回写失败不影响反馈主流程
+        logger.warning("笔记自引反馈回写失败 nudge_id=%s err=%s", nudge_id, exc)
+    return feedback
 
 
 @router.get("/skills")
