@@ -645,8 +645,11 @@ async def suggest_note_metadata(
     prompt = (
         "请为以下笔记内容生成一个简短标题和 2-5 个标签。"
         "只输出 JSON：{\"title\":\"...\",\"tags\":[\"...\"]}。\n"
-        f"上下文：{body.context or ''}\n"
-        f"内容：{(body.content or '')[:1200]}"
+        + wrap_untrusted_context(
+            "待整理笔记",
+            f"上下文：{body.context or ''}\n内容：{(body.content or '')[:1200]}",
+            source=f"note_metadata:{current_user.id}",
+        )
     )
 
     try:

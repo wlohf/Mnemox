@@ -1312,7 +1312,11 @@ def _build_planner_prompt(context: dict[str, Any], rule_actions: list[dict[str, 
         "}\n"
         "要求：1) 最多 3 个行动；2) 优先具体、短时、可执行；3) 不要要求用户一次性补完所有积压；"
         "4) 不能编造不存在的资料或任务 ID；5) 如果规则行动合理，可以沿用并改写得更像教练。\n\n"
-        f"学习上下文：{json.dumps(compact_context, ensure_ascii=False, default=str)[:6000]}"
+        + wrap_untrusted_context(
+            "学习上下文",
+            json.dumps(compact_context, ensure_ascii=False, default=str)[:6000],
+            source="agent_planner_context",
+        )
     )
 
 

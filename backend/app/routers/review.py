@@ -15,6 +15,7 @@ from app.models.material import Chapter, Material
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.review_scheduler import apply_review
+from app.utils.prompt_safety import wrap_untrusted_context
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -448,11 +449,14 @@ async def get_review_content(
         raise HTTPException(status_code=404, detail="章节不存在")
     chapter, _material = row
     
+    chapter_block = wrap_untrusted_context(
+        "章节内容",
+        f"章节标题：{chapter.title}\n章节内容：\n{chapter.content or '（无详细内容）'}",
+        source=f"chapter:{chapter.id}",
+    )
     prompt = f"""你是一位专业的学习助手。用户正在复习以下章节：
 
-章节标题：{chapter.title}
-章节内容：
-{chapter.content or '（无详细内容）'}
+{chapter_block}
 
 请生成：
 1. 该章节的核心知识点总结（3-5条，每条一句话）
@@ -571,13 +575,18 @@ async def submit_review_answers(
         for i, ans in enumerate(body.answers)
     ])
     
-    prompt = f"""你是一位专业的学习评估专家。用户刚完成了章节「{chapter.title}」的复习测验。
+    quiz_block = wrap_untrusted_context(
+        "章节内容与答题记录",
+        (
+            f"章节标题：{chapter.title}\n"
+            f"章节内容：\n{chapter.content or '（无详细内容）'}\n\n"
+            f"用户的答题情况：\n{answers_text}"
+        ),
+        source=f"chapter:{chapter.id}",
+    )
+    prompt = f"""你是一位专业的学习评估专家。用户刚完成了章节复习测验。
 
-章节内容：
-{chapter.content or '（无详细内容）'}
-
-用户的答题情况：
-{answers_text}
+{quiz_block}
 
 请评估用户的掌握程度，返回JSON格式：
 {{

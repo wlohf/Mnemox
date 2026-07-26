@@ -131,7 +131,8 @@ async def collect_motivation_snapshot(
 
 
 def build_motivation_prompt(snapshot: MotivationSnapshot) -> str:
-    goals_text = ", ".join(snapshot.goals) if snapshot.goals else "暂无明确目标"
+    # 目标标题是用户自由文本，压缩长度并去除换行，避免夹带指令样式内容
+    goals_text = ", ".join(_compact_text(goal, 40) for goal in snapshot.goals) if snapshot.goals else "暂无明确目标"
     prompt = (
         "以下是一位学习者的今日学习情况：\n"
         f"当前学习目标: {goals_text}\n"

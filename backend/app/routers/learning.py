@@ -17,6 +17,7 @@ from app.models.material import Chapter, Material
 from app.models.progress import MaterialProfile, OutputEvaluation
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
+from app.utils.prompt_safety import wrap_untrusted_context
 from app.models.user import User
 
 router = APIRouter()
@@ -508,8 +509,11 @@ async def analyze_material_for_progress(
         "只输出 JSON："
         "{\"is_textbook\":true/false,\"confidence\":0~1,\"chapters\":[{\"title\":\"...\",\"key_points\":[...],\"question_types\":[...]}]}\n"
         "要求：chapters 最多 20 条，key_points 和 question_types 各最多 8 条。\n"
-        f"标题：{material.title}\n"
-        f"内容片段：{(material.content or '')[:6000]}"
+        + wrap_untrusted_context(
+            "资料内容",
+            f"标题：{material.title}\n内容片段：{(material.content or '')[:6000]}",
+            source=f"material:{material.id}",
+        )
     )
 
     try:
@@ -1294,10 +1298,16 @@ async def evaluate_output(
         "只返回 JSON："
         "{\"score\":0-100,\"strengths\":[...],\"gaps\":[...],\"next_actions\":[...],\"verdict\":\"通过|接近通过|需改进\"}\n"
         "要求：strengths/gaps/next_actions 各给 2-4 条，简短可执行。\n"
-        f"任务标题：{task.title}\n"
-        f"任务类型：{task.task_type or 'learn'}\n"
-        f"评估标准：{body.rubric or '准确性、结构清晰、覆盖关键点、可复述性'}\n"
-        f"用户产出：{body.output_text[:5000]}"
+        + wrap_untrusted_context(
+            "待评估学习产出",
+            (
+                f"任务标题：{task.title}\n"
+                f"任务类型：{task.task_type or 'learn'}\n"
+                f"评估标准：{body.rubric or '准确性、结构清晰、覆盖关键点、可复述性'}\n"
+                f"用户产出：{body.output_text[:5000]}"
+            ),
+            source=f"task:{task.id}",
+        )
     )
 
     result_obj = None

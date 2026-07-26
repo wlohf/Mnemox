@@ -19,6 +19,7 @@ from app.models.anki import AnkiCard
 from app.models.user import User
 from app.ai.factory import AIProviderFactory
 from app.services.review_scheduler import apply_review
+from app.utils.prompt_safety import wrap_untrusted_context
 
 
 router = APIRouter()
@@ -142,10 +143,16 @@ async def ai_generate_cards(
 ):
     source_text = (body.source_text or "").strip()
     prompt = (
-        "你是一名学习卡片助手。请根据主题和素材，生成适合记忆复习的问答卡片。"
-        f"\n主题: {body.topic.strip()}"
-        f"\n素材:\n{source_text if source_text else '（无素材，基于主题生成）'}"
-        f"\n数量: {body.count}"
+        "你是一名学习卡片助手。请根据主题和素材，生成适合记忆复习的问答卡片。\n"
+        + wrap_untrusted_context(
+            "卡片素材",
+            (
+                f"主题: {body.topic.strip()}\n"
+                f"素材:\n{source_text if source_text else '（无素材，基于主题生成）'}"
+            ),
+            source=f"anki_generate:{current_user.id}",
+        )
+        + f"\n数量: {body.count}"
         "\n输出要求：只输出 JSON 数组，不要额外解释。"
         "\n格式：[{'front':'问题','back':'答案'}]"
     )
