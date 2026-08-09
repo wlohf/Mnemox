@@ -1,67 +1,52 @@
-# 文档导航（Documentation Index）
+# 文档导航
 
-> 更新日期：2026-07-26
+> 更新日期：2026-08-05
 
-本索引用于减少文档分散与重复说明。文档分为四类：**现行基线**（描述当前与下一步，持续维护）、**架构决策**（superpowers/specs，按日期归档，新决策覆盖旧决策）、**历史参考**（不再维护，仅供理解演进过程）、**持续记录**（按周期追加）。
+本目录只保留当前实现基线、仍有效的架构决策、可复用的验证证据和周期更新。需要判断“现在是什么”和“下一步做什么”时，优先阅读现行基线，不要把历史方案当成待办清单。
 
-## ✅ 现行基线（先看这些，按顺序）
+## 现行基线
 
-| 文档 | 回答的问题 |
+| 文档 | 用途 |
 | --- | --- |
-| [需求基线](requirements.md) | 产品定位、北极星指标、已交付/下一阶段需求、非目标 |
-| [路线图](roadmap.md) | **接下来做什么、按什么顺序做**（阶段顺序、完成标准、冻结清单的唯一权威来源） |
-| [技术基线](technical.md) | 当前代码里已存在的实现、约定与技术债；§9 为未实现的演进方向 |
-| [进度文档](progress.md) | 当前版本状态、验证结果与执行快照 |
+| [需求基线](requirements.md) | 产品定位、北极星指标、范围、非目标和验收边界 |
+| [路线图](roadmap.md) | 阶段顺序、完成标准、当前检查点和冻结清单的唯一权威来源 |
+| [技术基线](technical.md) | 当前代码实现、数据边界、运行约定和技术债 |
+| [进度文档](progress.md) | 当前版本、验证证据、已知限制和工作区快照 |
+| [数据库升级演练报告](database-rehearsal-2026-08-05.md) | SQLite/PostgreSQL 计数、SHA256、恢复验证和回滚预案 |
 
-## 🧭 架构决策（superpowers/specs）
+根目录的 [README](../README.md) 是项目总览，[PRODUCT.md](../PRODUCT.md) 是产品说明；Windows 本地启动请看 [启动指南](../启动指南.md)。
+
+## 当前架构决策
 
 | 日期 | 文档 | 状态 |
 | --- | --- | --- |
-| 2026-07-26 | [知识层 / 检索底座 / Agent 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md)（D1 数据底盘 · D2 概念图谱 · D3 ContextStore/OpenViking · D4 自研 AgentKernel · D5 自学习 · D6 集成战略） | **当前有效** |
-| 2026-06-23 | [目标驱动 Agent 记忆实施计划](superpowers/specs/2026-06-23-goal-driven-agent-memory-implementation-plan.md) | 已实现（v1.2.0） |
-| 2026-06-22 | [搜索 / Token / Coach 自学习路线图](superpowers/specs/2026-06-22-search-token-coach-learning-roadmap.md) | 部分被 07-26 决策吸收 |
-| 2026-06-15 | [自主 Coach Agent 工程设计](superpowers/specs/2026-06-15-autonomous-coach-agent-design.md) | 已实现（Coach Kernel） |
-| 2026-06-08 | [语音 / RAG 激励 / Agent 设计](superpowers/specs/2026-06-08-voice-rag-motivation-agent-design.md) | 部分实现；拒绝 pi 的结论由 07-26 决策 D4 重申 |
+| 2026-08-03 | [学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md) | 当前有效：混合 RAG、概念图谱、时态记忆、学习者模型、投影和受控 Spike |
+| 2026-07-26 | [知识层 / 检索底座 / Agent 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md) | 部分仍有效；关系型核心、FSRS、草案确认、用户隔离和 OpenViking 否决证据继续适用 |
+| 2026-07-26 | [OpenViking Spike 结论](superpowers/specs/2026-07-26-openviking-spike-result.md) | 保留的否决证据：不满足 Windows 桌面分发门槛 |
 
-决策变更约定：任何选型或架构变化（如 OpenViking spike 结论）必须新增或修订本目录下的决策文档，不允许只改代码不改文档。
+08-03 决策覆盖 07-26 决策中关于 `Concept.mastery`、候选检索选型、Agent 框架排除和记忆边界的部分。新的选型或架构变化必须新增带日期的决策文档，并写清验收、删除、迁移和回滚证据。
 
-## 🚀 启动与运行
+## 启动与开发
 
-- 启动指南（主文档）：`/启动指南.md`
-- 后端说明：`/backend/README.md`
-- 前端说明：`/frontend/README.md`
-- 部署与安全提示：根 `README.md` 的「安全与部署提示」章节
+- [启动指南](../启动指南.md)：Windows 一键启动、手动启动、依赖准备和数据库迁移。
+- [后端 README](../backend/README.md)：FastAPI、环境变量、迁移入口和后端测试。
+- [前端 README](../frontend/README.md)：React/Vite、页面、同步和前端测试。
+- [功能更新维护说明](updates/README.md)：周期记录的格式、目录规则和验证要求。
 
-## 🗂 持续记录
+## 持续记录
 
-- 功能更新维护说明：[updates/README.md](updates/README.md)
-- 更新文档模板：[updates/_template.md](updates/_template.md)
-- 周期记录目录：`updates/2026/`
+- [更新记录模板](updates/_template.md)
+- [2026-08-04 至 2026-08-05 学习者模型、事件投影与文档收口](updates/2026/2026-08-04_to_2026-08-05.md)
+- [2026-06-01 至 2026-06-07 更新记录](updates/2026/2026-06-01_to_2026-06-07.md)
 
-## 📦 历史参考（不再维护）
+周期记录用于说明已发生的变更和验证结果，不替代需求、路线图或技术基线。
 
-以下文档保留用于理解演进过程，内容可能与现状不符，请勿作为实现依据：
+## 版本与安全
 
-**规划/方案类**（方向性内容已被 07-26 架构决策与路线图吸收）
+- 当前发布说明：[v1.3.0](../release-notes-v1.3.0.md)。更早版本的发布说明已从工作区清理，历史仍可通过 Git 追溯。
+- 不要在文档、脚本或示例中写入真实 API Key。真实密钥只放在本地 `.env` 或设置页的安全存储中。
+- 数据库、上传目录、备份和运行产物不属于文档提交内容。
 
-- 早期总体设计：`/docs/system-design.md`
-- AI 教练系统设计：`/docs/AI教练系统设计.md`
-- AI 教练快速开始：`/docs/AI教练-快速开始.md`
-- 从 RAG 到 AI 教练完整方案：`/从RAG到AI教练-完整方案.md`
-- 语音 / 笔记联想 / 个性化激励方案评估：`/docs/voice-rag-motivation-plan-2026-06-08.md`
-- 中期产品力提升实施方案：`/docs/midterm-product-power-plan-2026-06-22.md`
+## 清理原则
 
-**UI/体验优化记录**
-
-- UI 更新说明：`/UI-UPDATE.md`、`/UI-UPDATE-V2.md`
-- UI 优化方案：`/docs/ui-optimization-plan.md`、`/docs/ui-optimization-plan-v2.md`
-
-**根目录旧启动/说明文件**
-
-- `/SETUP.md`、`/快速配置说明.txt`：内容已并入 `/启动指南.md` 与根 `README.md`
-- `/release-notes-v*.md`：各版本发布说明，随版本归档
-
-## ⚠️ 安全与配置
-
-- 请勿在文档或脚本中存放真实 API Key，统一使用占位符。
-- 示例配置一律使用占位符；真实密钥仅存在于本地 `.env` 或设置页加密存储。
+2026-08-04 至 2026-08-05 已删除被现行基线替代的早期系统设计、Coach/RAG 方案、一次性实施计划、旧 UI 记录、旧修复记录和旧版本发布说明。后续若历史背景仍有证据价值，应合并成短说明或独立 ADR；不要继续创建与当前路线图并行的“第二份真相”。
