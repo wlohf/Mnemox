@@ -18,6 +18,11 @@ from app.database import get_db
 from app.models.anki import AnkiCard
 from app.models.user import User
 from app.ai.factory import AIProviderFactory
+from app.services.learning_event_service import (
+    record_review_completed_event,
+    record_review_scheduled_event,
+)
+from app.services.projection_outbox_service import process_event_projection
 from app.services.review_scheduler import apply_review
 from app.utils.prompt_safety import wrap_untrusted_context
 
@@ -113,6 +118,17 @@ async def create_card(
     db.add(card)
     await db.flush()
     await db.refresh(card)
+    await record_review_scheduled_event(
+        db,
+        int(current_user.id),
+        entity_type="anki_card",
+        entity_id=int(card.id),
+        due_at=card.due_at or datetime.now(),
+        source="anki_router",
+        item_type="anki_card",
+        item_id=int(card.id),
+        reason="card_created",
+    )
     return _to_item(card)
 
 
@@ -128,10 +144,43 @@ async def review_card(
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
 
-    apply_review(card, body.quality, datetime.now(), due_attr="due_at")
+    now = datetime.now()
+    scheduled_for = card.due_at or now
+    schedule = apply_review(card, body.quality, now, due_attr="due_at")
 
     await db.flush()
     await db.refresh(card)
+    completed_event = await record_review_completed_event(
+        db,
+        int(current_user.id),
+        entity_type="anki_card",
+        entity_id=int(card.id),
+        scheduled_for=scheduled_for,
+        source="anki_router",
+        quality=body.quality,
+        item_type="anki_card",
+        item_id=int(card.id),
+        next_due_at=schedule.due_at,
+        scheduler=schedule.algorithm,
+        occurred_at=now,
+    )
+    await process_event_projection(
+        db,
+        user_id=int(current_user.id),
+        source_event_id=int(completed_event["id"]),
+    )
+    await record_review_scheduled_event(
+        db,
+        int(current_user.id),
+        entity_type="anki_card",
+        entity_id=int(card.id),
+        due_at=schedule.due_at,
+        source="anki_router",
+        item_type="anki_card",
+        item_id=int(card.id),
+        reason="review_completed",
+        occurred_at=now,
+    )
     return _to_item(card)
 
 
@@ -195,6 +244,17 @@ async def ai_generate_cards(
     await db.flush()
     for card in created:
         await db.refresh(card)
+        await record_review_scheduled_event(
+            db,
+            int(current_user.id),
+            entity_type="anki_card",
+            entity_id=int(card.id),
+            due_at=card.due_at or datetime.now(),
+            source="anki_router",
+            item_type="anki_card",
+            item_id=int(card.id),
+            reason="ai_card_created",
+        )
 
     return {
         "created": len(created),
@@ -305,6 +365,7 @@ async def import_cards_csv(
     reader = csv.DictReader(io.StringIO(text))
     created = 0
     skipped = 0
+    created_cards: list[AnkiCard] = []
 
     for row in reader:
         front = str(row.get("front", "")).strip()
@@ -358,7 +419,20 @@ async def import_cards_csv(
             last_quality=last_quality,
         )
         db.add(card)
+        created_cards.append(card)
         created += 1
 
     await db.flush()
+    for card in created_cards:
+        await record_review_scheduled_event(
+            db,
+            int(current_user.id),
+            entity_type="anki_card",
+            entity_id=int(card.id),
+            due_at=card.due_at or datetime.now(),
+            source="anki_router",
+            item_type="anki_card",
+            item_id=int(card.id),
+            reason="card_imported",
+        )
     return {"created": created, "skipped": skipped}

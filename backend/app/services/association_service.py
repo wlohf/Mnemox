@@ -8,10 +8,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.concept import Concept, ConceptEdge, ConceptLink
+from app.models.learner_model import UserConceptState
 from app.models.note import Note
 from app.models.question import WrongQuestion
 from app.services.concept_service import link_concept
@@ -39,12 +40,32 @@ async def match_concepts_in_text(db: AsyncSession, user_id: int, text: str) -> l
 
 async def attach_note_to_concepts(db: AsyncSession, user_id: int, note: Note) -> list[Concept]:
     """笔记保存时挂图：内容中出现的概念建立 note EXPLAINS concept 挂接。"""
+    await detach_note_from_concepts(db, user_id, int(note.id), link_type="explains")
     matched = await match_concepts_in_text(
         db, user_id, f"{note.title or ''}\n{note.content or ''}"
     )
     for concept in matched:
         await link_concept(db, user_id, concept.id, "note", int(note.id), link_type="explains")
     return matched
+
+
+async def detach_note_from_concepts(
+    db: AsyncSession,
+    user_id: int,
+    note_id: int,
+    *,
+    link_type: str | None = None,
+) -> int:
+    """Remove graph links for a note before it is re-matched or deleted."""
+    clauses = [
+        ConceptLink.user_id == int(user_id),
+        ConceptLink.target_type == "note",
+        ConceptLink.target_id == int(note_id),
+    ]
+    if link_type is not None:
+        clauses.append(ConceptLink.link_type == str(link_type))
+    result = await db.execute(delete(ConceptLink).where(*clauses))
+    return int(result.rowcount or 0)
 
 
 async def _collect_evidence(
@@ -152,6 +173,14 @@ async def find_associations(
 
     evidence = await _collect_evidence(db, user_id, all_ids, exclude_note_id=exclude_note_id)
 
+    state_result = await db.execute(
+        select(UserConceptState).where(
+            UserConceptState.user_id == user_id,
+            UserConceptState.concept_id.in_(all_ids),
+        )
+    )
+    states = {int(state.concept_id): state for state in state_result.scalars().all()}
+
     neighbor_names: dict[int, str] = {}
     if neighbor_ids:
         neighbor_result = await db.execute(
@@ -161,6 +190,7 @@ async def find_associations(
 
     associations: list[dict[str, Any]] = []
     for concept in matched:
+        concept_state = states.get(int(concept.id))
         bucket = evidence.get(concept.id, {"notes": [], "wrong_questions": []})
         prerequisites = [
             {
@@ -203,7 +233,14 @@ async def find_associations(
             {
                 "concept_id": concept.id,
                 "concept_name": concept.name,
-                "mastery": float(concept.mastery or 0.0),
+                "mastery": (
+                    float(concept_state.mastery_estimate)
+                    if concept_state is not None
+                    else float(concept.mastery or 0.0)
+                ),
+                "mastery_source": (
+                    "user_concept_state" if concept_state is not None else "legacy_compatibility"
+                ),
                 "reason": "；".join(reason_parts),
                 "score": evidence_count * 2 + len(prerequisites),
                 "evidence": bucket,

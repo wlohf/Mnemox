@@ -11,12 +11,14 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.concept import Concept, ConceptEdge, ConceptLink
+from app.models.learner_model import UserConceptState
 from app.models.material import Chapter
 from app.models.question import WrongQuestion
+from app.services.learner_model_service import ensure_concept_state
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,16 @@ EDGE_TYPES = {"prerequisite_of", "related_to"}
 LINK_TYPES = {"covers", "explains", "tests", "drills"}
 MAX_CONCEPTS_PER_CHAPTER = 15
 MAX_NAME_LENGTH = 60
+
+
+def _mastery_snapshot(
+    concept: Concept,
+    state: UserConceptState | None,
+) -> tuple[float, str, str | None]:
+    """Prefer derived learner state; retain one-release legacy read fallback."""
+    if state is not None:
+        return float(state.mastery_estimate), "user_concept_state", state.model_version
+    return float(concept.mastery or 0.0), "legacy_compatibility", None
 
 
 def normalize_concept_name(name: str) -> str:
@@ -66,6 +78,7 @@ async def upsert_concept(
     )
     db.add(concept)
     await db.flush()
+    await ensure_concept_state(db, user_id, int(concept.id))
     return concept
 
 
@@ -282,23 +295,33 @@ async def list_concepts(db: AsyncSession, user_id: int, *, limit: int = 100) -> 
         .subquery()
     )
     result = await db.execute(
-        select(Concept, func.coalesce(link_counts.c.link_count, 0))
+        select(Concept, func.coalesce(link_counts.c.link_count, 0), UserConceptState)
         .outerjoin(link_counts, Concept.id == link_counts.c.concept_id)
+        .outerjoin(
+            UserConceptState,
+            and_(
+                UserConceptState.user_id == user_id,
+                UserConceptState.concept_id == Concept.id,
+            ),
+        )
         .where(Concept.user_id == user_id)
         .order_by(func.coalesce(link_counts.c.link_count, 0).desc(), Concept.updated_at.desc())
         .limit(max(1, min(int(limit or 100), 500)))
     )
-    return [
-        {
+    concepts: list[dict[str, Any]] = []
+    for concept, count, state in result.all():
+        mastery, mastery_source, mastery_model_version = _mastery_snapshot(concept, state)
+        concepts.append({
             "id": concept.id,
             "name": concept.name,
             "description": concept.description,
-            "mastery": float(concept.mastery or 0.0),
+            "mastery": mastery,
+            "mastery_source": mastery_source,
+            "mastery_model_version": mastery_model_version,
             "source": concept.source,
             "link_count": int(count or 0),
-        }
-        for concept, count in result.all()
-    ]
+        })
+    return concepts
 
 
 async def get_concept_neighborhood(
@@ -346,12 +369,29 @@ async def get_concept_neighborhood(
         frontier = next_frontier
 
     node_result = await db.execute(
-        select(Concept).where(Concept.user_id == user_id, Concept.id.in_(visited))
+        select(Concept, UserConceptState)
+        .outerjoin(
+            UserConceptState,
+            and_(
+                UserConceptState.user_id == user_id,
+                UserConceptState.concept_id == Concept.id,
+            ),
+        )
+        .where(Concept.user_id == user_id, Concept.id.in_(visited))
     )
-    nodes = [
-        {"id": c.id, "name": c.name, "mastery": float(c.mastery or 0.0), "is_center": c.id == center.id}
-        for c in node_result.scalars().all()
-    ]
+    nodes = []
+    for concept, state in node_result.all():
+        mastery, mastery_source, mastery_model_version = _mastery_snapshot(concept, state)
+        nodes.append(
+            {
+                "id": concept.id,
+                "name": concept.name,
+                "mastery": mastery,
+                "mastery_source": mastery_source,
+                "mastery_model_version": mastery_model_version,
+                "is_center": concept.id == center.id,
+            }
+        )
 
     link_result = await db.execute(
         select(ConceptLink).where(ConceptLink.user_id == user_id, ConceptLink.concept_id.in_(visited))

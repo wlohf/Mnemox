@@ -10,10 +10,28 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger(__name__)
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import init_db, close_db, _is_sqlite
 from app.middleware.security import RateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from app.frontend_static import register_frontend_static
 from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
+
+
+def create_projection_outbox_worker(session_factory):
+    """Build the application-local consumer from environment-backed settings."""
+    from app.services.projection_outbox_worker import ProjectionOutboxWorker
+
+    return ProjectionOutboxWorker(
+        session_factory,
+        worker_id=settings.OUTBOX_WORKER_ID or None,
+        batch_size=settings.OUTBOX_WORKER_BATCH_SIZE,
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        poll_interval_seconds=settings.OUTBOX_WORKER_POLL_INTERVAL_SECONDS,
+    )
+
+
+def _outbox_worker_allowed() -> bool:
+    """SQLite keeps request-time consumption as its single-consumer path."""
+    return bool(settings.OUTBOX_WORKER_ENABLED and not _is_sqlite())
 
 
 @asynccontextmanager
@@ -25,6 +43,9 @@ async def lifespan(app: FastAPI):
     logger.info("数据库初始化完成")
 
     from app.database import async_session_maker
+
+    outbox_worker = None
+    app.state.projection_outbox_worker = None
 
     # Decay stale episodic memories
     try:
@@ -97,10 +118,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("RAG 服务初始化失败（不影响主流程）: %s", e)
 
-    yield
-    # 关闭时清理资源
-    await close_db()
-    logger.info("应用关闭，数据库连接已关闭")
+    try:
+        # Start the PostgreSQL worker only after startup maintenance and RAG
+        # initialization have completed. The surrounding finally still closes
+        # the DB if setup fails after this point.
+        if _outbox_worker_allowed():
+            outbox_worker = create_projection_outbox_worker(async_session_maker)
+            app.state.projection_outbox_worker = outbox_worker
+            outbox_worker.start()
+            logger.info("projection outbox worker started worker_id=%s", outbox_worker.worker_id)
+        yield
+    finally:
+        if outbox_worker is not None:
+            try:
+                await outbox_worker.stop()
+                logger.info("projection outbox worker stopped worker_id=%s", outbox_worker.worker_id)
+            except Exception as exc:
+                logger.warning("projection outbox worker shutdown failed: %s", exc, exc_info=settings.DEBUG)
+        # 关闭时清理资源
+        await close_db()
+        logger.info("应用关闭，数据库连接已关闭")
 
 
 # 创建 FastAPI 应用
@@ -165,11 +202,27 @@ async def root():
 @app.get("/health")
 async def health():
     """健康检查"""
-    return {"status": "ok"}
+    worker = getattr(app.state, "projection_outbox_worker", None)
+    return {
+        "status": "ok",
+        "projection_outbox_worker": (
+            worker.health_snapshot()
+            if worker is not None
+            else {
+                "enabled": _outbox_worker_allowed(),
+                "running": False,
+                **(
+                    {"disabled_reason": "sqlite_single_consumer"}
+                    if _is_sqlite() and settings.OUTBOX_WORKER_ENABLED
+                    else {}
+                ),
+            }
+        ),
+    }
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -201,6 +254,7 @@ app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分�
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
 app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"])
+app.include_router(learner_model.router, prefix="/api/learner-model", tags=["学习者模型"])
 
 ensure_data_dirs()
 

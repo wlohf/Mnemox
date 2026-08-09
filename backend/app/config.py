@@ -1,5 +1,5 @@
 """应用配置管理"""
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 from pathlib import Path
@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    # Durable projection outbox consumer. Each application instance runs one
+    # worker; PostgreSQL row locking coordinates concurrent instances.
+    OUTBOX_WORKER_ENABLED: bool = True
+    OUTBOX_WORKER_POLL_INTERVAL_SECONDS: float = Field(default=2.0, gt=0, le=60)
+    OUTBOX_WORKER_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    OUTBOX_WORKER_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=20)
+    OUTBOX_WORKER_ID: str = ""
     # Obsidian vault 同步根目录白名单；生产环境必须配置后才允许 vault 同步（决策 D6）
     OBSIDIAN_VAULT_ROOT: str = ""
     

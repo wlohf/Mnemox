@@ -1,23 +1,14 @@
-"""数据库初始化脚本"""
+"""数据库初始化兼容入口。"""
 import asyncio
-from app.database import Base, engine
-import app.models  # noqa: F401
+
+from run_migrations import run_migrations
 
 
 async def init_database():
-    """初始化数据库（创建所有表）"""
-    print("=> 开始初始化数据库...")
-    
-    async with engine.begin() as conn:
-        # 删除所有表（谨慎使用！）
-        # await conn.run_sync(Base.metadata.drop_all)
-        # print("[OK] 已删除所有表")
-        
-        # 创建所有表
-        await conn.run_sync(Base.metadata.create_all)
-        print("[OK] 数据库表创建完成")
-    
-    print("[SUCCESS] 数据库初始化完成！")
+    """Initialize through the single supported migration entrypoint."""
+    print("=> 开始数据库迁移...")
+    await run_migrations()
+    print("[SUCCESS] 数据库迁移完成！")
 
 
 if __name__ == "__main__":

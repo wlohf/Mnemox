@@ -15,6 +15,11 @@ from app.models.material import Chapter, Material
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.review_scheduler import apply_review
+from app.services.learning_event_service import (
+    record_review_completed_event,
+    record_review_scheduled_event,
+)
+from app.services.projection_outbox_service import process_event_projection
 from app.utils.prompt_safety import wrap_untrusted_context
 
 router = APIRouter()
@@ -37,7 +42,7 @@ def _calc_mastery_status(quality: int) -> str:
     return "not_mastered"
 
 
-async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: int) -> None:
+async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: int) -> list[ReviewSchedule]:
     """增量同步：只为尚无 ReviewSchedule 的错题创建任务，避免全量遍历 N+1。"""
     # 子查询：已有 review schedule 的错题 ID
     existing_subq = (
@@ -58,6 +63,7 @@ async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: in
     new_items = result.scalars().all()
     now = datetime.now()
 
+    created: list[ReviewSchedule] = []
     for wq in new_items:
         next_time = wq.next_review_at or now
         task = ReviewSchedule(
@@ -71,8 +77,10 @@ async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: in
             status="pending",
         )
         db.add(task)
+        created.append(task)
+    return created
 
-async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> None:
+async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> list[ReviewSchedule]:
     """增量同步：只为尚无 ReviewSchedule 的章节创建任务，避免全量遍历 N+1。"""
     from app.models.material import Material
     # 子查询：已有 review schedule 的章节 ID
@@ -96,6 +104,7 @@ async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> N
     new_chapters = result.scalars().all()
     now = datetime.now()
 
+    created: list[ReviewSchedule] = []
     for chapter in new_chapters:
         mastery = float(chapter.mastery_level or 0)
         default_time = now if mastery < 60 else now + timedelta(days=3)
@@ -110,6 +119,8 @@ async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> N
             status="pending",
         )
         db.add(task)
+        created.append(task)
+    return created
 
 def _to_iso(value: Any) -> Optional[str]:
     if value is None:
@@ -198,8 +209,22 @@ async def list_review_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await _sync_wrong_questions_to_review_schedule(db, user_id=current_user.id)
-    await _sync_chapters_to_review_schedule(db, user_id=current_user.id)
+    created_schedules = await _sync_wrong_questions_to_review_schedule(db, user_id=current_user.id)
+    created_schedules.extend(await _sync_chapters_to_review_schedule(db, user_id=current_user.id))
+    if created_schedules:
+        await db.flush()
+        for schedule in created_schedules:
+            await record_review_scheduled_event(
+                db,
+                int(current_user.id),
+                entity_type="review_schedule",
+                entity_id=int(schedule.id),
+                due_at=schedule.scheduled_date,
+                source="review_router",
+                item_type=schedule.item_type,
+                item_id=schedule.item_id,
+                reason="initial_sync",
+            )
 
     now = datetime.now()
     query = select(ReviewSchedule).where(ReviewSchedule.user_id == current_user.id, ReviewSchedule.is_archived == False)
@@ -276,6 +301,7 @@ async def complete_review_task(
         raise HTTPException(status_code=400, detail="暂不支持该任务类型")
 
     now = datetime.now()
+    scheduled_for = task.scheduled_date or now
     schedule = apply_review(task, body.quality, now, due_attr="scheduled_date")
     next_review_at = schedule.due_at
 
@@ -308,6 +334,37 @@ async def complete_review_task(
         await db.flush()
         await db.refresh(task)
         await db.refresh(chapter)
+        completed_event = await record_review_completed_event(
+            db,
+            int(current_user.id),
+            entity_type="review_schedule",
+            entity_id=int(task.id),
+            scheduled_for=scheduled_for,
+            source="review_router",
+            quality=body.quality,
+            item_type=task.item_type,
+            item_id=task.item_id,
+            next_due_at=schedule.due_at,
+            scheduler=schedule.algorithm,
+            occurred_at=now,
+        )
+        await process_event_projection(
+            db,
+            user_id=int(current_user.id),
+            source_event_id=int(completed_event["id"]),
+        )
+        await record_review_scheduled_event(
+            db,
+            int(current_user.id),
+            entity_type="review_schedule",
+            entity_id=int(task.id),
+            due_at=schedule.due_at,
+            source="review_router",
+            item_type=task.item_type,
+            item_id=task.item_id,
+            reason="review_completed",
+            occurred_at=now,
+        )
         return _to_task_item(task, chapter=chapter)
 
     wrong_result = await db.execute(
@@ -330,6 +387,39 @@ async def complete_review_task(
     await db.flush()
     await db.refresh(task)
     await db.refresh(wrong)
+
+    completed_event = await record_review_completed_event(
+        db,
+        int(current_user.id),
+        entity_type="review_schedule",
+        entity_id=int(task.id),
+        scheduled_for=scheduled_for,
+        source="review_router",
+        quality=body.quality,
+        item_type=task.item_type,
+        item_id=task.item_id,
+        next_due_at=schedule.due_at,
+        scheduler=schedule.algorithm,
+        concept_id=wrong.concept_id,
+        occurred_at=now,
+    )
+    await process_event_projection(
+        db,
+        user_id=int(current_user.id),
+        source_event_id=int(completed_event["id"]),
+    )
+    await record_review_scheduled_event(
+        db,
+        int(current_user.id),
+        entity_type="review_schedule",
+        entity_id=int(task.id),
+        due_at=schedule.due_at,
+        source="review_router",
+        item_type=task.item_type,
+        item_id=task.item_id,
+        reason="review_completed",
+        occurred_at=now,
+    )
 
     return _to_task_item(task, wrong)
 
@@ -400,6 +490,17 @@ async def enqueue_chapter_review_task(
     await db.flush()
     await db.refresh(task)
     await db.refresh(chapter)
+    await record_review_scheduled_event(
+        db,
+        int(current_user.id),
+        entity_type="review_schedule",
+        entity_id=int(task.id),
+        due_at=task.scheduled_date or when,
+        source="review_router",
+        item_type=task.item_type,
+        item_id=task.item_id,
+        reason="manual_enqueue",
+    )
     return _to_task_item(task, chapter=chapter)
 
 
@@ -624,8 +725,8 @@ async def submit_review_answers(
                 text = text[:-3].strip()
         
         data = json.loads(text)
-        score = int(data.get("score", 60))
-        quality = int(data.get("quality", 3))
+        score = max(0, min(100, int(data.get("score", 60))))
+        quality = max(0, min(5, int(data.get("quality", 3))))
         feedback = data.get("feedback", "")
         
     except Exception as e:
@@ -637,6 +738,7 @@ async def submit_review_answers(
     
     # 更新复习调度（FSRS 优先，SM-2 兜底）
     now = datetime.now()
+    scheduled_for = task.scheduled_date or now
     schedule = apply_review(task, quality, now, due_attr="scheduled_date")
     task.completed_at = now
     task.status = "pending"
@@ -647,6 +749,38 @@ async def submit_review_answers(
     chapter.mastery_level = new_mastery
 
     await db.flush()
+    completed_event = await record_review_completed_event(
+        db,
+        int(current_user.id),
+        entity_type="review_schedule",
+        entity_id=int(task.id),
+        scheduled_for=scheduled_for,
+        source="review_router",
+        quality=quality,
+        item_type=task.item_type,
+        item_id=task.item_id,
+        next_due_at=schedule.due_at,
+        scheduler=schedule.algorithm,
+        normalized_score=score / 100.0,
+        occurred_at=now,
+    )
+    await process_event_projection(
+        db,
+        user_id=int(current_user.id),
+        source_event_id=int(completed_event["id"]),
+    )
+    await record_review_scheduled_event(
+        db,
+        int(current_user.id),
+        entity_type="review_schedule",
+        entity_id=int(task.id),
+        due_at=schedule.due_at,
+        source="review_router",
+        item_type=task.item_type,
+        item_id=task.item_id,
+        reason="review_completed",
+        occurred_at=now,
+    )
 
     return {
         "score": score,

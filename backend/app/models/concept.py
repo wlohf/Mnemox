@@ -1,7 +1,7 @@
 """概念图谱模型：知识点成为一等实体（决策 D2）。
 
 三张表构成轻量领域图：
-- concepts：概念节点（含归一化名用于去重、概念级掌握度）。
+- concepts：概念节点（含归一化名用于去重；不再拥有用户学习状态）。
 - concept_edges：概念间关系（prerequisite_of / related_to）。
 - concept_links：既有实体（章节/笔记/题目/错题/卡片）挂接到概念。
 """
@@ -26,7 +26,12 @@ class Concept(Base):
     name = Column(String(120), nullable=False, comment="概念名（展示用）")
     name_normalized = Column(String(120), nullable=False, index=True, comment="归一化名（去重用）")
     description = Column(Text, nullable=True, comment="概念简述")
-    mastery = Column(Float, nullable=False, default=0.0, comment="概念级掌握度 0-100（由行为数据计算）")
+    mastery = Column(
+        Float,
+        nullable=False,
+        default=0.0,
+        comment="Legacy compatibility only; authoritative state is user_concept_state",
+    )
     source = Column(String(40), nullable=False, default="extract", comment="来源: extract | structure | backfill | manual")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

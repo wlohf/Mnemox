@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.coach import CoachNudge
 from app.services.coach_learning_service import record_skill_shown
 from app.services.coach_skills.base import CoachSkillResult
+from app.services.learning_event_service import CanonicalEventType, record_coach_nudge_event
 
 
 def coach_nudge_to_dict(row: CoachNudge) -> dict[str, Any]:
@@ -70,6 +71,12 @@ async def create_coach_nudge(
     db.add(nudge)
     await db.flush()
     await db.refresh(nudge)
+    await record_coach_nudge_event(
+        db,
+        user_id,
+        nudge,
+        CanonicalEventType.COACH_NUDGE_CREATED,
+    )
     return coach_nudge_to_dict(nudge)
 
 
@@ -98,5 +105,12 @@ async def mark_coach_nudge_shown(db: AsyncSession, user_id: int, nudge_id: str) 
         row.status = "shown"
         row.updated_at = datetime.now()
         await record_skill_shown(db, user_id, row)
+        await record_coach_nudge_event(
+            db,
+            user_id,
+            row,
+            CanonicalEventType.COACH_NUDGE_SHOWN,
+            occurred_at=row.updated_at,
+        )
     await db.flush()
     return coach_nudge_to_dict(row)

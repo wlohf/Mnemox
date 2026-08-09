@@ -1,5 +1,7 @@
 """番茄钟路由"""
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, case
 from typing import List, Optional, cast
@@ -17,6 +19,19 @@ from ..models.goal import Task, Goal
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def _refresh_profile_after_commit(user_id: int) -> None:
+    """Refresh a derived profile only after the request transaction commits."""
+    from app.database import async_session_maker
+    from app.services.profile_service import compute_and_save_profile
+
+    async with async_session_maker() as session:
+        try:
+            await compute_and_save_profile(session, user_id)
+        except Exception:
+            logger.warning("番茄钟完成后的画像刷新失败 user_id=%s", user_id, exc_info=True)
 
 
 class PomodoroCreate(BaseModel):
@@ -100,19 +115,22 @@ async def start_pomodoro(
     )
 
     db.add(pomodoro)
-    await db.commit()
+    await db.flush()
     await db.refresh(pomodoro)
 
-    # 记录学习事件：番茄钟开始
-    try:
-        tracker = EventTracker(db, user_id=cast(int, cast(object, current_user.id)))
-        await tracker.track(
-            event_type=EventType.POMODORO_START,
-            event_data={"pomodoro_id": pomodoro.id, "task_name": data.task_name, "duration": data.duration},
-            duration=int(data.duration * 60),
-        )
-    except Exception:
-        pass  # 事件追踪不影响主流程
+    # Keep the domain record, ledger event, and projection outbox in one
+    # request transaction. ``get_db`` commits only after this handler returns.
+    tracker = EventTracker(db, user_id=cast(int, cast(object, current_user.id)))
+    await tracker.track(
+        event_type=EventType.POMODORO_START,
+        event_data={"pomodoro_id": pomodoro.id, "task_name": data.task_name, "duration": data.duration},
+        chapter_id=pomodoro.chapter_id,
+        task_id=pomodoro.task_id,
+        duration=int(data.duration * 60),
+        source="pomodoro_router",
+        dedupe_key=f"pomodoro.started:{pomodoro.id}",
+        occurred_at=pomodoro.started_at,
+    )
 
     started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
     ended_at = pomodoro.ended_at
@@ -134,6 +152,7 @@ async def start_pomodoro(
 async def complete_pomodoro(
     pomodoro_id: int,
     data: PomodoroUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -163,42 +182,32 @@ async def complete_pomodoro(
     elif data.completed:
         pomodoro.stop_reason = None  # 正常完成不设原因
 
-    await db.commit()
+    await db.flush()
     await db.refresh(pomodoro)
 
-    # 记录学习事件：番茄钟完成或中断；完成后异步刷新用户画像
-    try:
-        _uid: int = cast(int, cast(object, current_user.id))
-        event_type = EventType.POMODORO_COMPLETE if data.completed else EventType.POMODORO_INTERRUPT
-        actual_mins = pomodoro.duration
-        tracker = EventTracker(db, user_id=_uid)
-        await tracker.track(
-            event_type=event_type,
-            event_data={
-                "pomodoro_id": pomodoro.id,
-                "task_name": pomodoro.task_name,
-                "duration": actual_mins,
-                "completed": data.completed,
-                "stop_reason": data.stop_reason,  # early_done / interrupted / distracted
-            },
-            duration=int(actual_mins * 60),
-        )
-        if data.completed:
-            import asyncio
-            from app.services.profile_service import compute_and_save_profile
-            from app.database import async_session_maker
-
-            async def _bg_refresh(uid: int) -> None:
-                async with async_session_maker() as _s:
-                    try:
-                        await compute_and_save_profile(_s, uid)
-                        await _s.commit()
-                    except Exception:
-                        pass
-
-            asyncio.ensure_future(_bg_refresh(_uid))
-    except Exception:
-        pass  # 事件追踪不影响主流程
+    # Keep the domain update, event ledger, and projection outbox atomic.
+    _uid: int = cast(int, cast(object, current_user.id))
+    event_type = EventType.POMODORO_COMPLETE if data.completed else EventType.POMODORO_INTERRUPT
+    actual_mins = pomodoro.duration
+    tracker = EventTracker(db, user_id=_uid)
+    await tracker.track(
+        event_type=event_type,
+        event_data={
+            "pomodoro_id": pomodoro.id,
+            "task_name": pomodoro.task_name,
+            "duration": actual_mins,
+            "completed": data.completed,
+            "stop_reason": data.stop_reason,  # early_done / interrupted / distracted
+        },
+        chapter_id=pomodoro.chapter_id,
+        task_id=pomodoro.task_id,
+        duration=int(actual_mins * 60),
+        source="pomodoro_router",
+        dedupe_key=f"pomodoro.{'completed' if data.completed else 'interrupted'}:{pomodoro.id}",
+        occurred_at=pomodoro.ended_at,
+    )
+    if data.completed:
+        background_tasks.add_task(_refresh_profile_after_commit, _uid)
 
     started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
     ended_at = pomodoro.ended_at

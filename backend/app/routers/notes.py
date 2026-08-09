@@ -1,7 +1,10 @@
 """笔记系统路由（MVP）"""
+import asyncio
 import json
 import logging
 import re
+import weakref
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
@@ -26,6 +29,7 @@ from app.utils.prompt_safety import wrap_untrusted_context
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_sqlite_note_write_locks: weakref.WeakValueDictionary[tuple[int, int], asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 class NoteLinkIn(BaseModel):
@@ -51,6 +55,9 @@ class NoteUpdate(BaseModel):
     chapter_id: Optional[int] = None
     tags: Optional[List[str]] = None
     links: Optional[List[NoteLinkIn]] = None
+
+    def provided_fields(self) -> set[str]:
+        return self.model_fields_set if hasattr(self, "model_fields_set") else self.__fields_set__
 
 
 class NoteAIAssistRequest(BaseModel):
@@ -359,6 +366,36 @@ async def _get_note_for_response(db: AsyncSession, note_id: int, user_id: int) -
     return result.scalar_one_or_none()
 
 
+def _uses_sqlite(db: AsyncSession) -> bool:
+    return db.get_bind().dialect.name == "sqlite"
+
+
+def _note_write_query(note_id: int, user_id: int) -> Select:
+    query = select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == user_id)
+    return _scope_notes_to_owned_relations(query, user_id).with_for_update()
+
+
+@asynccontextmanager
+async def _note_write_scope(db: AsyncSession, note_id: int, user_id: int):
+    """Serialize local SQLite note writes while PostgreSQL holds a row lock."""
+    if not _uses_sqlite(db):
+        yield
+        return
+
+    key = (int(user_id), int(note_id))
+    lock = _sqlite_note_write_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _sqlite_note_write_locks[key] = lock
+    async with lock:
+        yield
+
+
+async def _get_note_for_write(db: AsyncSession, note_id: int, user_id: int) -> Note | None:
+    result = await db.execute(_note_write_query(note_id, user_id))
+    return result.scalar_one_or_none()
+
+
 def _safe_tags(raw: Optional[str]) -> List[str]:
     if not raw:
         return []
@@ -477,15 +514,14 @@ async def create_note(
     return item
 
 
-@router.put("/{note_id}")
-async def update_note(
+async def _update_note_locked(
     note_id: int,
     body: NoteUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     user_id = int(current_user.id)
-    note = await _get_note_for_response(db, note_id, user_id)
+    note = await _get_note_for_write(db, note_id, user_id)
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
     provided = body.provided_fields()
@@ -514,6 +550,13 @@ async def update_note(
             db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
+    if body.title is not None or body.content is not None:
+        try:
+            from app.services.association_service import attach_note_to_concepts
+
+            await attach_note_to_concepts(db, user_id, note)
+        except Exception as exc:
+            logger.warning("更新笔记后重新挂接概念失败 note_id=%s err=%s", note.id, exc)
     await record_learning_event(
         db,
         user_id,
@@ -528,7 +571,20 @@ async def update_note(
     saved = await _get_note_for_response(db, note.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="笔记保存失败")
+    if _uses_sqlite(db):
+        await db.commit()
     return _to_item(saved)
+
+
+@router.put("/{note_id}")
+async def update_note(
+    note_id: int,
+    body: NoteUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    async with _note_write_scope(db, note_id, int(current_user.id)):
+        return await _update_note_locked(note_id, body, db, current_user)
 
 
 @router.post("/{note_id}/ai/assist")
@@ -628,15 +684,17 @@ async def ask_agent_about_note(
     return _ask_agent_preview(note, body, links)
 
 
-@router.delete("/{note_id}")
-async def delete_note(
+async def _delete_note_locked(
     note_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    note = await _get_note_for_response(db, note_id, int(current_user.id))
+    note = await _get_note_for_write(db, note_id, int(current_user.id))
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
+    from app.services.association_service import detach_note_from_concepts
+
+    await detach_note_from_concepts(db, int(current_user.id), int(note.id))
     await record_learning_event(
         db,
         int(current_user.id),
@@ -649,7 +707,19 @@ async def delete_note(
         dedupe_key=f"note.deleted:{note.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
     )
     await db.delete(note)
+    if _uses_sqlite(db):
+        await db.commit()
     return {"ok": True}
+
+
+@router.delete("/{note_id}")
+async def delete_note(
+    note_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    async with _note_write_scope(db, note_id, int(current_user.id)):
+        return await _delete_note_locked(note_id, db, current_user)
 
 
 @router.post("/suggest-metadata")
