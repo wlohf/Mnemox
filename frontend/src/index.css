@@ -2848,3 +2848,323 @@ html .ant-notification-notice {
     grid-template-columns: 1fr;
   }
 }
+
+/* Learner model evidence workbench */
+.mnemox-learner-workbench {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(360px, 1fr) minmax(380px, 1.16fr);
+  min-height: 680px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.mnemox-learner-concepts,
+.mnemox-learner-state,
+.mnemox-learner-evidence {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.mnemox-learner-concepts,
+.mnemox-learner-state {
+  border-right: 1px solid var(--border-light);
+}
+
+.mnemox-learner-search,
+.mnemox-learner-filter {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-learner-concept-list {
+  display: grid;
+}
+
+.mnemox-learner-concept {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border-light);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mnemox-learner-concept:hover,
+.mnemox-learner-concept.is-active {
+  background: var(--primary-50);
+}
+
+.mnemox-learner-concept.is-active {
+  box-shadow: inset 3px 0 0 var(--accent-600);
+}
+
+.mnemox-learner-concept > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mnemox-learner-concept strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-learner-concept small,
+.mnemox-evidence-main small,
+.mnemox-mastery-chapters small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.mnemox-learner-concept b {
+  color: var(--accent-600);
+  font-size: 14px;
+}
+
+.mnemox-learner-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border-light);
+}
+
+.mnemox-learner-metrics > div {
+  display: grid;
+  gap: 7px;
+  min-height: 126px;
+  padding: 16px;
+  background: var(--bg-input);
+}
+
+.mnemox-learner-metrics .anticon {
+  color: var(--accent-600);
+  font-size: 18px;
+}
+
+.mnemox-learner-metrics span,
+.mnemox-learner-explanation span,
+.mnemox-override-form label > span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mnemox-learner-metrics strong {
+  color: var(--text-primary);
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.mnemox-learner-metrics .mnemox-model-version {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mnemox-learner-explanation {
+  display: grid;
+  gap: 0;
+  padding: 18px;
+}
+
+.mnemox-learner-explanation h3 {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.mnemox-learner-explanation > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.mnemox-learner-explanation strong {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.mnemox-learner-override {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 18px 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--primary-200);
+  border-radius: 8px;
+  background: var(--primary-50);
+}
+
+.mnemox-learner-override > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mnemox-learner-override span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mnemox-learner-evidence .ant-list-item {
+  padding: 12px 14px;
+}
+
+.mnemox-evidence-main {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+}
+
+.mnemox-evidence-main > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mnemox-evidence-main strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.mnemox-learner-evidence .ant-pagination {
+  padding: 14px;
+}
+
+.mnemox-mastery-chapters {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.65fr) minmax(400px, 1.35fr) minmax(280px, 0.8fr);
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-surface);
+}
+
+.mnemox-mastery-chapters > section:not(:last-child) {
+  border-right: 1px solid var(--border-light);
+}
+
+.mnemox-mastery-overall {
+  padding: 18px;
+}
+
+.mnemox-mastery-material {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.mnemox-mastery-material > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mnemox-mastery-chapters .ant-list-item > div:not(.mnemox-mastery-material) {
+  display: grid;
+  gap: 5px;
+}
+
+.mnemox-override-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding-top: 8px;
+}
+
+.mnemox-override-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.mnemox-override-form label:last-child {
+  grid-column: 1 / -1;
+}
+
+.mnemox-override-form .ant-input-number {
+  width: 100%;
+}
+
+@media (max-width: 1180px) {
+  .mnemox-learner-workbench {
+    grid-template-columns: 240px minmax(340px, 1fr);
+  }
+
+  .mnemox-learner-state {
+    border-right: 0;
+  }
+
+  .mnemox-learner-evidence {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border-light);
+  }
+
+  .mnemox-mastery-chapters {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mnemox-mastery-chapters > section:last-child {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--border-light);
+  }
+}
+
+@media (max-width: 760px) {
+  .mnemox-learner-workbench,
+  .mnemox-mastery-chapters {
+    grid-template-columns: 1fr;
+  }
+
+  .mnemox-learner-concepts,
+  .mnemox-learner-state,
+  .mnemox-mastery-chapters > section:not(:last-child) {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+
+  .mnemox-learner-evidence,
+  .mnemox-mastery-chapters > section:last-child {
+    grid-column: auto;
+  }
+
+  .mnemox-learner-concept-list {
+    max-height: 320px;
+    overflow: auto;
+  }
+
+  .mnemox-learner-metrics,
+  .mnemox-override-form {
+    grid-template-columns: 1fr;
+  }
+
+  .mnemox-override-form label:last-child {
+    grid-column: auto;
+  }
+
+  .mnemox-learner-filter .ant-segmented-item-label {
+    padding-inline: 5px;
+    font-size: 11px;
+  }
+}
