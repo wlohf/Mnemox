@@ -24,7 +24,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 | 前端能力 | 17 个业务页面，主工作台、学习工具、洞察、设置和笔记上下文提示均已接入。 |
 | 桌面端 | Electron 壳、Windows NSIS 构建、更新器和桌面提醒桥接已存在。 |
 | 自动化测试 | 后端 50 个测试文件；前端 22 个测试文件；桌面端 7 个测试文件。 |
-| 主线与分支 | `feature/phase2-agent-upgrade` 的名称是历史遗留，不代表 Phase 2 已启动；其有效内容已整合进 `main`。已合入的 OpenHands 分支退役，早期 `vk/2ba2-` 独立历史仅归档、不参与合并。 |
+| 主线与分支 | `feature/phase2-agent-upgrade` 的名称是历史遗留，不代表 Phase 2 已启动；其有效内容已整合进 `main`。已合入的 OpenHands 分支退役，早期 `vk/2ba2-` 独立历史保存在 `archive/vk-2ba2-2026-02-09`，不参与合并。 |
 
 ## 3. v1.3.0 已完成
 
@@ -65,7 +65,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 - 原本未合并的笔记上下文和 Phase 1 学习智能底座改动均已进入 `main` 开发基线。
 - v1.3.0 发布提交、tag、GitHub Release 和 Windows 安装包保持不变；本次合并只更新主线，不冒充一次新版本发布。
-- `openhands/rag-agent-hardening` 已由历史 PR 合入并退役；`vk/2ba2-` 与当前主线没有共同 Git 祖先，只保留归档标签，不使用 `--allow-unrelated-histories` 强行合并。
+- `openhands/rag-agent-hardening` 已由历史 PR #1 合入并退役；`vk/2ba2-` 与当前主线没有共同 Git 祖先，其提交已保存在 `archive/vk-2ba2-2026-02-09` 归档分支，不使用 `--allow-unrelated-histories` 强行合并。三个已退役的活动分支仍待从 GitHub Branches 页面删除。
 - 2026-08-13 Outbox 运维闭环已提交为 `1ffec29`（`feat: harden projection outbox operations`）：涵盖 DLQ/人工重试、版本化共享重试策略、跨实例心跳与告警、受保护指标、活跃队列索引及迁移 head `20260812_06`。聚焦后端回归为 `55 passed`，前端为 `22 files / 67 tests passed`，构建与 lint 通过；全后端命令在 10 分钟上限超时，不能写作全量通过。真实 PostgreSQL 双会话并发验收仍保留给发布窗口。
 - `scripts/seed_showcase_account.py` 已纳入版本控制；它包含固定本地 Demo 凭据，只能用于本地演示，不能作为生产初始化方式。
 
