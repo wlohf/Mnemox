@@ -2,7 +2,7 @@
 
 > 状态：维护中
 >
-> 更新日期：2026-08-12
+> 更新日期：2026-08-13
 >
 > 当前版本：v1.3.0
 > 当前阶段：Phase 1 学习者模型和 Outbox 运维闭环已收口；真实数据校准与其余底座进行中；Phase 2 等待 Phase 1 验收
@@ -19,7 +19,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 | 范畴 | 状态 |
 | --- | --- |
-| 版本与发布 | `v1.3.0` 已发布；`origin/main`、版本 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）已存在；当前 feature 分支的 Phase 1 改动尚未作为新版本发布。 |
+| 版本与发布 | `v1.3.0` 已发布；`origin/main`、版本 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）已存在；Outbox 运维闭环已提交为 `1ffec29`，当前 feature 分支尚未合入 `main` 或作为新版本发布。 |
 | 后端能力 | 30 个路由模块、25 个模型模块、45 个服务模块，覆盖学习、AI、RAG、笔记上下文、学习者模型、事件投影、Agent 与 Coach。 |
 | 前端能力 | 17 个业务页面，主工作台、学习工具、洞察、设置和笔记上下文提示均已接入。 |
 | 桌面端 | Electron 壳、Windows NSIS 构建、更新器和桌面提醒桥接已存在。 |
@@ -52,6 +52,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 - 原本未合并的笔记上下文功能已进入 `main`。
 - v1.3.0 发布提交、tag、GitHub Release 和 Windows 安装包已完成发布；后续 Phase 1 改动应单独走新的验证、提交和发布流程。
+- 2026-08-13 Outbox 运维闭环已提交为 `1ffec29`（`feat: harden projection outbox operations`）：涵盖 DLQ/人工重试、版本化共享重试策略、跨实例心跳与告警、受保护指标、活跃队列索引及迁移 head `20260812_06`。聚焦后端回归为 `55 passed`，前端为 `22 files / 67 tests passed`，构建与 lint 通过；全后端命令在 10 分钟上限超时，不能写作全量通过。真实 PostgreSQL 双会话并发验收仍保留给发布窗口。
 - `scripts/seed_showcase_account.py` 已纳入版本控制；它包含固定本地 Demo 凭据，只能用于本地演示，不能作为生产初始化方式。
 
 ## 6. 下一阶段工作
