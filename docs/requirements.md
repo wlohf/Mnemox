@@ -3,11 +3,11 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-04
+> 最近核查：2026-08-13
 >
 > 当前发布版本：v1.3.0
 > 对应发布基线：`main@v1.3.0`
-> 当前实现工作区：`feature/phase2-agent-upgrade`（未提交的 Phase 1 收口改动）
+> 当前开发基线：`main`（post-v1.3，已整合 Phase 0/Phase 1 收口改动，尚未形成新发布）
 
 本文件定义 Mnemox 当前已经实现、正在收敛和下一阶段计划实现的产品范围。它是需求讨论与排期的入口；具体实现以 [技术文档](technical.md) 为准，执行状态以 [进度文档](progress.md) 为准，阶段顺序以 [路线图](roadmap.md) 为准。四层学习智能底座的边界、候选技术与采纳门槛见 [2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。
 
