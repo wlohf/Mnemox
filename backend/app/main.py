@@ -10,10 +10,39 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger(__name__)
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import init_db, close_db, _is_sqlite
 from app.middleware.security import RateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from app.frontend_static import register_frontend_static
 from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
+
+
+def create_projection_outbox_worker(session_factory):
+    """Build the application-local consumer from environment-backed settings."""
+    from app.services.projection_outbox_worker import (
+        ProjectionOutboxWorker,
+        default_worker_id,
+    )
+
+    return ProjectionOutboxWorker(
+        session_factory,
+        worker_id=default_worker_id(settings.OUTBOX_WORKER_ID),
+        batch_size=settings.OUTBOX_WORKER_BATCH_SIZE,
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
+        poll_interval_seconds=settings.OUTBOX_WORKER_POLL_INTERVAL_SECONDS,
+        heartbeat_enabled=True,
+        heartbeat_interval_seconds=settings.OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_ttl_seconds=settings.OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS,
+        alert_backlog_count_threshold=settings.OUTBOX_ALERT_BACKLOG_COUNT_THRESHOLD,
+        alert_backlog_age_seconds=settings.OUTBOX_ALERT_BACKLOG_AGE_SECONDS,
+        alert_terminal_failure_threshold=settings.OUTBOX_ALERT_TERMINAL_FAILURE_THRESHOLD,
+        alert_stale_processing_threshold=settings.OUTBOX_ALERT_STALE_PROCESSING_THRESHOLD,
+    )
+
+
+def _outbox_worker_allowed() -> bool:
+    """SQLite keeps request-time consumption as its single-consumer path."""
+    return bool(settings.OUTBOX_WORKER_ENABLED and not _is_sqlite())
 
 
 @asynccontextmanager
@@ -25,6 +54,9 @@ async def lifespan(app: FastAPI):
     logger.info("数据库初始化完成")
 
     from app.database import async_session_maker
+
+    outbox_worker = None
+    app.state.projection_outbox_worker = None
 
     # Decay stale episodic memories
     try:
@@ -97,10 +129,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("RAG 服务初始化失败（不影响主流程）: %s", e)
 
-    yield
-    # 关闭时清理资源
-    await close_db()
-    logger.info("应用关闭，数据库连接已关闭")
+    try:
+        # Start the PostgreSQL worker only after startup maintenance and RAG
+        # initialization have completed. The surrounding finally still closes
+        # the DB if setup fails after this point.
+        if _outbox_worker_allowed():
+            outbox_worker = create_projection_outbox_worker(async_session_maker)
+            app.state.projection_outbox_worker = outbox_worker
+            outbox_worker.start()
+            logger.info("projection outbox worker started worker_id=%s", outbox_worker.worker_id)
+        yield
+    finally:
+        if outbox_worker is not None:
+            try:
+                await outbox_worker.stop()
+                logger.info("projection outbox worker stopped worker_id=%s", outbox_worker.worker_id)
+            except Exception as exc:
+                logger.warning("projection outbox worker shutdown failed: %s", exc, exc_info=settings.DEBUG)
+        # 关闭时清理资源
+        await close_db()
+        logger.info("应用关闭，数据库连接已关闭")
 
 
 # 创建 FastAPI 应用
@@ -164,12 +212,26 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """健康检查"""
-    return {"status": "ok"}
+    """Return a cheap public liveness check without queue telemetry."""
+    worker = getattr(app.state, "projection_outbox_worker", None)
+    worker_enabled = _outbox_worker_allowed()
+    worker_running = bool(worker is not None and worker.snapshot().get("running"))
+    return {
+        "status": "ok" if not worker_enabled or worker_running else "degraded",
+        "projection_outbox_worker": {
+            "enabled": worker_enabled,
+            "running": worker_running,
+            **(
+                {"disabled_reason": "sqlite_single_consumer"}
+                if worker is None and _is_sqlite() and settings.OUTBOX_WORKER_ENABLED
+                else {}
+            ),
+        },
+    }
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model, outbox_operations
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -200,13 +262,47 @@ app.include_router(prompt_templates.router, prefix="/api/prompts", tags=["Prompt
 app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分析"])
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
+app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"])
+app.include_router(learner_model.router, prefix="/api/learner-model", tags=["学习者模型"])
+app.include_router(outbox_operations.router, prefix="/internal/outbox")
 
 ensure_data_dirs()
 
 
+async def _is_upload_owned_by_user(session, user_id: int, relative_path) -> bool:
+    """上传文件归属校验：图片按用户目录隔离，资料文件绑定 Material 归属。
+
+    - images/{user_id}/...：目录名必须等于当前用户 id。
+    - images/{filename}：早期 Obsidian 附件无归属元数据，保持旧行为（仅登录可见）。
+    - 其余文件：必须能在当前用户的 Material.file_path 中按文件名匹配到。
+    """
+    from sqlalchemy import select
+
+    from app.models.material import Material
+
+    parts = relative_path.parts
+    if parts and parts[0] == "images":
+        if len(parts) >= 3:
+            return parts[1] == str(user_id)
+        return True
+
+    filename = relative_path.name
+    if not filename:
+        return False
+    result = await session.execute(
+        select(Material.id)
+        .where(
+            Material.user_id == user_id,
+            Material.file_path.ilike(f"%{filename}"),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 @app.get("/api/uploads/{file_path:path}")
 async def get_uploaded_file(file_path: str, request: Request):
-    """Serve uploaded files only to authenticated users."""
+    """Serve uploaded files only to their owner (authenticated + ownership bound)."""
     from urllib.parse import unquote
 
     from fastapi import HTTPException, status
@@ -228,17 +324,22 @@ async def get_uploaded_file(file_path: str, request: Request):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    async with async_session_maker() as session:
-        await get_user_from_token(token, session)
-
     uploads_root = get_uploads_dir().resolve()
     target = (uploads_root / unquote(file_path)).resolve()
     try:
-        target.relative_to(uploads_root)
+        relative = target.relative_to(uploads_root)
     except ValueError:
         raise HTTPException(status_code=404, detail="文件不存在")
 
     if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    async with async_session_maker() as session:
+        user = await get_user_from_token(token, session)
+        owned = await _is_upload_owned_by_user(session, int(user.id), relative)
+
+    if not owned:
+        # 与不存在同样返回 404，避免泄露他人文件是否存在
         raise HTTPException(status_code=404, detail="文件不存在")
 
     return FileResponse(target)

@@ -7,7 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
+from app.agents.agent_kernel import run_agent_kernel
+from app.agents.base import new_job_id
 from app.agents.manager import agent_manager
+from app.models.agent import AgentExecutionLog, AgentJob
 from app.models.user import User
 from app.services.agent_service import (
     build_agent_action_draft,
@@ -134,6 +137,104 @@ async def get_agent_status(
     return status
 
 
+class AgentKernelRunRequest(BaseModel):
+    objective: str | None = None
+    max_steps: int = 6
+
+
+@router.post("/kernel/run")
+async def run_kernel(
+    body: AgentKernelRunRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """运行 AgentKernel 多步工具循环（决策 D4）。
+
+    只读工具循环 + 终态行动建议；写入仍走既有草案确认流。
+    未配置 AI Key 时返回 unavailable 状态而非 5xx（可靠性基线）。
+    """
+    user_id = int(current_user.id)
+    try:
+        from app.ai.factory import AIProviderFactory
+
+        provider = await AIProviderFactory.create_provider(
+            db=db, scenario="agent_planner", user_id=user_id
+        )
+    except Exception:
+        return {
+            "status": "unavailable",
+            "reason": "ai_provider_unavailable",
+            "strategy": None,
+            "fallback_plan": None,
+            "next_actions": [],
+            "steps": [],
+            "job_id": None,
+        }
+
+    result = await run_agent_kernel(
+        db, user_id, provider, objective=body.objective, max_steps=max(1, min(body.max_steps, 8))
+    )
+
+    # 落执行记录，满足"完整回放"验收
+    job_id = new_job_id()
+    steps_payload = [
+        {
+            "index": step.index,
+            "kind": step.kind,
+            "tool": step.tool,
+            "args": step.args,
+            "thought": step.thought,
+            "observation_preview": step.observation_preview,
+        }
+        for step in result.steps
+    ]
+    db.add(
+        AgentJob(
+            id=job_id,
+            user_id=user_id,
+            agent="kernel",
+            task="run",
+            status="completed" if result.status == "completed" else "failed",
+            payload={"objective": body.objective, "max_steps": body.max_steps},
+            summary=result.strategy or result.error or result.status,
+            result={
+                "status": result.status,
+                "strategy": result.strategy,
+                "fallback_plan": result.fallback_plan,
+                "next_actions": result.next_actions,
+                "steps": steps_payload,
+                "error": result.error,
+            },
+        )
+    )
+    for step in result.steps:
+        db.add(
+            AgentExecutionLog(
+                id=new_job_id(),
+                user_id=user_id,
+                job_id=job_id,
+                agent="kernel",
+                status=step.kind,
+                message=(
+                    f"step{step.index} {step.kind}"
+                    + (f" tool={step.tool}" if step.tool else "")
+                    + (f" | {step.thought}" if step.thought else "")
+                )[:500],
+            )
+        )
+    await db.flush()
+
+    return {
+        "status": result.status,
+        "strategy": result.strategy,
+        "fallback_plan": result.fallback_plan,
+        "next_actions": result.next_actions,
+        "steps": steps_payload,
+        "error": result.error,
+        "job_id": job_id,
+    }
+
+
 @router.post("/tasks/trigger")
 async def trigger_agent_task(
     body: AgentTaskTriggerRequest,
@@ -152,7 +253,7 @@ async def trigger_agent_task(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent 执行失败: {exc}") from exc
+        raise HTTPException(status_code=500, detail="agent_execution_failed") from exc
 
 
 @router.post("/tools/chat")

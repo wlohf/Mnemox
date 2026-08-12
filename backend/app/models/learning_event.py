@@ -1,5 +1,5 @@
 """学习行为事件模型"""
-from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, Text, text
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -9,6 +9,15 @@ class LearningEvent(Base):
     __tablename__ = "learning_events"
     __table_args__ = (
         Index("ix_learning_events_user_type_time", "user_id", "event_type", "timestamp"),
+        Index(
+            "uq_learning_events_user_type_dedupe",
+            "user_id",
+            "event_type",
+            "dedupe_key",
+            unique=True,
+            sqlite_where=text("dedupe_key IS NOT NULL"),
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
     )
     
     id = Column(Integer, primary_key=True, autoincrement=True)

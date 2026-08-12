@@ -11,7 +11,9 @@ class AIRoutingSetting(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, comment="所属用户")
     scenario = Column(String(50), nullable=False, comment="场景标识")
-    provider_name = Column(String(50), ForeignKey("ai_provider_settings.provider_name"), nullable=True, comment="绑定提供商")
+    # Provider names are scoped by user, so a single-column database FK would
+    # be invalid without a matching composite unique constraint.
+    provider_name = Column(String(50), nullable=True, comment="绑定提供商")
     model = Column(String(100), nullable=True, comment="绑定模型；为空时使用提供商默认模型")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")

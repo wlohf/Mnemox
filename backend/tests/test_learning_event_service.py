@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
@@ -81,6 +84,76 @@ class LearningEventServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in events], [second["id"], first["id"]])
         self.assertEqual({item["user_id"] for item in events}, {owner_id})
         self.assertEqual([item["payload"]["title"] for item in events], ["B", "A"])
+
+    async def test_same_user_type_and_dedupe_key_have_database_uniqueness(self):
+        user_id = await self._create_user("dedupe-owner")
+        async with self.sessionmaker() as session:
+            session.add(
+                LearningEvent(
+                    user_id=user_id,
+                    event_type="note.created",
+                    event_category="study",
+                    source="test",
+                    dedupe_key="same-note",
+                    timestamp=datetime.now(),
+                )
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            session.add(
+                LearningEvent(
+                    user_id=user_id,
+                    event_type="note.created",
+                    event_category="study",
+                    source="test",
+                    dedupe_key="same-note",
+                    timestamp=datetime.now(),
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                await session.flush()
+
+    async def test_record_returns_existing_event_after_dedupe_insert_race(self):
+        user_id = await self._create_user("race-owner")
+        async with self.sessionmaker() as session:
+            original_flush = session.flush
+            raced = False
+
+            async def flush_after_competitor(*args, **kwargs):
+                nonlocal raced
+                if not raced:
+                    raced = True
+                    async with self.sessionmaker() as competitor:
+                        competitor.add(
+                            LearningEvent(
+                                user_id=user_id,
+                                event_type="note.created",
+                                event_category="study",
+                                source="competitor",
+                                dedupe_key="race-note",
+                                timestamp=datetime.now(),
+                            )
+                        )
+                        await competitor.commit()
+                return await original_flush(*args, **kwargs)
+
+            with patch.object(session, "flush", new=flush_after_competitor):
+                event = await record_learning_event(
+                    session,
+                    user_id,
+                    "note.created",
+                    source="test",
+                    payload={"title": "Race"},
+                    dedupe_key="race-note",
+                )
+            await session.commit()
+
+        self.assertEqual(event["event_type"], "note.created")
+        self.assertEqual(event["dedupe_key"], "race-note")
+        async with self.sessionmaker() as session:
+            rows = (await session.execute(select(LearningEvent))).scalars().all()
+        self.assertEqual(len(rows), 1)
 
 
 if __name__ == "__main__":

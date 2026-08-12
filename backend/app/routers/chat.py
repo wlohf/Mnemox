@@ -107,8 +107,11 @@ async def _detect_and_create_wrong_questions(
         "[{\"content\":\"用户错误的问题/概念\",\"answer\":\"正确答案\",\"explanation\":\"错误原因\"}]\n"
         "如果没有明确的知识性错误，输出空数组 []\n"
         "只输出 JSON，不要解释。\n\n"
-        f"用户消息：{user_msg[:500]}\n"
-        f"AI回复：{ai_reply[:800]}\n"
+        + wrap_untrusted_context(
+            "待检测对话",
+            f"用户消息：{user_msg[:500]}\nAI回复：{ai_reply[:800]}",
+            source="chat_turn",
+        )
     )
 
     try:

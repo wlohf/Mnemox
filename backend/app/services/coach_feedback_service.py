@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.coach import CoachNudge
 from app.models.memory import UserMemory
 from app.services.coach_learning_service import record_skill_feedback
+from app.services.learning_event_service import CanonicalEventType, record_coach_nudge_event
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
 
@@ -42,6 +43,20 @@ def _feedback_status(outcome: str) -> str:
     if outcome in {"later", "snoozed"}:
         return "snoozed"
     return "dismissed"
+
+
+def _feedback_event_type(outcome: str) -> str:
+    """Map user feedback to the lifecycle event used by attribution metrics."""
+
+    if outcome in {"accepted", "helpful"}:
+        return CanonicalEventType.COACH_NUDGE_ACCEPTED
+    if outcome == "completed":
+        return CanonicalEventType.COACH_NUDGE_COMPLETED
+    if outcome in {"later", "snoozed"}:
+        return CanonicalEventType.COACH_NUDGE_SNOOZED
+    if outcome in {"dismissed", "too_disruptive"}:
+        return CanonicalEventType.COACH_NUDGE_DISMISSED
+    return CanonicalEventType.COACH_NUDGE_FEEDBACK
 
 
 async def record_coach_feedback(
@@ -91,6 +106,14 @@ async def record_coach_feedback(
     )
     db.add(memory)
     learning_stats = await record_skill_feedback(db, user_id, nudge, outcome)
+    await record_coach_nudge_event(
+        db,
+        user_id,
+        nudge,
+        _feedback_event_type(outcome),
+        outcome=outcome,
+        occurred_at=now,
+    )
     await db.flush()
     return {
         "ok": True,

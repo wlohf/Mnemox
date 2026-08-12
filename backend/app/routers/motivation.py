@@ -19,6 +19,10 @@ from app.services.motivation_service import (
     build_motivation_prompt,
     collect_motivation_snapshot,
 )
+from app.services.note_quote_service import (
+    record_note_quote_usage,
+    recently_used_hashes,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -410,7 +414,12 @@ async def generate_quote(
     await _ensure_presets(db, user_id)
 
     today = date.today()
-    snapshot = await collect_motivation_snapshot(db, user_id, today)
+    try:
+        used_hashes = await recently_used_hashes(db, user_id)
+    except Exception as e:
+        logger.warning("读取引用冷却记录失败 user_id=%s err=%s", user_id, e)
+        used_hashes = set()
+    snapshot = await collect_motivation_snapshot(db, user_id, today, exclude_note_hashes=used_hashes)
     prompt = build_motivation_prompt(snapshot)
     author = "AI"
 
@@ -434,6 +443,22 @@ async def generate_quote(
         author = "系统"
     if not text:
         raise HTTPException(status_code=500, detail="生成激励失败")
+
+    if snapshot.note_highlights:
+        primary = snapshot.note_highlights[0]
+        try:
+            await record_note_quote_usage(
+                db,
+                user_id,
+                {
+                    "note_id": primary.note_id,
+                    "excerpt": primary.excerpt,
+                    "excerpt_hash": primary.excerpt_hash,
+                },
+                channel="motivation",
+            )
+        except Exception as e:  # 使用记录失败不影响激励生成
+            logger.warning("激励引用使用记录失败 user_id=%s err=%s", user_id, e)
 
     duplicated = await _find_duplicate_quote_by_content(db, user_id, text)
     if duplicated is not None:

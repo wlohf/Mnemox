@@ -65,7 +65,10 @@ class AISettingsModelCatalogTests(unittest.IsolatedAsyncioTestCase):
             enabled=True,
         )
 
-        with patch("app.routers.ai_settings.settings.OPENAI_API_KEY", "sk-env"):
+        with patch("app.routers.ai_settings.settings.OPENAI_API_KEY", "sk-env"), patch(
+            "app.routers.ai_settings.settings.OPENAI_BASE_URL",
+            "https://api.openai.com/v1",
+        ):
             api_key, base_url, model = _get_effective_values(row)
 
         self.assertEqual(api_key, "")

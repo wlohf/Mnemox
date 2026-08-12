@@ -18,6 +18,7 @@ from app.models.goal import Goal, Task
 from app.models.pomodoro import Pomodoro
 from app.models.question import WrongQuestion, ReviewSchedule
 from app.models.user import User
+from app.services.north_star_metrics_service import build_north_star_metrics
 
 router = APIRouter()
 
@@ -71,6 +72,26 @@ class PredictionResponse(BaseModel):
     confidence: Optional[float]
     on_track: bool
     insight: str
+
+
+@router.get("/north-star")
+async def get_north_star_metrics(
+    days: int = Query(28, ge=7, le=90, description="统计窗口（7-90 天）"),
+    time_zone: str = Query("UTC", min_length=1, max_length=64, description="IANA 时区，例如 Asia/Tokyo"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the four behavior metrics with their evidence and coverage state."""
+
+    try:
+        return await build_north_star_metrics(
+            db,
+            int(current_user.id),
+            days=days,
+            time_zone=time_zone,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ════════════════════════════════════════════

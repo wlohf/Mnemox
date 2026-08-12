@@ -23,6 +23,7 @@ interface ChatStore {
   // Conversations
   conversations: Conversation[]
   activeConversationId: number | null
+  lastConversationError: string | null
 
   // Messages
   messages: ChatMessage[]
@@ -51,6 +52,7 @@ interface ChatStore {
   pinConversation: (id: number, pinned: boolean) => Promise<void>
   searchConversations: (query: string) => Promise<void>
   reloadConversationsForCurrentView: () => Promise<void>
+  clearConversationError: () => void
 
   // Actions - Messages
   setMessages: (messages: ChatMessage[]) => void
@@ -84,12 +86,15 @@ const persistId = (key: string, val: number | null) => {
 
 // Debounce timer for search
 let _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+// Monotonic token so concurrent detail loads only apply the latest selection.
+let _activeConversationRequestId = 0
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   projects: [],
   activeProjectId: getPersistedId('chat_activeProjectId'),
   conversations: [],
   activeConversationId: getPersistedId('chat_activeConversationId'),
+  lastConversationError: null,
   messages: [],
   streamingContent: '',
   isStreaming: false,
@@ -164,10 +169,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   reconcilePersistedSelections: async () => {
     const { activeProjectId, activeConversationId } = get()
-    let conversations: Conversation[] = []
     let projects: ChatProject[] = []
     try {
-      conversations = await get().loadConversations()
+      await get().loadConversations()
       projects = await listProjects()
       set({ projects })
     } catch (error) {
@@ -179,9 +183,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       persistId('chat_activeProjectId', null)
     }
 
-    if (activeConversationId !== null && !conversations.some((conversation) => conversation.id === activeConversationId)) {
-      set({ activeConversationId: null, messages: [], streamingContent: '' })
-      persistId('chat_activeConversationId', null)
+    // List endpoint is paginated; a missing ID in the first page is not proof that
+    // the conversation is gone. Verify via detail lookup before clearing.
+    if (activeConversationId !== null) {
+      try {
+        await getConversation(activeConversationId)
+      } catch (error) {
+        const status = typeof error === 'object' && error && 'status' in error
+          ? Number((error as { status?: number }).status)
+          : undefined
+        if (status === 404) {
+          set({ activeConversationId: null, messages: [], streamingContent: '', lastConversationError: null })
+          persistId('chat_activeConversationId', null)
+        }
+      }
     }
   },
 
@@ -213,34 +228,54 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   setActiveConversation: async (id) => {
+    const requestId = ++_activeConversationRequestId
     const previousId = get().activeConversationId
     const previousMessages = get().messages
-    set({ activeConversationId: id })
+    set({ activeConversationId: id, lastConversationError: null })
     persistId('chat_activeConversationId', id)
 
     if (id) {
       try {
         const detail = await getConversation(id)
+        // A newer selection won the race; discard this response.
+        if (requestId !== _activeConversationRequestId) {
+          return false
+        }
         set({
           messages: detail.messages.map((m) => ({
             role: m.role as 'user' | 'assistant',
             content: m.content,
             image_data: m.image_data || undefined,
           })),
+          streamingContent: '',
+          lastConversationError: null,
         })
-      } catch {
+        return true
+      } catch (error) {
+        if (requestId !== _activeConversationRequestId) {
+          return false
+        }
+        const message = getApiErrorMessage(error, '加载历史对话失败，请稍后重试')
         const fallbackId = previousId === id ? null : previousId
-        set({ activeConversationId: fallbackId, messages: fallbackId ? previousMessages : [] })
+        set({
+          activeConversationId: fallbackId,
+          messages: fallbackId ? previousMessages : [],
+          streamingContent: '',
+          lastConversationError: message,
+        })
         persistId('chat_activeConversationId', fallbackId)
-        set({ streamingContent: '' })
         return false
       }
-    } else {
-      set({ messages: [] })
     }
-    set({ streamingContent: '' })
+
+    if (requestId !== _activeConversationRequestId) {
+      return false
+    }
+    set({ messages: [], streamingContent: '', lastConversationError: null })
     return true
   },
+
+  clearConversationError: () => set({ lastConversationError: null }),
 
   deleteConversation: async (id) => {
     await apiDeleteConversation(id)

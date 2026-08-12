@@ -1,7 +1,6 @@
 """Helpers for building personalized motivation prompts and fallbacks."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -11,28 +10,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.goal import Goal, Task
 from app.models.note import Note
 from app.models.pomodoro import Pomodoro
-from app.utils.prompt_safety import wrap_untrusted_context
-
-_GENERIC_NOTE_TITLES = {"", "新笔记", "学习摘录", "无标题", "私有笔记"}
-_NOTE_SIGNAL_KEYWORDS = (
-    "坚持",
-    "行动",
-    "专注",
-    "复习",
-    "方法",
-    "习惯",
-    "输出",
-    "复盘",
-    "不要",
-    "先",
-    "理解",
+from app.services.note_excerpt import (
+    compact_text as _compact_text,
+    excerpt_hash as _excerpt_hash,
+    extract_note_excerpt as _extract_note_excerpt,
+    normalize_note_title as _normalize_note_title,
+    should_reference_title as _should_reference_title,
 )
+from app.utils.prompt_safety import wrap_untrusted_context
 
 
 @dataclass(slots=True)
 class NoteHighlight:
     title: str
     excerpt: str
+    note_id: int | None = None
+    excerpt_hash: str = ""
 
 
 @dataclass(slots=True)
@@ -47,56 +40,11 @@ class MotivationSnapshot:
     note_highlights: list[NoteHighlight]
 
 
-def _compact_text(text: str, limit: int) -> str:
-    clean = re.sub(r"\s+", " ", (text or "").strip())
-    if len(clean) <= limit:
-        return clean
-    return clean[: limit - 1].rstrip() + "…"
-
-
-def _clean_markdown_line(line: str) -> str:
-    text = line.strip()
-    text = re.sub(r"^#{1,6}\s*", "", text)
-    text = re.sub(r"^\s*[-*+]\s*", "", text)
-    text = re.sub(r"^\s*\d+[.)]\s*", "", text)
-    text = re.sub(r"`([^`]*)`", r"\1", text)
-    text = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", text)
-    return re.sub(r"\s+", " ", text).strip(" >\t")
-
-
-def _extract_note_excerpt(content: str, limit: int = 96) -> str:
-    if not content:
-        return ""
-    text = re.sub(r"```.*?```", " ", content, flags=re.S)
-    candidates: list[str] = []
-    for raw_line in text.splitlines():
-        clean = _clean_markdown_line(raw_line)
-        if len(clean) < 10:
-            continue
-        candidates.append(clean)
-        if len(candidates) >= 8:
-            break
-    if not candidates:
-        return ""
-    for item in candidates:
-        if any(keyword in item for keyword in _NOTE_SIGNAL_KEYWORDS):
-            return _compact_text(item, limit)
-    return _compact_text(candidates[0], limit)
-
-
-def _normalize_note_title(title: str) -> str:
-    clean = _compact_text(title or "", 40)
-    return clean or "未命名笔记"
-
-
-def _should_reference_title(title: str) -> bool:
-    return (title or "").strip() not in _GENERIC_NOTE_TITLES
-
-
 async def _collect_recent_note_highlights(
     db: AsyncSession,
     user_id: int,
     limit: int = 3,
+    exclude_hashes: set[str] | None = None,
 ) -> list[NoteHighlight]:
     result = await db.execute(
         select(Note)
@@ -106,18 +54,21 @@ async def _collect_recent_note_highlights(
     )
     highlights: list[NoteHighlight] = []
     seen: set[str] = set()
+    excluded = exclude_hashes or set()
     for note in result.scalars().all():
         excerpt = _extract_note_excerpt(str(getattr(note, "content", "") or ""))
         if not excerpt:
             continue
-        normalized = excerpt.lower()
-        if normalized in seen:
+        digest = _excerpt_hash(excerpt)
+        if digest in seen or digest in excluded:
             continue
-        seen.add(normalized)
+        seen.add(digest)
         highlights.append(
             NoteHighlight(
                 title=_normalize_note_title(str(getattr(note, "title", "") or "")),
                 excerpt=excerpt,
+                note_id=int(note.id),
+                excerpt_hash=digest,
             )
         )
         if len(highlights) >= limit:
@@ -129,6 +80,7 @@ async def collect_motivation_snapshot(
     db: AsyncSession,
     user_id: int,
     target_date: date,
+    exclude_note_hashes: set[str] | None = None,
 ) -> MotivationSnapshot:
     today_str = target_date.isoformat()
 
@@ -162,7 +114,9 @@ async def collect_motivation_snapshot(
     )
     pomodoro_count, pomodoro_minutes = pomodoro_result.one()
 
-    note_highlights = await _collect_recent_note_highlights(db, user_id)
+    note_highlights = await _collect_recent_note_highlights(
+        db, user_id, exclude_hashes=exclude_note_hashes
+    )
 
     return MotivationSnapshot(
         user_id=user_id,
@@ -177,7 +131,8 @@ async def collect_motivation_snapshot(
 
 
 def build_motivation_prompt(snapshot: MotivationSnapshot) -> str:
-    goals_text = ", ".join(snapshot.goals) if snapshot.goals else "暂无明确目标"
+    # 目标标题是用户自由文本，压缩长度并去除换行，避免夹带指令样式内容
+    goals_text = ", ".join(_compact_text(goal, 40) for goal in snapshot.goals) if snapshot.goals else "暂无明确目标"
     prompt = (
         "以下是一位学习者的今日学习情况：\n"
         f"当前学习目标: {goals_text}\n"

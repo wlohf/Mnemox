@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.models.learning_event import LearningEvent, EventType, EventCategory
+from app.services.learning_event_service import record_learning_event
 
 
 class EventTracker:
@@ -22,7 +23,14 @@ class EventTracker:
         material_id: Optional[int] = None,
         chapter_id: Optional[int] = None,
         session_id: Optional[str] = None,
-        duration: Optional[int] = None
+        duration: Optional[int] = None,
+        task_id: Optional[int] = None,
+        goal_id: Optional[int] = None,
+        wrong_question_id: Optional[int] = None,
+        note_id: Optional[int] = None,
+        source: str = "event_tracker",
+        dedupe_key: Optional[str] = None,
+        occurred_at: Optional[datetime] = None,
     ) -> LearningEvent:
         """
         追踪学习事件
@@ -39,40 +47,43 @@ class EventTracker:
         Returns:
             创建的事件记录
         """
-        # 自动推断分类
-        if not category:
-            category = self._infer_category(event_type)
-        
-        # 创建事件
-        event = LearningEvent(
-            user_id=self.user_id,
-            event_type=event_type,
-            event_category=category,
-            event_data=event_data or {},
+        # This adapter keeps legacy callers working while routing every new
+        # write through the canonical, transaction-safe event service.
+        recorded = await record_learning_event(
+            self.db,
+            self.user_id,
+            event_type,
+            source=source,
+            payload=event_data or {},
+            event_category=category or self._infer_category(event_type),
             material_id=material_id,
             chapter_id=chapter_id,
+            goal_id=goal_id,
+            task_id=task_id,
+            note_id=note_id,
+            wrong_question_id=wrong_question_id,
             session_id=session_id,
             duration=duration,
-            timestamp=datetime.now()
+            dedupe_key=dedupe_key,
+            occurred_at=occurred_at,
         )
-        
-        self.db.add(event)
-        await self.db.commit()
-        await self.db.refresh(event)
-        
+        event = await self.db.get(LearningEvent, recorded["id"])
+        if event is None:  # pragma: no cover - record_learning_event flushed it
+            raise RuntimeError("学习事件写入后无法读取")
         return event
     
     def _infer_category(self, event_type: str) -> str:
         """根据事件类型推断分类"""
-        if event_type.startswith("study_"):
+        normalized = str(event_type or "").replace("_", ".")
+        if normalized.startswith("study."):
             return EventCategory.STUDY
-        elif event_type.startswith("question_") or event_type.startswith("pomodoro_"):
+        elif normalized.startswith("question.") or normalized.startswith("pomodoro."):
             return EventCategory.PRACTICE
-        elif event_type.startswith("review_"):
+        elif normalized.startswith("review."):
             return EventCategory.REVIEW
-        elif event_type.startswith("goal_"):
+        elif normalized.startswith("goal."):
             return EventCategory.GOAL
-        elif event_type.startswith("ai_"):
+        elif normalized.startswith("ai."):
             return EventCategory.INTERACTION
         else:
             return EventCategory.STUDY

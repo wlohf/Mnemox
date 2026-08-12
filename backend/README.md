@@ -29,8 +29,10 @@ OPENAI_API_KEY=your_api_key_here
 ### 3. 初始化数据库
 
 ```bash
-python init_db.py
+python run_migrations.py
 ```
+
+SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260812_06`，默认 SQLite 已验证升级到该版本；正式 PostgreSQL 仍须先快照，并在发布窗口执行升级和多实例 Outbox 验收。
 
 ### 4. 启动服务
 
@@ -65,7 +67,8 @@ backend/
 │   │   ├── session.py       # 学习会话
 │   │   ├── question.py      # 题目和错题
 │   │   ├── pomodoro.py      # 番茄钟
-│   │   └── note.py          # 笔记
+│   │   ├── note.py          # 笔记
+│   │   └── learner_model.py # 学习证据、概念状态与投影 outbox
 │   ├── routers/             # API 路由（已包含 chat/materials/pomodoro/plans 等）
 │   ├── services/            # 业务逻辑（material/event_tracker 等）
 │   └── ai/                  # AI 服务适配层
@@ -122,7 +125,7 @@ print(response)
 
 ## 当前状态与待办
 
-### 已上线接口
+### 已实现接口（post-v1.3 主线基线，尚未作为新安装版本发布）
 
 - 资料：上传、创建、列表、详情、删除、RAG 分析/提问
 - 对话：流式聊天、会话 CRUD、项目 CRUD、项目资料关联
@@ -134,11 +137,13 @@ print(response)
 - 笔记/记忆/画像：笔记 CRUD、AI 辅助、记忆管理、用户画像
 - Analytics/EDA/干预：进度、掌握度、行为分析、主动干预
 - Agent/Anki：Agent 任务与反馈、Anki 卡片与复习
+- 学习者模型：概念状态与解释、证据分页、人工修正/撤销、单概念/批量重算、投影重放与 outbox 处理
 - AI 设置：提供商读取、更新、激活、连通性测试
 
 ### 主要待办
 
-- 生产数据库迁移应统一使用 Alembic，避免依赖 `create_all` 和手写轻量迁移
+- 正式生产 PostgreSQL 升级须按发布窗口执行快照、Alembic 升级、数据量/外键/legacy 回填核对和回滚演练
+- 常驻 outbox worker 已接入应用生命周期，DLQ、告警和跨实例聚合指标已收口；仍需在正式 PostgreSQL 发布窗口执行多实例并发验收
 - 继续收敛 LLM prompt 安全边界，所有用户资料、笔记、工具结果都应作为不可信上下文传入
 - 拆分过大的路由和服务模块，尤其是 learning、analytics、agent 相关实现
 - 完善后台任务、结构化日志和失败重试可视化

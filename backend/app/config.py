@@ -1,5 +1,5 @@
 """应用配置管理"""
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 from pathlib import Path
@@ -85,6 +85,27 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    # Durable projection outbox consumer. Each application instance runs one
+    # worker; PostgreSQL row locking coordinates concurrent instances.
+    OUTBOX_WORKER_ENABLED: bool = True
+    OUTBOX_WORKER_POLL_INTERVAL_SECONDS: float = Field(default=2.0, gt=0, le=60)
+    OUTBOX_WORKER_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    OUTBOX_WORKER_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=20)
+    OUTBOX_WORKER_RETRY_POLICY_VERSION: int = Field(default=1, ge=1, le=1_000_000)
+    # Deployment-visible prefix only. The application adds a unique runtime
+    # suffix before persisting the heartbeat primary key.
+    OUTBOX_WORKER_ID: str = ""
+    OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS: float = Field(default=15.0, gt=0, le=300)
+    OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS: int = Field(default=45, ge=5, le=3600)
+    OUTBOX_ALERT_BACKLOG_COUNT_THRESHOLD: int = Field(default=100, ge=1, le=100000)
+    OUTBOX_ALERT_BACKLOG_AGE_SECONDS: int = Field(default=900, ge=1, le=604800)
+    OUTBOX_ALERT_TERMINAL_FAILURE_THRESHOLD: int = Field(default=1, ge=1, le=100000)
+    OUTBOX_ALERT_STALE_PROCESSING_THRESHOLD: int = Field(default=1, ge=1, le=100000)
+    # Kept empty by default: the internal Prometheus endpoint rejects every
+    # request until the deployment provides a dedicated operations secret.
+    OUTBOX_OPS_TOKEN: str = ""
+    # Obsidian vault 同步根目录白名单；生产环境必须配置后才允许 vault 同步（决策 D6）
+    OBSIDIAN_VAULT_ROOT: str = ""
     
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
@@ -121,6 +142,21 @@ class Settings(BaseSettings):
 
         if not self.APP_UPDATE_MANIFEST_URL.strip():
             self.APP_UPDATE_MANIFEST_URL = _DEFAULT_UPDATE_MANIFEST_URL
+
+        if self.OUTBOX_WORKER_ENABLED:
+            heartbeat_headroom = max(
+                5.0,
+                self.OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS * 0.25,
+            )
+            minimum_heartbeat_ttl = (
+                self.OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS + heartbeat_headroom
+            )
+            if self.OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS < minimum_heartbeat_ttl:
+                raise ValueError(
+                    "OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS must be at least "
+                    "the heartbeat interval plus scheduling headroom "
+                    f"({minimum_heartbeat_ttl:g}s)"
+                )
 
         return self
 

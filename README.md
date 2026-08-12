@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前版本：`v1.3.0`。聊天会安全检索当前用户的相关笔记作为参考证据，并提示已使用的笔记上下文；同时补齐项目基线文档与本地演示数据脚本。
+当前发布版本仍为 `v1.3.0`。`main` 开发基线已整合 v1.3.0 之后的 Phase 1 学习者模型与事件投影切片：SQLite/PostgreSQL 升级演练、同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。该主线整合不等于发布了新的安装包；生产发布仍需单独完成版本号、完整回归和真实 PostgreSQL 多实例验收。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -22,8 +22,11 @@
 
 - 文档导航：`/docs/README.md`
 - 当前需求基线：`/docs/requirements.md`
+- 路线图（阶段顺序与冻结清单的权威来源）：`/docs/roadmap.md`
 - 当前技术基线：`/docs/technical.md`
 - 当前项目进度：`/docs/progress.md`
+- 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
+- 历史架构决策（2026-07-26，部分仍有效）：`/docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md`
 - 功能更新记录：`/docs/updates/README.md`
 - 日常功能新增、优化和修复，统一记录到 `docs/updates/` 下的周期文档中，默认按周拆分，避免长期堆积在单一说明文件里。
 
@@ -322,7 +325,7 @@ v1.1.0 重点补齐了更适合公开试用的联网搜索和 token 预算配置
 - **搜索模式更清晰**：聊天支持 `auto`、供应商 hosted search、应用层搜索、Grok/专用搜索总结、Tavily 和本地兜底搜索模式。
 - **搜索结果可追踪**：SSE 搜索结果事件会返回来源 provider、评分、发布时间等元信息，方便前端展示和问题排查。
 - **AI token 上限设置**：每个供应商可配置上下文 token 上限和输出 token 上限；OpenAI / Claude / Gemini 会使用输出上限，聊天请求会按上下文预算裁剪较旧历史。
-- **后续自学习路线图**：新增 `docs/superpowers/specs/2026-06-22-search-token-coach-learning-roadmap.md`，说明搜索质量、token 预算和 Coach 自学习能力的后续方案。
+- **后续方向已归档**：搜索质量、token 预算和 Coach 自学习方向已被 2026-07-26 / 2026-08-03 架构决策吸收；当前执行顺序以 `docs/roadmap.md` 为准，不再维护独立的旧路线图。
 - **版本元数据同步**：应用版本、前端包版本、桌面包版本、更新清单和发布脚本默认版本同步到 `1.1.0`。
 
 上一轮更新日期：2026-06-07
@@ -674,24 +677,23 @@ Mnemox/
 - [x] 用户画像可视化页面（雷达图 + 24小时热力图 + 薄弱点）
 - [x] 学习行为 EDA 分析报告（pandas + scipy + ECharts）
 - [x] AI 主动干预推送文案与每日学习报告
-- [x] Anki 风格记忆卡（AI 生成 / CSV 导入导出 / SM-2 调度）
+- [x] Anki 风格记忆卡（AI 生成 / CSV 导入导出 / FSRS 优先、SM-2 降级调度）
 - [x] Toast UI Markdown 实时编辑器
 - [x] 主题、背景、系统版本检查等设置面板
 
 ### 接下来计划
 
-- [ ] 继续扩大多用户越权审计：系统性检查所有详情、更新、删除接口是否严格绑定 `current_user.id`
-- [ ] Prompt injection 防护：把资料内容、笔记内容和工具返回统一标记为不可信上下文，避免资料中的恶意指令影响系统提示
-- [ ] 前端 RAG 状态提示：展示语义检索是否可用、是否正在使用关键词 fallback、最近 embedding 错误
-- [ ] 搜索质量优化：搜索结果去重、来源可信度排序、搜索摘要缓存和引用 UI 展示
-- [ ] Token 预算细分：把聊天历史、RAG 资料、记忆和网页搜索结果拆成独立预算池
-- [ ] AI Provider 连接测试增强：进一步区分 chat、embedding、streaming、Responses API / Web Search 能力是否可用
-- [ ] 自学习 Coach：沉淀干预策略效果、用户反馈统计和个性化提醒频率
-- [ ] pytest 自动化测试扩面：继续覆盖 auth、RAG fallback、上传限制、Agent feedback、Planner timeout 和前端关键交互
-- [ ] 聊天框场景模式选择器（费曼 / 苏格拉底 / 教练 快速切换）
-- [ ] 多人共同学习 / 好友监督：支持学习伙伴、学习房间、共同番茄钟、好友提醒和轻量打卡监督；默认以用户授权、低打扰和隐私可控为前提
-- [ ] Demo 数据 / 一键体验模式，方便论坛用户无需大量配置即可看到完整效果
-- [ ] 自动更新包分发与发布清单维护
+2026-07-26 起，项目方向已固化为「把学习科学变成默认行为」：以行为转化为北极星（建议执行率、中断恢复时长、复习按时率、每周有效学习时段数），按五条轨道推进。2026-08-03 重新核查后，阶段状态以 [路线图](docs/roadmap.md) 和 [进度文档](docs/progress.md) 为准，目标架构与选型边界见 [学习智能底座决策](docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。
+
+- [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
+- [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化和 API 冒烟已完成；真实浏览器/桌面 E2E、草案确认执行和卫生收口待补
+- [ ] **Phase 1 · 四层底座 MVP 部分完成**：学习者模型和 projection outbox 切片已收口，前端证据下钻、离线校准基线与 PostgreSQL 常驻 worker 已接入；ContextStore 迁移、候选 Spike、同步冲突/删除、Coach 反馈和生产监控待补
+- [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
+- [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
+
+当前执行顺序：先在真实学习数据积累后运行离线回放，至少达到 50 个 holdout case 才评估候选模型；然后迁移一条真实 ContextStore 检索路径，并继续补其余领域投影。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
+
+默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 
 ---
 

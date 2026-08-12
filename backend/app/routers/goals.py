@@ -16,6 +16,19 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.services.learning_event_service import record_learning_event
 
+
+async def _ensure_user_chapter(db: AsyncSession, chapter_id: int, user_id: int) -> Chapter:
+    """章节归属校验：章节必须属于当前用户的资料，否则按不存在处理。"""
+    result = await db.execute(
+        select(Chapter)
+        .join(Material, Chapter.material_id == Material.id)
+        .where(Chapter.id == chapter_id, Material.user_id == user_id)
+    )
+    chapter = result.scalar_one_or_none()
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    return chapter
+
 router = APIRouter()
 
 
@@ -171,9 +184,7 @@ async def update_task(
         raise HTTPException(status_code=404, detail="任务不存在")
 
     if body.chapter_id is not None:
-        chapter_result = await db.execute(select(Chapter).where(Chapter.id == body.chapter_id))
-        if not chapter_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="章节不存在")
+        await _ensure_user_chapter(db, body.chapter_id, int(current_user.id))
         task.chapter_id = body.chapter_id
 
     fields_set = getattr(body, "model_fields_set", getattr(body, "__fields_set__", set()))
@@ -298,7 +309,11 @@ async def list_daily_tasks(
     chapter_ids = {t.chapter_id for t in tasks if t.chapter_id}
     chapter_map = {}
     if chapter_ids:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_ids)))
+        ch_result = await db.execute(
+            select(Chapter)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(Chapter.id.in_(chapter_ids), Material.user_id == current_user.id)
+        )
         chapter_map = {c.id: c.title for c in ch_result.scalars().all()}
 
     out = []
@@ -419,7 +434,11 @@ async def list_goal_tasks(
     chapter_ids = {t.chapter_id for t in tasks if t.chapter_id}
     chapter_map = {}
     if chapter_ids:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_ids)))
+        ch_result = await db.execute(
+            select(Chapter)
+            .join(Material, Chapter.material_id == Material.id)
+            .where(Chapter.id.in_(chapter_ids), Material.user_id == current_user.id)
+        )
         chapter_map = {c.id: c.title for c in ch_result.scalars().all()}
 
     out = []
@@ -441,9 +460,7 @@ async def create_goal_task(
         raise HTTPException(status_code=404, detail="目标不存在")
 
     if body.chapter_id:
-        chapter_result = await db.execute(select(Chapter).where(Chapter.id == body.chapter_id))
-        if not chapter_result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="章节不存在")
+        await _ensure_user_chapter(db, body.chapter_id, int(current_user.id))
 
     if body.parent_task_id is not None:
         parent_result = await db.execute(
@@ -590,9 +607,7 @@ async def create_goal_plan(
     
     # Validate chapter if provided
     if body.current_chapter_id:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id == body.current_chapter_id))
-        if not ch_result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="章节不存在")
+        await _ensure_user_chapter(db, body.current_chapter_id, int(current_user.id))
     
     # Update goal with plan settings
     from datetime import date

@@ -19,8 +19,18 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Override sqlalchemy.url from app settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
+def _include_object(obj, name, type_, reflected, compare_to):
+    # Local SQLite keeps a small one-time migration ledger outside Alembic.
+    # It is not part of the production schema and must not appear as a pending
+    # drop during ``alembic check``.
+    return not (type_ == "table" and name == "mnemox_lightweight_migrations")
+
+# The application runner and tests can provide a specific connection URL through
+# Alembic's Config object.  The bundled ini intentionally leaves it empty so
+# direct ``alembic`` use falls back to the application setting instead.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 
 def run_migrations_offline() -> None:
@@ -31,6 +41,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_comments=False,
+        include_object=_include_object,
     )
 
     with context.begin_transaction():
@@ -38,7 +50,20 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # The frozen v1.3 baseline predates most ORM column comments. Comments are
+    # documentation rather than a runtime contract; comparing them would make
+    # every real PostgreSQL rehearsal report hundreds of false-positive ALTER
+    # COMMENT operations while obscuring structural drift.
+    # The frozen baseline intentionally does not carry the newer ORM comment
+    # catalog. Disable dialect comment reflection for autogenerate checks;
+    # structural drift remains fully compared.
+    connection.dialect.supports_comments = False
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_comments=False,
+        include_object=_include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

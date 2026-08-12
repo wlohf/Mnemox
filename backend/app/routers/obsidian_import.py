@@ -11,12 +11,14 @@ import uuid
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.utils.paths import ensure_data_dirs, get_images_dir
+from app.utils.paths import ensure_data_dirs, get_user_images_dir
 from app.routers.images import _detect_image_extension, _read_limited
 from app.database import get_db
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.obsidian_sync_service import VaultPathError, sync_vault
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
@@ -28,8 +30,8 @@ def _ext_ok(name: str) -> bool:
     return name.rsplit(".", 1)[-1].lower() in ALLOWED_EXTENSIONS if "." in name else False
 
 
-async def _save_attachment(file: UploadFile) -> tuple[str, str]:
-    """Save a validated attachment image and return (original_name, url)."""
+async def _save_attachment(file: UploadFile, user_id: int) -> tuple[str, str]:
+    """Save a validated attachment image into the user's image dir and return (original_name, url)."""
     original = file.filename or "unknown.png"
     ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -46,9 +48,12 @@ async def _save_attachment(file: UploadFile) -> tuple[str, str]:
 
     ensure_data_dirs()
     filename = f"{uuid.uuid4().hex}.{ext}"
-    dest = get_images_dir() / filename
+    # 按用户目录隔离存储，与 images 路由一致；下载端点按目录校验归属
+    dest_dir = get_user_images_dir(user_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / filename
     dest.write_bytes(data)
-    return original, f"/api/uploads/images/{filename}"
+    return original, f"/api/uploads/images/{user_id}/{filename}"
 
 
 def _replace_image_refs(md: str, name_to_url: dict[str, str]) -> tuple[str, list[str]]:
@@ -143,7 +148,7 @@ async def import_obsidian_note(
         att_name = att.filename or ""
         if not _ext_ok(att_name):
             raise HTTPException(status_code=400, detail=f"不支持的附件格式: {att_name}")
-        original, url = await _save_attachment(att)
+        original, url = await _save_attachment(att, int(current_user.id))
         name_to_url[original] = url
         # also map basename in case of path prefix
         base = PurePosixPath(original).name
@@ -179,3 +184,25 @@ async def import_obsidian_note(
         "note_id": note_id,
         "saved_to_db": save_to_db,
     }
+
+
+class VaultSyncRequest(BaseModel):
+    vault_path: str
+
+
+@router.post("/sync-vault")
+async def sync_obsidian_vault(
+    body: VaultSyncRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """对本地 Obsidian vault 做增量同步（决策 D6：监听式导入的拉取实现）。
+
+    以 vault 相对路径为幂等键：新文件创建、变化更新、未变跳过；
+    同步的笔记自动挂概念图。生产环境需配置 OBSIDIAN_VAULT_ROOT 白名单。
+    """
+    try:
+        stats = await sync_vault(db, int(current_user.id), body.vault_path)
+    except VaultPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return stats
