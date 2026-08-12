@@ -567,6 +567,8 @@ async def apply_manual_override(
     confidence: float | None = None,
     forgetting_risk: float | None = None,
     occurred_at: datetime | None = None,
+    max_projection_attempts: int = 5,
+    retry_policy_version: int = 1,
 ) -> dict[str, Any]:
     """Apply or clear a user correction as an event-backed, replayable input."""
     await _get_owned_concept(db, int(user_id), int(concept_id))
@@ -614,6 +616,8 @@ async def apply_manual_override(
         db,
         user_id=int(user_id),
         outbox_ids=[int(outbox_id)],
+        max_attempts=max_projection_attempts,
+        retry_policy_version=retry_policy_version,
     )
     if projection["processed"] != 1:
         raise RuntimeError("人工修正投影处理失败")

@@ -17,7 +17,9 @@ from app.models.learning_event import LearningEvent
 from app.models.user import User
 from app.services.learning_event_service import record_learning_event
 from app.services.projection_outbox_service import (
+    POSTGRES_OUTBOX_RETRY_POLICY_LOCK_KEY,
     POSTGRES_PROJECTION_LOCK_NAMESPACE,
+    _lock_outbox_retry_policy,
     _lock_projection_users,
     enqueue_for_learning_event,
     process_event_projection,
@@ -208,6 +210,83 @@ class ProjectionOutboxTests(unittest.IsolatedAsyncioTestCase):
 
         sqlite_session = CapturingSession("sqlite")
         await _lock_projection_users(sqlite_session, [3])
+        self.assertEqual(sqlite_session.calls, [])
+
+    async def test_global_projection_claim_does_not_preselect_candidate_ids(self):
+        first_user_id, first_concept_id = await self._owner_and_concept("global-claim-first")
+        second_user_id, second_concept_id = await self._owner_and_concept("global-claim-second")
+        async with self.sessions() as session:
+            await record_learning_event(
+                session,
+                first_user_id,
+                "practice.answer",
+                source="test",
+                payload={"concept_id": first_concept_id, "score": 0.8},
+                occurred_at=self.now,
+            )
+            await record_learning_event(
+                session,
+                second_user_id,
+                "practice.answer",
+                source="test",
+                payload={"concept_id": second_concept_id, "score": 0.6},
+                occurred_at=self.now,
+            )
+            await session.commit()
+
+        async with self.sessions() as session:
+            outbox_claim_queries: list[str] = []
+            original_execute = session.execute
+
+            async def recording_execute(statement, *args, **kwargs):
+                statement_text = str(statement)
+                if (
+                    statement_text.lstrip().upper().startswith("SELECT")
+                    and "FROM projection_outbox" in statement_text
+                ):
+                    outbox_claim_queries.append(statement_text)
+                return await original_execute(statement, *args, **kwargs)
+
+            session.execute = recording_execute  # type: ignore[method-assign]
+            result = await process_outbox(
+                session,
+                limit=1,
+                now=self.now,
+                resolve_retry_policy=False,
+                reconcile_terminal_state=False,
+            )
+
+            await session.rollback()
+
+        self.assertEqual(result, {"claimed": 1, "processed": 1, "failed": 0})
+        self.assertEqual(len(outbox_claim_queries), 1)
+
+    async def test_postgresql_retry_policy_uses_shared_and_exclusive_transaction_locks(self):
+        class CapturingSession:
+            def __init__(self, dialect_name: str) -> None:
+                self.bind = SimpleNamespace(dialect=SimpleNamespace(name=dialect_name))
+                self.calls: list[tuple[str, dict[str, int]]] = []
+
+            async def execute(self, statement, parameters):
+                self.calls.append((str(statement), dict(parameters)))
+
+        postgres_session = CapturingSession("postgresql")
+        await _lock_outbox_retry_policy(postgres_session, exclusive=False)
+        await _lock_outbox_retry_policy(postgres_session, exclusive=True)
+
+        self.assertEqual(
+            [params for _, params in postgres_session.calls],
+            [
+                {"key": POSTGRES_OUTBOX_RETRY_POLICY_LOCK_KEY},
+                {"key": POSTGRES_OUTBOX_RETRY_POLICY_LOCK_KEY},
+            ],
+        )
+        self.assertIn("pg_advisory_xact_lock_shared", postgres_session.calls[0][0])
+        self.assertIn("pg_advisory_xact_lock", postgres_session.calls[1][0])
+        self.assertNotIn("pg_advisory_xact_lock_shared", postgres_session.calls[1][0])
+
+        sqlite_session = CapturingSession("sqlite")
+        await _lock_outbox_retry_policy(sqlite_session, exclusive=False)
         self.assertEqual(sqlite_session.calls, [])
 
     async def test_stale_processing_row_is_recovered_and_user_filter_isolated(self):

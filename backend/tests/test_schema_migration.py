@@ -16,6 +16,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.database import Base, _run_lightweight_migrations
@@ -34,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260809_04"
+CURRENT_HEAD_REVISION = "20260812_06"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -153,6 +154,8 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "learner_evidence",
             "user_concept_state",
             "projection_outbox",
+            "projection_outbox_worker_heartbeats",
+            "projection_outbox_retry_policy",
         }.issubset(inspector.get_table_names())
 
         assert {"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}.issubset(
@@ -171,6 +174,41 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         assert "uq_learning_events_user_type_dedupe" in {
             index["name"] for index in inspector.get_indexes("learning_events")
         }
+        assert "dead_lettered_at" in {
+            column["name"] for column in inspector.get_columns("projection_outbox")
+        }
+        assert "ix_projection_outbox_dead_lettered_at" in {
+            index["name"] for index in inspector.get_indexes("projection_outbox")
+        }
+        assert {
+            "worker_id",
+            "started_at",
+            "last_heartbeat_at",
+            "last_poll_at",
+            "last_success_at",
+            "last_error_at",
+            "last_projection_failure_at",
+            "stopped_at",
+            "created_at",
+            "updated_at",
+        }.issubset(
+            {column["name"] for column in inspector.get_columns("projection_outbox_worker_heartbeats")}
+        )
+        assert "ix_projection_outbox_worker_heartbeats_last_heartbeat_at" in {
+            index["name"] for index in inspector.get_indexes("projection_outbox_worker_heartbeats")
+        }
+        assert {
+            "id",
+            "max_attempts",
+            "policy_version",
+            "created_at",
+            "updated_at",
+        }.issubset(
+            {
+                column["name"]
+                for column in inspector.get_columns("projection_outbox_retry_policy")
+            }
+        )
         assert any(
             foreign_key["referred_table"] == "concepts"
             and foreign_key["constrained_columns"] == ["concept_id"]
@@ -248,7 +286,13 @@ def test_v13_fingerprint_rejects_unversioned_learner_projection_tables():
     }
     table_names = frozenset(
         set(V13_REQUIRED_TABLES)
-        | {"learner_evidence", "user_concept_state", "projection_outbox"}
+        | {
+            "learner_evidence",
+            "user_concept_state",
+            "projection_outbox",
+            "projection_outbox_worker_heartbeats",
+            "projection_outbox_retry_policy",
+        }
     )
 
     mismatches = _legacy_v13_mismatches(table_names, valid_columns)
@@ -256,6 +300,8 @@ def test_v13_fingerprint_rejects_unversioned_learner_projection_tables():
     assert any("learner_evidence" in mismatch for mismatch in mismatches)
     assert any("user_concept_state" in mismatch for mismatch in mismatches)
     assert any("projection_outbox" in mismatch for mismatch in mismatches)
+    assert any("projection_outbox_worker_heartbeats" in mismatch for mismatch in mismatches)
+    assert any("projection_outbox_retry_policy" in mismatch for mismatch in mismatches)
 
 
 def test_postgresql_migration_runner_serializes_full_upgrade_path():
@@ -314,10 +360,173 @@ def test_postgresql_offline_ddl_includes_the_concept_foreign_key():
     assert "CREATE TABLE learner_evidence" in ddl
     assert "CREATE TABLE user_concept_state" in ddl
     assert "CREATE TABLE projection_outbox" in ddl
+    assert "ALTER TABLE projection_outbox ADD COLUMN dead_lettered_at" in ddl
+    assert "CREATE INDEX ix_projection_outbox_dead_lettered_at" in ddl
+    assert "CREATE INDEX ix_projection_outbox_operations_active" in ddl
+    assert "CREATE TABLE projection_outbox_worker_heartbeats" in ddl
+    assert "ix_projection_outbox_worker_heartbeats_last_heartbeat_at" in ddl
+    assert "CREATE TABLE projection_outbox_retry_policy" in ddl
     assert "fk_wrong_questions_concept_id" in ddl
     assert "fk_learner_evidence_source_event_id" in ddl
     assert "fk_projection_outbox_source_event_id" in ddl
     assert "FOREIGN KEY(concept_id) REFERENCES concepts" in ddl
+
+
+def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
+    database_path = tmp_path / "legacy-projection-outbox.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260809_04")
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO projection_outbox (
+                        id, user_id, source_event_id, idempotency_key, projection_type,
+                        model_version, payload_version, payload, status, attempts,
+                        available_at, updated_at
+                    ) VALUES
+                        (1, 1, 1, 'terminal', 'learner_state', 'v1', 1, '{}',
+                         'failed', 5, CURRENT_TIMESTAMP, '2026-08-01 12:34:56'),
+                        (2, 1, 2, 'retryable', 'learner_state', 'v1', 1, '{}',
+                         'failed', 4, CURRENT_TIMESTAMP, '2026-08-01 12:34:56')
+                    """
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT dead_lettered_at FROM projection_outbox WHERE id = 1")
+            ).scalar_one() is None
+            assert connection.execute(
+                text("SELECT dead_lettered_at FROM projection_outbox WHERE id = 2")
+            ).scalar_one() is None
+    finally:
+        engine.dispose()
+
+
+def test_projection_outbox_operations_performance_migration_adds_active_queue_index(tmp_path: Path):
+    database_path = tmp_path / "projection-outbox-operations-performance.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260809_05")
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            definition = connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE type = 'index' AND name = 'ix_projection_outbox_operations_active'"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert "WHERE status IN ('pending', 'processing', 'failed')" in definition
+
+
+def test_sqlite_lightweight_migration_upgrades_legacy_outbox_operations_schema(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-projection-outbox.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260809_04")
+
+    async def _run() -> tuple[set[str], set[str], set[str], set[str], str | None]:
+        async_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}", future=True
+        )
+        try:
+            async with async_engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO projection_outbox (
+                            id, user_id, source_event_id, idempotency_key, projection_type,
+                            model_version, payload_version, payload, status, attempts,
+                            available_at, updated_at
+                        ) VALUES
+                            (1, 1, 1, 'terminal', 'learner_state', 'v1', 1, '{}',
+                             'failed', 5, CURRENT_TIMESTAMP, '2026-08-01 12:34:56')
+                        """
+                    )
+                )
+                await _run_lightweight_migrations(connection)
+                tables = await connection.run_sync(
+                    lambda sync_connection: set(inspect(sync_connection).get_table_names())
+                )
+                outbox_columns = await connection.run_sync(
+                    lambda sync_connection: {
+                        column["name"]
+                        for column in inspect(sync_connection).get_columns("projection_outbox")
+                    }
+                )
+                outbox_indexes = await connection.run_sync(
+                    lambda sync_connection: {
+                        index["name"]
+                        for index in inspect(sync_connection).get_indexes("projection_outbox")
+                    }
+                )
+                heartbeat_indexes = await connection.run_sync(
+                    lambda sync_connection: {
+                        index["name"]
+                        for index in inspect(sync_connection).get_indexes(
+                            "projection_outbox_worker_heartbeats"
+                        )
+                    }
+                )
+                heartbeat_columns = await connection.run_sync(
+                    lambda sync_connection: {
+                        column["name"]: column
+                        for column in inspect(sync_connection).get_columns(
+                            "projection_outbox_worker_heartbeats"
+                        )
+                    }
+                )
+                retry_policy_columns = await connection.run_sync(
+                    lambda sync_connection: {
+                        column["name"]
+                        for column in inspect(sync_connection).get_columns(
+                            "projection_outbox_retry_policy"
+                        )
+                    }
+                )
+                assert heartbeat_columns["worker_id"]["nullable"] is False
+                with pytest.raises(IntegrityError):
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO projection_outbox_worker_heartbeats (
+                                worker_id, started_at, last_heartbeat_at
+                            ) VALUES (NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """
+                        )
+                    )
+                dead_lettered_at = await connection.scalar(
+                    text("SELECT dead_lettered_at FROM projection_outbox WHERE id = 1")
+                )
+                return (
+                    tables,
+                    outbox_columns,
+                    outbox_indexes | heartbeat_indexes,
+                    retry_policy_columns,
+                    dead_lettered_at,
+                )
+        finally:
+            await async_engine.dispose()
+
+    tables, outbox_columns, indexes, retry_policy_columns, dead_lettered_at = asyncio.run(_run())
+    assert "projection_outbox_worker_heartbeats" in tables
+    assert "projection_outbox_retry_policy" in tables
+    assert "dead_lettered_at" in outbox_columns
+    assert "ix_projection_outbox_dead_lettered_at" in indexes
+    assert "ix_projection_outbox_operations_active" in indexes
+    assert "ix_projection_outbox_worker_heartbeats_last_heartbeat_at" in indexes
+    assert {"id", "max_attempts", "policy_version"}.issubset(retry_policy_columns)
+    assert dead_lettered_at is None
 
 
 def test_sqlite_lightweight_migration_backfills_legacy_mastery_idempotently(tmp_path: Path):

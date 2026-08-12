@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.config import settings
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.models.material import Chapter, Material
 from app.auth import get_current_user
@@ -352,6 +353,8 @@ async def complete_review_task(
             db,
             user_id=int(current_user.id),
             source_event_id=int(completed_event["id"]),
+            max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+            retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
         await record_review_scheduled_event(
             db,
@@ -407,6 +410,8 @@ async def complete_review_task(
         db,
         user_id=int(current_user.id),
         source_event_id=int(completed_event["id"]),
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
     )
     await record_review_scheduled_event(
         db,
@@ -768,6 +773,8 @@ async def submit_review_answers(
         db,
         user_id=int(current_user.id),
         source_event_id=int(completed_event["id"]),
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
     )
     await record_review_scheduled_event(
         db,

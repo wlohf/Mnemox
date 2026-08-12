@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.anki import AnkiCard
 from app.models.user import User
@@ -168,6 +169,8 @@ async def review_card(
         db,
         user_id=int(current_user.id),
         source_event_id=int(completed_event["id"]),
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
     )
     await record_review_scheduled_event(
         db,

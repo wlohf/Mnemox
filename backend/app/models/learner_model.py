@@ -18,7 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from app.database import Base
 
@@ -160,6 +160,16 @@ class ProjectionOutbox(Base):
         CheckConstraint("payload_version >= 1", name="ck_projection_outbox_payload_version"),
         Index("ix_projection_outbox_pending", "status", "available_at", "id"),
         Index("ix_projection_outbox_user_concept_time", "user_id", "concept_id", "occurred_at"),
+        Index("ix_projection_outbox_dead_lettered_at", "dead_lettered_at"),
+        Index(
+            "ix_projection_outbox_operations_active",
+            "status",
+            "available_at",
+            "locked_at",
+            "attempts",
+            sqlite_where=text("status IN ('pending', 'processing', 'failed')"),
+            postgresql_where=text("status IN ('pending', 'processing', 'failed')"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -178,5 +188,40 @@ class ProjectionOutbox(Base):
     locked_at = Column(DateTime, nullable=True)
     processed_at = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
+    dead_lettered_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProjectionOutboxWorkerHeartbeat(Base):
+    """Durable worker liveness timestamps for cross-instance outbox operations."""
+
+    __tablename__ = "projection_outbox_worker_heartbeats"
+
+    worker_id = Column(String(120), primary_key=True)
+    started_at = Column(DateTime, nullable=False)
+    last_heartbeat_at = Column(DateTime, nullable=False, index=True)
+    last_poll_at = Column(DateTime, nullable=True)
+    last_success_at = Column(DateTime, nullable=True)
+    last_error_at = Column(DateTime, nullable=True)
+    last_projection_failure_at = Column(DateTime, nullable=True)
+    stopped_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProjectionOutboxRetryPolicy(Base):
+    """One versioned retry policy shared by every DLQ-aware consumer."""
+
+    __tablename__ = "projection_outbox_retry_policy"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_projection_outbox_retry_policy_singleton"),
+        CheckConstraint("max_attempts >= 1", name="ck_projection_outbox_retry_policy_attempts"),
+        CheckConstraint("policy_version >= 1", name="ck_projection_outbox_retry_policy_version"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    max_attempts = Column(Integer, nullable=False)
+    policy_version = Column(Integer, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

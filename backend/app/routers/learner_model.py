@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.concept import Concept
 from app.models.learner_model import LearnerEvidence
@@ -19,7 +20,12 @@ from app.services.learner_model_service import (
     get_concept_state,
     recompute_concept_state,
 )
-from app.services.projection_outbox_service import process_outbox, replay_projections
+from app.services.projection_outbox_service import (
+    list_dead_letter_tasks,
+    process_outbox,
+    replay_projections,
+    retry_dead_letter_task,
+)
 
 router = APIRouter()
 
@@ -169,6 +175,8 @@ async def set_concept_override(
             mastery_estimate=body.mastery_estimate, confidence=body.confidence,
             forgetting_risk=body.forgetting_risk, reason=body.reason,
             occurred_at=body.occurred_at,
+            max_projection_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+            retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -185,7 +193,13 @@ async def clear_concept_override(
 ) -> dict[str, Any]:
     try:
         return await apply_manual_override(
-            db, int(current_user.id), concept_id, mastery_estimate=None, reason=reason
+            db,
+            int(current_user.id),
+            concept_id,
+            mastery_estimate=None,
+            reason=reason,
+            max_projection_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+            retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -226,6 +240,8 @@ async def replay(
             db, int(current_user.id), concept_id=body.concept_id,
             start_at=start_at, end_at=end_at,
             reset_processed=body.reset_processed,
+            max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+            retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -277,4 +293,49 @@ async def process(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return await process_outbox(db, limit=limit, user_id=int(current_user.id))
+    return await process_outbox(
+        db,
+        limit=limit,
+        user_id=int(current_user.id),
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
+    )
+
+
+@router.get("/outbox/failures")
+async def outbox_failed_tasks(
+    offset: int = Query(0, ge=0, le=1_000_000),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Expose only the caller's terminal projection failures for recovery."""
+    return await list_dead_letter_tasks(
+        db,
+        int(current_user.id),
+        max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.post("/outbox/failures/{outbox_id}/retry")
+async def retry_outbox_failed_task(
+    outbox_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Explicitly requeue one owned terminal failure after user intervention."""
+    try:
+        return await retry_dead_letter_task(
+            db,
+            int(current_user.id),
+            outbox_id,
+            max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+            retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="投影任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

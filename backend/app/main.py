@@ -18,14 +18,25 @@ from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
 
 def create_projection_outbox_worker(session_factory):
     """Build the application-local consumer from environment-backed settings."""
-    from app.services.projection_outbox_worker import ProjectionOutboxWorker
+    from app.services.projection_outbox_worker import (
+        ProjectionOutboxWorker,
+        default_worker_id,
+    )
 
     return ProjectionOutboxWorker(
         session_factory,
-        worker_id=settings.OUTBOX_WORKER_ID or None,
+        worker_id=default_worker_id(settings.OUTBOX_WORKER_ID),
         batch_size=settings.OUTBOX_WORKER_BATCH_SIZE,
         max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
+        retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         poll_interval_seconds=settings.OUTBOX_WORKER_POLL_INTERVAL_SECONDS,
+        heartbeat_enabled=True,
+        heartbeat_interval_seconds=settings.OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_ttl_seconds=settings.OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS,
+        alert_backlog_count_threshold=settings.OUTBOX_ALERT_BACKLOG_COUNT_THRESHOLD,
+        alert_backlog_age_seconds=settings.OUTBOX_ALERT_BACKLOG_AGE_SECONDS,
+        alert_terminal_failure_threshold=settings.OUTBOX_ALERT_TERMINAL_FAILURE_THRESHOLD,
+        alert_stale_processing_threshold=settings.OUTBOX_ALERT_STALE_PROCESSING_THRESHOLD,
     )
 
 
@@ -201,28 +212,26 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """健康检查"""
+    """Return a cheap public liveness check without queue telemetry."""
     worker = getattr(app.state, "projection_outbox_worker", None)
+    worker_enabled = _outbox_worker_allowed()
+    worker_running = bool(worker is not None and worker.snapshot().get("running"))
     return {
-        "status": "ok",
-        "projection_outbox_worker": (
-            worker.health_snapshot()
-            if worker is not None
-            else {
-                "enabled": _outbox_worker_allowed(),
-                "running": False,
-                **(
-                    {"disabled_reason": "sqlite_single_consumer"}
-                    if _is_sqlite() and settings.OUTBOX_WORKER_ENABLED
-                    else {}
-                ),
-            }
-        ),
+        "status": "ok" if not worker_enabled or worker_running else "degraded",
+        "projection_outbox_worker": {
+            "enabled": worker_enabled,
+            "running": worker_running,
+            **(
+                {"disabled_reason": "sqlite_single_consumer"}
+                if worker is None and _is_sqlite() and settings.OUTBOX_WORKER_ENABLED
+                else {}
+            ),
+        },
     }
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model, outbox_operations
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -255,6 +264,7 @@ app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
 app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"])
 app.include_router(learner_model.router, prefix="/api/learner-model", tags=["学习者模型"])
+app.include_router(outbox_operations.router, prefix="/internal/outbox")
 
 ensure_data_dirs()
 

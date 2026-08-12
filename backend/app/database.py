@@ -354,6 +354,7 @@ async def _run_lightweight_migrations(conn):
                 locked_at DATETIME NULL,
                 processed_at DATETIME NULL,
                 last_error TEXT NULL,
+                dead_lettered_at DATETIME NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT uq_projection_outbox_user_key UNIQUE (user_id, idempotency_key),
@@ -366,14 +367,66 @@ async def _run_lightweight_migrations(conn):
             )
             """
         ))
+        result = await conn.execute(sqlalchemy.text("PRAGMA table_info(projection_outbox)"))
+        outbox_columns = {row[1] for row in result}
+        if "dead_lettered_at" not in outbox_columns:
+            await conn.execute(sqlalchemy.text(
+                "ALTER TABLE projection_outbox ADD COLUMN dead_lettered_at DATETIME"
+            ))
         await conn.execute(sqlalchemy.text(
             "CREATE INDEX IF NOT EXISTS ix_projection_outbox_pending ON projection_outbox(status, available_at, id)"
         ))
         await conn.execute(sqlalchemy.text(
             "CREATE INDEX IF NOT EXISTS ix_projection_outbox_user_concept_time ON projection_outbox(user_id, concept_id, occurred_at)"
         ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_projection_outbox_dead_lettered_at "
+            "ON projection_outbox(dead_lettered_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_projection_outbox_operations_active "
+            "ON projection_outbox(status, available_at, locked_at, attempts) "
+            "WHERE status IN ('pending', 'processing', 'failed')"
+        ))
+        # Historical rows do not retain the configured retry cap. Request and
+        # worker paths persist DLQ markers only after reconciling the active
+        # deployment cap.
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS projection_outbox_worker_heartbeats (
+                worker_id VARCHAR(120) NOT NULL PRIMARY KEY,
+                started_at DATETIME NOT NULL,
+                last_heartbeat_at DATETIME NOT NULL,
+                last_poll_at DATETIME NULL,
+                last_success_at DATETIME NULL,
+                last_error_at DATETIME NULL,
+                last_projection_failure_at DATETIME NULL,
+                stopped_at DATETIME NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_projection_outbox_worker_heartbeats_last_heartbeat_at "
+            "ON projection_outbox_worker_heartbeats(last_heartbeat_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS projection_outbox_retry_policy (
+                id INTEGER NOT NULL PRIMARY KEY,
+                max_attempts INTEGER NOT NULL,
+                policy_version INTEGER NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_projection_outbox_retry_policy_singleton CHECK (id = 1),
+                CONSTRAINT ck_projection_outbox_retry_policy_attempts CHECK (max_attempts >= 1),
+                CONSTRAINT ck_projection_outbox_retry_policy_version CHECK (policy_version >= 1)
+            )
+            """
+        ))
     except Exception as exc:
-        raise RuntimeError("SQLite projection outbox migration failed") from exc
+        raise RuntimeError("SQLite projection outbox operations migration failed") from exc
 
 
 async def init_db():

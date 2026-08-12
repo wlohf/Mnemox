@@ -221,17 +221,17 @@ user_concept_state
 
 `learner_model_service` 将证据类型限制为直接证据（`answer`、`recall`、`explanation`、`application`、`hint_count`、`review_result`）、间接信号（`study_duration`、`study_frequency`、`repeated_question`、`interruption`、`recovery`）以及 `legacy_mastery` / `manual_override`。直接证据按可靠度和 90 天半衰期加权；通常 `score` 越高表示表现越好，`hint_count` 的原始分数则表示提示依赖度并在聚合时显式反转。间接信号只调整置信度和遗忘风险，解释摘要明确记录其影响，不能单独提高掌握度。复习路由先写 `LearningEvent`，再在同一事务内写 `review_result` 证据和派生状态。人工修正也写事件和证据，重算时保留直到用户明确清除。Graphiti 的记忆检索可以提供带来源的学习上下文，但不得写成唯一的 mastery 输入。
 
-迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；旧列保留一个版本周期。`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐（API key 长度、无效 provider 外键和记忆索引）。SQLite 本地启动通过 lightweight migration 执行一次性回填，并用 `mnemox_lightweight_migrations` 标记避免给 rollout 后的新概念补写 legacy 证据；PostgreSQL 只通过 Alembic。
+迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐（API key 长度、无效 provider 外键和记忆索引），`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引。SQLite 本地启动通过 lightweight migration 执行一次性回填，并用 `mnemox_lightweight_migrations` 标记避免给 rollout 后的新概念补写 legacy 证据；PostgreSQL 只通过 Alembic。
 
-默认 SQLite 已先备份再升级到 head `20260804_03`。最新收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当前 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。升级后 `integrity_check` 为 `ok`、外键违规为 0、`alembic check` 干净。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
+默认 SQLite 已先备份，并已通过 lightweight migration 对齐到 head `20260812_06`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
 
-一次性 PostgreSQL 16 演练库已从 v1.3 基线升级到 `20260804_03`：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`，最终 `alembic check` 干净。演练容器已删除；正式环境回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。状态重算只消费截至重算时间的证据，记录最新来源事件、可靠度、模型版本、更新时间和解释摘要；读取已有状态时会刷新时间相关的置信度与遗忘风险。
+一次性 PostgreSQL 16 演练库已从 v1.3 基线升级到当时的 `20260804_03`：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。演练容器已删除；`20260809_05` 和 `20260812_06` 仍需在正式 PostgreSQL 发布窗口连同多实例 worker、`SKIP LOCKED`、策略升级和心跳语义验收。正式环境回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。状态重算只消费截至重算时间的证据，记录最新来源事件、可靠度、模型版本、更新时间和解释摘要；读取已有状态时会刷新时间相关的置信度与遗忘风险。
 
 ### 6.4 事件与投影流
 
 目标写入顺序为“领域数据 + `LearningEvent` + `projection_outbox` 同一事务提交 -> 幂等消费者投影”。`record_learning_event` 现在会在同一 SQLAlchemy 事务中创建 outbox 行；`ProjectionOutbox` 具备用户/概念范围、幂等键、模型/载荷版本、`pending/processing/processed/failed` 状态、尝试次数、锁定时间、错误信息和可用时间。`projection_outbox_service` 支持重复消费、崩溃后回收、指数退避、按用户/概念/时间范围重放和状态重建；Review/Anki 完成复习会在请求事务内只消费对应 `source_event_id` 的投影，失败仍保留为可恢复 outbox 行。删除用户或概念会级联清理 outbox、证据和状态。
 
-当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。所有多行消费路径会先取得按用户排序的 PostgreSQL transaction advisory lock，再获取概念锁，避免 API/replay 与 worker 交错时出现反向批量锁顺序。PostgreSQL 同时通过既有 `FOR UPDATE SKIP LOCKED` 协调任务认领；SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。失败队列监控告警、跨实例聚合指标和其他领域投影仍未实现；失败任务交给 worker 重试或恢复入口。
+当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。全局 worker 直接以 PostgreSQL `FOR UPDATE SKIP LOCKED` 认领任务，使并发实例能跳过忙行并继续分配其他用户工作；认领后按用户排序取得 transaction advisory lock。用户范围 API/replay 先取得其用户 advisory lock，再领取行；其行锁冲突同样使用 `SKIP LOCKED` 跳过。SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`OUTBOX_WORKER_ID` 是可配置的逻辑前缀，每个运行时都会持久化独立的心跳 ID；受保护的 `/internal/outbox/metrics` 聚合未完成队列、跨实例活跃/轮询失败 worker、DLQ 和告警，不返回任务载荷或异常正文。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。真实 PostgreSQL 多实例验收仍是发布窗口项目。
 
 学习者模型 API 位于 `/api/learner-model`：概念状态及解释、分页证据历史、人工修正/撤销、单概念或批量重算、按用户/概念/时间范围重放，以及用户隔离的 outbox 处理入口均已提供。前端 `/mastery` 页面展示掌握度、置信度、遗忘风险、可靠度、模型版本、计算依据和证据历史，并区分直接、间接、人工和 legacy 来源。
 
@@ -278,7 +278,7 @@ Docker 场景使用根目录 `docker-compose.yml`。Windows 本地体验可使�
 
 ### 8.2 数据库迁移
 
-PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260804_03`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
+PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260812_06`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
 
 ### 8.3 验证命令
 
@@ -304,7 +304,7 @@ npm test
 
 | 优先级 | 事项 | 原因 |
 | --- | --- | --- |
-| P0 | 正式 PostgreSQL 发布升级 | 一次性 PostgreSQL 16 演练库已完成 v1.3→`20260804_03` 升级并通过数据量、outbox、外键和 `alembic check` 核对；正式库仍需在发布窗口执行快照、升级、核对与回滚准备。 |
+| P0 | 正式 PostgreSQL 发布升级 | 一次性 PostgreSQL 16 演练库已完成 v1.3→`20260804_03` 升级并通过数据量、outbox、外键和 `alembic check` 核对；正式库仍需在发布窗口升级到 `20260812_06`，并执行多实例 worker、`SKIP LOCKED`、策略升级、心跳、快照、核对与回滚准备。 |
 | P0 | 真实关键路径 E2E | 当前“关键路径”主要是 ASGI API 冒烟；需要浏览器/桌面端覆盖草案确认与执行。 |
 | P0 | 多用户越权审计与回归测试 | 产品存在多领域详情、写入和文件访问接口，必须持续验证资源归属。 |
 | P0 | 统一 Prompt Injection 防护 | RAG、笔记、搜索和工具返回均会进入模型上下文。 |
@@ -312,7 +312,7 @@ npm test
 | P1 | 拆分超大模块 | `learning`、`analytics`、Agent/Coach 相关实现的复杂度持续上升。 |
 | P1 | 检索碎片化与 ContextStore 迁移 | 当前只有接口和关键词保底，RAG、笔记、记忆仍有独立检索路径。 |
 | P1 | 学习者模型数据边界收口 | 后端状态/证据 API、人工修正、批量重算、用户隔离、前端证据下钻和离线校准基线已实现；真实 holdout 数据不足，推荐排序待补。 |
-| P1 | 事件投影与数据生命周期 | `projection_outbox`、同事务写入、事件级在线消费、幂等消费、重试/崩溃恢复、525 条分页重放、范围隔离、删除级联和常驻 worker 已验证；失败队列监控、跨实例聚合指标及 ContextStore/图谱/记忆投影待补。 |
+| P1 | 事件投影与数据生命周期 | `projection_outbox`、同事务写入、事件级在线消费、幂等消费、重试/崩溃恢复、525 条分页重放、范围隔离、删除级联、常驻 worker、DLQ、跨实例聚合指标和告警已验证；ContextStore/图谱/记忆投影及真实 PostgreSQL 多实例发布验收待补。 |
 | P1 | 时态记忆语义 | `UserMemory` 已有来源/证据/过期字段，但缺有效时间、冲突/失效、筛选 episode 和可验证的 Graphiti 适配。 |
 | P1 | Obsidian 同步一致性 | 当前是手动拉取；需要稳定 vault/file ID、跨 vault 隔离、冲突/删除策略、并发幂等和用户可见差异。 |
 | P1 | 联想与 Coach 反馈闭环 | 联想计算已有，但尚未记录 shown/feedback/采纳基线。 |

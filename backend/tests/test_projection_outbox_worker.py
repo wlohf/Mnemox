@@ -9,17 +9,24 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
+from pydantic import ValidationError
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import main
+from app.config import Settings
+from app.models import learner_model as learner_model_models
 from app.database import Base, _configure_sqlite_connection
 from app.models.concept import Concept
 from app.models.learner_model import ProjectionOutbox
 from app.models.user import User
 from app.main import app, health
 from app.services.learning_event_service import record_learning_event
-from app.services.projection_outbox_worker import ProjectionOutboxWorker
+from app.services.projection_outbox_service import (
+    get_outbox_operations_snapshot,
+    resolve_outbox_retry_policy,
+)
+from app.services.projection_outbox_worker import ProjectionOutboxWorker, default_worker_id
 
 
 class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -104,6 +111,32 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.fail("worker did not process the queued projection")
 
+    def test_heartbeat_settings_require_scheduling_headroom(self):
+        with self.assertRaises(ValidationError):
+            Settings(
+                OUTBOX_WORKER_ENABLED=True,
+                OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS=60,
+                OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS=74,
+            )
+
+        valid = Settings(
+            OUTBOX_WORKER_ENABLED=True,
+            OUTBOX_WORKER_HEARTBEAT_INTERVAL_SECONDS=60,
+            OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS=75,
+        )
+        self.assertEqual(valid.OUTBOX_WORKER_HEARTBEAT_TTL_SECONDS, 75)
+
+    def test_default_worker_id_fits_heartbeat_storage_for_long_host_and_prefix(self):
+        with patch(
+            "app.services.projection_outbox_worker.socket.gethostname",
+            return_value="host-" + "h" * 240,
+        ):
+            worker_id = default_worker_id("deployment-" + "p" * 240)
+
+        self.assertLessEqual(len(worker_id), 120)
+        self.assertTrue(worker_id.startswith("deployment-"))
+        self.assertRegex(worker_id, r":\d+:[0-9a-f]{12}$")
+
     async def test_run_once_commits_projection_and_records_runtime_stats(self):
         outbox_id = await self._create_pending_projection("worker-once")
         worker = ProjectionOutboxWorker(
@@ -128,6 +161,89 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
             row = await session.get(ProjectionOutbox, outbox_id)
             self.assertEqual(row.status, "processed")
 
+    async def test_run_once_uses_the_shared_retry_policy_after_a_version_upgrade(self):
+        outbox_id = await self._create_pending_projection("worker-retry-policy-upgrade")
+        async with self.sessions() as session:
+            row = await session.get(ProjectionOutbox, outbox_id)
+            self.assertIsNotNone(row)
+            row.status = "failed"
+            row.attempts = 5
+            row.available_at = datetime.now() - timedelta(seconds=1)
+            await session.commit()
+
+        old_worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="retry-policy-v1-worker",
+            batch_size=1,
+            max_attempts=3,
+            retry_policy_version=1,
+            poll_interval_seconds=0.01,
+        )
+        self.assertEqual(
+            await old_worker.run_once(),
+            {"claimed": 0, "processed": 0, "failed": 0},
+        )
+
+        upgraded_worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="retry-policy-v2-worker",
+            batch_size=1,
+            max_attempts=10,
+            retry_policy_version=2,
+            poll_interval_seconds=0.01,
+        )
+        self.assertEqual(
+            await upgraded_worker.run_once(),
+            {"claimed": 1, "processed": 1, "failed": 0},
+        )
+
+        async with self.sessions() as session:
+            row = await session.get(ProjectionOutbox, outbox_id)
+            self.assertEqual(row.status, "processed")
+            self.assertIsNone(row.dead_lettered_at)
+
+    async def test_worker_refreshes_the_policy_for_each_claim_after_an_upgrade(self):
+        outbox_id = await self._create_pending_projection(
+            "worker-retry-policy-refresh",
+            payload={"score": "not-a-number"},
+        )
+        old_worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="retry-policy-refresh-v1-worker",
+            batch_size=1,
+            max_attempts=3,
+            retry_policy_version=1,
+            poll_interval_seconds=0.01,
+        )
+        await old_worker._reconcile_terminal_failures()
+
+        async with self.sessions() as session:
+            row = await session.get(ProjectionOutbox, outbox_id)
+            self.assertIsNotNone(row)
+            row.status = "failed"
+            row.attempts = 2
+            row.available_at = datetime.now() - timedelta(seconds=1)
+            await session.commit()
+
+        async with self.sessions() as session:
+            effective_max_attempts = await resolve_outbox_retry_policy(
+                session,
+                max_attempts=10,
+                retry_policy_version=2,
+            )
+            self.assertEqual(effective_max_attempts, 10)
+            await session.commit()
+
+        result = await old_worker._process_one_row()
+        self.assertEqual(result, {"claimed": 1, "processed": 0, "failed": 1})
+
+        async with self.sessions() as session:
+            row = await session.get(ProjectionOutbox, outbox_id)
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, "failed")
+            self.assertEqual(row.attempts, 3)
+            self.assertIsNone(row.dead_lettered_at)
+
     async def test_run_once_commits_each_claimed_row_in_its_own_transaction(self):
         await self._create_pending_projection("worker-first")
         await self._create_pending_projection("worker-second")
@@ -139,6 +255,8 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
             max_attempts=5,
             poll_interval_seconds=0.01,
         )
+        await worker._reconcile_terminal_failures()
+        self.worker_commit_calls = 0
 
         result = await worker.run_once()
 
@@ -196,6 +314,200 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(snapshot["polls"], 1)
         self.assertGreaterEqual(snapshot["processed"], 1)
 
+    async def test_enabled_worker_persists_heartbeat_and_marks_graceful_stop(self):
+        heartbeat_model = getattr(
+            learner_model_models,
+            "ProjectionOutboxWorkerHeartbeat",
+            None,
+        )
+        self.assertIsNotNone(heartbeat_model)
+        worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="heartbeat-worker",
+            batch_size=1,
+            max_attempts=5,
+            poll_interval_seconds=0.01,
+            heartbeat_enabled=True,
+            heartbeat_interval_seconds=0.01,
+        )
+
+        worker.start()
+        for _ in range(50):
+            async with self.sessions() as session:
+                heartbeat = await session.get(heartbeat_model, "heartbeat-worker")
+                if heartbeat is not None and heartbeat.last_heartbeat_at is not None:
+                    break
+            await asyncio.sleep(0.01)
+        else:
+            self.fail("worker did not persist a heartbeat")
+
+        await asyncio.wait_for(worker.stop(), timeout=1)
+        async with self.sessions() as session:
+            heartbeat = await session.get(heartbeat_model, "heartbeat-worker")
+            self.assertIsNotNone(heartbeat)
+            self.assertIsNotNone(heartbeat.stopped_at)
+
+    async def test_configured_worker_prefix_uses_unique_heartbeats_per_runtime(self):
+        heartbeat_model = getattr(
+            learner_model_models,
+            "ProjectionOutboxWorkerHeartbeat",
+            None,
+        )
+        self.assertIsNotNone(heartbeat_model)
+        await self._create_pending_projection("configured-worker-prefix")
+
+        with patch.object(
+            main.settings,
+            "OUTBOX_WORKER_ID",
+            "deployment-worker",
+            create=True,
+        ):
+            stopped_worker = main.create_projection_outbox_worker(self.sessions)
+            active_worker = main.create_projection_outbox_worker(self.sessions)
+
+        self.assertNotEqual(stopped_worker.worker_id, active_worker.worker_id)
+        self.assertTrue(stopped_worker.worker_id.startswith("deployment-worker:"))
+        self.assertTrue(active_worker.worker_id.startswith("deployment-worker:"))
+
+        await stopped_worker._persist_heartbeat(force=True)
+        await active_worker._persist_heartbeat(force=True)
+        await stopped_worker.stop()
+
+        async with self.sessions() as session:
+            stopped_heartbeat = await session.get(heartbeat_model, stopped_worker.worker_id)
+            active_heartbeat = await session.get(heartbeat_model, active_worker.worker_id)
+            snapshot = await get_outbox_operations_snapshot(
+                session,
+                heartbeat_ttl_seconds=60,
+                worker_expected=True,
+            )
+
+        self.assertIsNotNone(stopped_heartbeat)
+        self.assertIsNotNone(stopped_heartbeat.stopped_at)
+        self.assertIsNotNone(active_heartbeat)
+        self.assertIsNone(active_heartbeat.stopped_at)
+        self.assertEqual(snapshot["metrics"]["known_workers"], 2)
+        self.assertEqual(snapshot["metrics"]["active_workers"], 1)
+        self.assertNotIn(
+            "projection_outbox_no_active_worker",
+            {alert["code"] for alert in snapshot["alerts"]},
+        )
+
+    async def test_enabled_worker_records_first_poll_error_without_waiting_for_heartbeat_interval(self):
+        heartbeat_model = getattr(
+            learner_model_models,
+            "ProjectionOutboxWorkerHeartbeat",
+            None,
+        )
+        self.assertIsNotNone(heartbeat_model)
+        worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="heartbeat-error-worker",
+            batch_size=1,
+            max_attempts=5,
+            poll_interval_seconds=0.01,
+            heartbeat_enabled=True,
+            heartbeat_interval_seconds=60,
+            heartbeat_ttl_seconds=75,
+        )
+
+        async def failing_process_one_row() -> dict[str, int]:
+            raise RuntimeError("database unavailable")
+
+        worker._process_one_row = failing_process_one_row
+        worker.start()
+        try:
+            for _ in range(50):
+                async with self.sessions() as session:
+                    heartbeat = await session.get(heartbeat_model, "heartbeat-error-worker")
+                    if heartbeat is not None and heartbeat.last_error_at is not None:
+                        break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("worker did not persist its first poll error")
+        finally:
+            await asyncio.wait_for(worker.stop(), timeout=1)
+
+    async def test_alert_scan_reports_retry_policy_config_conflict_without_resolving_policy(self):
+        async with self.sessions() as session:
+            effective_max_attempts = await resolve_outbox_retry_policy(
+                session,
+                max_attempts=5,
+                retry_policy_version=1,
+            )
+            self.assertEqual(effective_max_attempts, 5)
+            await session.commit()
+
+        worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="retry-policy-conflict-alert-worker",
+            batch_size=1,
+            max_attempts=3,
+            retry_policy_version=1,
+            poll_interval_seconds=0.01,
+            heartbeat_enabled=True,
+        )
+
+        await worker._emit_alert_transition()
+
+        self.assertIn(
+            "projection_outbox_retry_policy_config_conflict",
+            worker._active_alert_codes,
+        )
+
+    async def test_enabled_worker_refreshes_heartbeat_while_poll_is_slow(self):
+        heartbeat_model = getattr(
+            learner_model_models,
+            "ProjectionOutboxWorkerHeartbeat",
+            None,
+        )
+        self.assertIsNotNone(heartbeat_model)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        worker = ProjectionOutboxWorker(
+            self.sessions,
+            worker_id="slow-heartbeat-worker",
+            batch_size=1,
+            max_attempts=5,
+            poll_interval_seconds=30,
+            heartbeat_enabled=True,
+            heartbeat_interval_seconds=0.01,
+        )
+
+        async def slow_process_one_row() -> dict[str, int]:
+            started.set()
+            await release.wait()
+            return {"claimed": 0, "processed": 0, "failed": 0}
+
+        worker._process_one_row = slow_process_one_row
+        worker.start()
+        try:
+            await asyncio.wait_for(started.wait(), timeout=3)
+            for _ in range(50):
+                async with self.sessions() as session:
+                    heartbeat = await session.get(heartbeat_model, "slow-heartbeat-worker")
+                    if heartbeat is not None:
+                        first_heartbeat_at = heartbeat.last_heartbeat_at
+                        break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("worker did not persist an initial heartbeat")
+
+            for _ in range(100):
+                async with self.sessions() as session:
+                    heartbeat = await session.get(heartbeat_model, "slow-heartbeat-worker")
+                    if (
+                        heartbeat is not None
+                        and heartbeat.last_heartbeat_at > first_heartbeat_at
+                    ):
+                        break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("worker did not refresh its heartbeat during a slow poll")
+        finally:
+            release.set()
+            await asyncio.wait_for(worker.stop(), timeout=1)
+
     async def test_poll_exception_is_recorded_and_loop_remains_stoppable(self):
         worker = ProjectionOutboxWorker(
             self.sessions,
@@ -224,7 +536,7 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("database unavailable", snapshot["last_error"])
         self.assertFalse(snapshot["running"])
 
-    async def test_health_includes_non_sensitive_worker_runtime_snapshot(self):
+    async def test_public_health_omits_global_outbox_operations_snapshot(self):
         worker = ProjectionOutboxWorker(
             self.sessions,
             worker_id="health-worker",
@@ -235,14 +547,18 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
         previous = getattr(app.state, "projection_outbox_worker", None)
         app.state.projection_outbox_worker = worker
         try:
-            payload = await health()
+            with patch.object(main, "_is_sqlite", return_value=True):
+                payload = await health()
         finally:
             app.state.projection_outbox_worker = previous
 
         self.assertEqual(payload["status"], "ok")
+        self.assertNotIn("projection_outbox", payload)
         self.assertFalse(payload["projection_outbox_worker"]["running"])
-        self.assertNotIn("worker_id", payload["projection_outbox_worker"])
-        self.assertNotIn("last_error", payload["projection_outbox_worker"])
+        self.assertEqual(
+            set(payload["projection_outbox_worker"]),
+            {"enabled", "running"},
+        )
 
     async def test_lifespan_stops_worker_before_database_close(self):
         events: list[str] = []
@@ -301,6 +617,24 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
                 "running": False,
                 "disabled_reason": "sqlite_single_consumer",
             },
+        )
+
+    async def test_health_degrades_when_required_postgres_worker_is_not_running(self):
+        with (
+            patch.object(main.settings, "OUTBOX_WORKER_ENABLED", True, create=True),
+            patch.object(main, "_is_sqlite", return_value=False),
+        ):
+            previous = getattr(app.state, "projection_outbox_worker", None)
+            app.state.projection_outbox_worker = None
+            try:
+                payload = await health()
+            finally:
+                app.state.projection_outbox_worker = previous
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(
+            payload["projection_outbox_worker"],
+            {"enabled": True, "running": False},
         )
 
 

@@ -691,7 +691,7 @@ Mnemox/
 - [ ] **Phase 2 · AgentRuntime 原型实现中**：多步循环原型已在工作区；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
-当前执行顺序：先在真实学习数据积累后运行离线回放，至少达到 50 个 holdout case 才评估候选模型；然后补失败队列监控、跨实例聚合指标和其余领域投影。SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
+当前执行顺序：先在真实学习数据积累后运行离线回放，至少达到 50 个 holdout case 才评估候选模型；然后迁移一条真实 ContextStore 检索路径，并继续补其余领域投影。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
 
 默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 

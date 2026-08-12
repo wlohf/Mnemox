@@ -32,7 +32,7 @@ OPENAI_API_KEY=your_api_key_here
 python run_migrations.py
 ```
 
-SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260804_03`，默认 SQLite 和一次性 PostgreSQL 16 演练库均已验证升级到该版本；正式生产库仍须先快照并在发布窗口执行。
+SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260812_06`，默认 SQLite 已验证升级到该版本；正式 PostgreSQL 仍须先快照，并在发布窗口执行升级和多实例 Outbox 验收。
 
 ### 4. 启动服务
 
@@ -143,7 +143,7 @@ print(response)
 ### 主要待办
 
 - 正式生产 PostgreSQL 升级须按发布窗口执行快照、Alembic 升级、数据量/外键/legacy 回填核对和回滚演练
-- 常驻 outbox worker 已接入应用生命周期；仍需补失败队列监控/告警、跨实例聚合指标及最终全量回归
+- 常驻 outbox worker 已接入应用生命周期，DLQ、告警和跨实例聚合指标已收口；仍需在正式 PostgreSQL 发布窗口执行多实例并发验收
 - 继续收敛 LLM prompt 安全边界，所有用户资料、笔记、工具结果都应作为不可信上下文传入
 - 拆分过大的路由和服务模块，尤其是 learning、analytics、agent 相关实现
 - 完善后台任务、结构化日志和失败重试可视化
