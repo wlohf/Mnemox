@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本：`v1.3.0`。当前工作区已完成 Phase 1 学习者模型与事件投影切片的正确性收口：SQLite/PostgreSQL 升级演练、同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。
+当前发布版本仍为 `v1.3.0`。`main` 开发基线已整合 v1.3.0 之后的 Phase 1 学习者模型与事件投影切片：SQLite/PostgreSQL 升级演练、同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。该主线整合不等于发布了新的安装包；生产发布仍需单独完成版本号、完整回归和真实 PostgreSQL 多实例验收。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -688,7 +688,7 @@ Mnemox/
 - [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
 - [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化和 API 冒烟已完成；真实浏览器/桌面 E2E、草案确认执行和卫生收口待补
 - [ ] **Phase 1 · 四层底座 MVP 部分完成**：学习者模型和 projection outbox 切片已收口，前端证据下钻、离线校准基线与 PostgreSQL 常驻 worker 已接入；ContextStore 迁移、候选 Spike、同步冲突/删除、Coach 反馈和生产监控待补
-- [ ] **Phase 2 · AgentRuntime 原型实现中**：多步循环原型已在工作区；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
+- [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
 当前执行顺序：先在真实学习数据积累后运行离线回放，至少达到 50 个 holdout case 才评估候选模型；然后迁移一条真实 ContextStore 检索路径，并继续补其余领域投影。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。

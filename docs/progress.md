@@ -4,14 +4,14 @@
 >
 > 更新日期：2026-08-13
 >
-> 当前版本：v1.3.0
+> 当前发布版本：v1.3.0
 > 当前阶段：Phase 1 学习者模型和 Outbox 运维闭环已收口；真实数据校准与其余底座进行中；Phase 2 等待 Phase 1 验收
 
 本文件记录可执行的项目状态。需求范围见 [需求文档](requirements.md)，工程实现见 [技术文档](technical.md)，按周变化记录见 `docs/updates/`。
 
 ## 1. 阶段判断
 
-Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Windows 桌面交付的第一轮实现。当前处于 **v1.3.0 的 Beta/Phase 1 生产化阶段**：默认 SQLite 升级和一次性 PostgreSQL 演练已完成；学习者模型、同事务 projection outbox、分页重放、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 均已验证。Outbox 的显式 DLQ、用户范围人工重试、告警代码、受保护活跃队列指标和运行时唯一跨实例心跳已收口。下一步是积累真实 holdout 数据，并按发布窗口完成真实 PostgreSQL 多实例验收；Phase 2 不提前展开。
+Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Windows 桌面交付的第一轮实现。当前处于 **v1.3.0 之后的 Phase 1 主线整合与生产化阶段**：默认 SQLite 升级和一次性 PostgreSQL 演练已完成；学习者模型、同事务 projection outbox、分页重放、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 均已验证。Outbox 的显式 DLQ、用户范围人工重试、告警代码、受保护活跃队列指标和运行时唯一跨实例心跳已收口。上述能力已进入 `main` 开发基线，但尚未形成新的版本 tag、GitHub Release 或 Windows 安装包。下一步是积累真实 holdout 数据，并按发布窗口完成真实 PostgreSQL 多实例验收；Phase 2 不提前展开。
 
 2026-07-26 完成方向基线梳理；2026-08-03 进一步将资料检索、概念关系、时态记忆和学习者模型拆为四层，并固化规范数据、事件投影和候选技术 Spike 的边界，见 [学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。2026-08-05 已完成学习者模型首个垂直切片的正确性收口，包括 projection outbox、批量重放/API、默认 SQLite 升级、一次性 PostgreSQL 演练、前端证据下钻和校准基线；阶段顺序仍以 [路线图](roadmap.md) 为唯一权威来源，候选组件仍未引入。
 
@@ -19,12 +19,12 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 | 范畴 | 状态 |
 | --- | --- |
-| 版本与发布 | `v1.3.0` 已发布；`origin/main`、版本 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）已存在；Outbox 运维闭环已提交为 `1ffec29`，当前 feature 分支尚未合入 `main` 或作为新版本发布。 |
-| 后端能力 | 30 个路由模块、25 个模型模块、45 个服务模块，覆盖学习、AI、RAG、笔记上下文、学习者模型、事件投影、Agent 与 Coach。 |
+| 版本与发布 | `v1.3.0` 仍是最新发布版，其 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）保持不变；Phase 1 与 Outbox 运维闭环已进入 `main` 的 post-v1.3 开发基线，尚未作为新版本发布。 |
+| 后端能力 | 31 个路由模块、25 个模型模块、47 个服务模块，覆盖学习、AI、RAG、笔记上下文、学习者模型、事件投影、Agent 与 Coach。 |
 | 前端能力 | 17 个业务页面，主工作台、学习工具、洞察、设置和笔记上下文提示均已接入。 |
 | 桌面端 | Electron 壳、Windows NSIS 构建、更新器和桌面提醒桥接已存在。 |
-| 自动化测试 | 后端 46 个测试文件；前端 19 个测试文件；桌面端 7 个测试文件。 |
-| 当前工作分支 | `feature/phase2-agent-upgrade` 是历史分支名，不代表 Phase 2 已启动；当前优先级仍严格按 Phase 1 路线图执行。 |
+| 自动化测试 | 后端 50 个测试文件；前端 22 个测试文件；桌面端 7 个测试文件。 |
+| 主线与分支 | `feature/phase2-agent-upgrade` 的名称是历史遗留，不代表 Phase 2 已启动；其有效内容已整合进 `main`。已合入的 OpenHands 分支退役，早期 `vk/2ba2-` 独立历史仅归档、不参与合并。 |
 
 ## 3. v1.3.0 已完成
 
@@ -36,7 +36,9 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 - 新增 `scripts/seed_showcase_account.py`，用于本地 Demo 账号和学习闭环数据准备。
 - 建立需求、技术、进度三份项目基线文档，并接入根 README 与文档导航。
 
-## 4. 发布前验证
+## 4. 验证证据
+
+### 4.1 v1.3.0 发布验证
 
 | 模块 | 结果 |
 | --- | --- |
@@ -48,10 +50,22 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 | 演示脚本 | `seed_showcase_account.py --help` 加载和参数解析通过 |
 | 本轮聚焦验证 | `backend/tests/test_agent_kernel.py` 单独运行 `9 passed`；相关测试合并运行曾超时，不能代替全量验收 |
 
+### 4.2 Phase 1 主线整合验证（2026-08-13）
+
+| 模块 | 结果 |
+| --- | --- |
+| 后端聚焦回归 | AgentKernel、学习者模型、API、Outbox 运维、schema migration、ContextStore：`61 passed` |
+| 前端测试 | `22 passed files, 67 passed tests` |
+| 前端构建与 lint | `npm run build`、`npm run lint` 通过 |
+| 历史全后端证据 | 2026-08-09 整合点为 `290 passed, 53 subtests passed`；Outbox 后续加固后运行了上述 61 项聚焦回归，未把它误写为新的全量结果 |
+| 文档与 Git | README、技术、进度、路线图、文档导航和周期记录同步更新；新增 `.gitattributes` 固化跨平台换行规则，`git diff --check` 通过 |
+| 未覆盖 | 正式 PostgreSQL 16 多实例并发与升级窗口、真实浏览器/桌面端草案确认执行 E2E |
+
 ## 5. Git 与 GitHub 状态
 
-- 原本未合并的笔记上下文功能已进入 `main`。
-- v1.3.0 发布提交、tag、GitHub Release 和 Windows 安装包已完成发布；后续 Phase 1 改动应单独走新的验证、提交和发布流程。
+- 原本未合并的笔记上下文和 Phase 1 学习智能底座改动均已进入 `main` 开发基线。
+- v1.3.0 发布提交、tag、GitHub Release 和 Windows 安装包保持不变；本次合并只更新主线，不冒充一次新版本发布。
+- `openhands/rag-agent-hardening` 已由历史 PR 合入并退役；`vk/2ba2-` 与当前主线没有共同 Git 祖先，只保留归档标签，不使用 `--allow-unrelated-histories` 强行合并。
 - 2026-08-13 Outbox 运维闭环已提交为 `1ffec29`（`feat: harden projection outbox operations`）：涵盖 DLQ/人工重试、版本化共享重试策略、跨实例心跳与告警、受保护指标、活跃队列索引及迁移 head `20260812_06`。聚焦后端回归为 `55 passed`，前端为 `22 files / 67 tests passed`，构建与 lint 通过；全后端命令在 10 分钟上限超时，不能写作全量通过。真实 PostgreSQL 双会话并发验收仍保留给发布窗口。
 - `scripts/seed_showcase_account.py` 已纳入版本控制；它包含固定本地 Demo 凭据，只能用于本地演示，不能作为生产初始化方式。
 
