@@ -181,6 +181,7 @@ flowchart LR
 | 领域 | 当前实现 | 目标规范来源 | 允许的专用投影 |
 | --- | --- | --- | --- |
 | 资料与片段 | 上传文件、`Material`、Chroma | 文件存储 + SQL 的文件/解析版本/chunk 元数据 | `ContextStore` 索引（Chroma、Qdrant 等） |
+| 笔记 | SQL `Note` Markdown、标签、关联和 `source_path`；另有关键词检索路径 | SQL `notes`（Mnemox 内部原文、归属与更新时间） | `ContextStore` chunk/关键词/向量/摘要；概念关系与记忆候选仅作带来源派生数据 |
 | 知识关系 | `concepts`、`concept_edges`、`concept_links` | SQL 中带来源、置信度和审核状态的概念图 | `GraphStore`（Neo4j 等，若 Spike 通过） |
 | 长期记忆 | `UserMemory`、会话摘要、事件 | SQL 中带来源、有效时间、审核状态的记忆声明 | Graphiti 时态记忆图（若 Spike 通过） |
 | 学习能力 | `learner_evidence` 不可变证据、`user_concept_state` 可重算状态；`Concept.mastery` 仅兼容读取 | SQL `learner_evidence` / `user_concept_state` | 分析视图/缓存；不得把状态只留在图或向量库 |
@@ -200,6 +201,31 @@ flowchart LR
 | `AgentRuntime` | 运行、流式、暂停/恢复、取消与工具编排 | 原生 AgentKernel 原型存在；LangGraph 未评估 |
 
 接口只定义业务语义，不泄露 Qdrant、Neo4j、Graphiti 或 LangGraph 的类型到 Router/页面层。领域服务永远负责鉴权、权限过滤、草案确认、审计和业务事务。
+
+### 6.2.1 笔记的三层存储与三阶段检索
+
+笔记采用三层逻辑存储，不要求三套物理数据库：
+
+1. SQL `notes` 是原始 Markdown、标题、标签、归属、关联和更新时间的规范来源。
+2. `ContextStore` 承载可重建的 chunk、关键词/稀疏索引、向量、摘要和索引版本。
+3. 概念关系、记忆候选和学习证据引用是独立派生数据，必须携带 `user_id + note_id + source_version`；不得覆盖原文或直接改写掌握度。
+
+查询顺序固定为“路由与范围过滤 -> 混合召回 -> 重排与 L0/L1/L2 分层加载”。当前 `KeywordContextStore` 直接查询 SQL，因此 `ingest/forget` 是幂等 no-op；这只满足无 embedding 时的降级底线，不代表索引更新/删除闭环已经完成。首个真实迁移目标是聊天笔记检索，完整语义和验收见 [2026-08-13 决策](superpowers/specs/2026-08-13-note-context-memory-architecture.md)。
+
+目标生命周期：
+
+```text
+Note 写入/更新 + LearningEvent + outbox
+  -> ContextStore ingest/refresh
+  -> 可选概念关系与 staged 记忆候选
+
+Note 删除/失效
+  -> ContextStore forget
+  -> 清理 chunk/向量/缓存
+  -> 删除或失效来源派生数据
+```
+
+检索输出至少包含 `source_type=note`、`source_id`、标题、命中摘录、检索模式、内容/索引版本和降级状态。更新后不得召回旧版本，删除后不得在关键词、向量、缓存、图谱或未确认记忆候选中留下可检索残留。
 
 ### 6.3 学习证据与状态的当前切片
 

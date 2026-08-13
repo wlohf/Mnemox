@@ -26,6 +26,7 @@
 - 当前技术基线：`/docs/technical.md`
 - 当前项目进度：`/docs/progress.md`
 - 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
+- 笔记、上下文与记忆边界（2026-08-13，三层逻辑存储 / 三阶段检索）：`/docs/superpowers/specs/2026-08-13-note-context-memory-architecture.md`
 - 历史架构决策（2026-07-26，部分仍有效）：`/docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md`
 - 功能更新记录：`/docs/updates/README.md`
 - 日常功能新增、优化和修复，统一记录到 `docs/updates/` 下的周期文档中，默认按周拆分，避免长期堆积在单一说明文件里。

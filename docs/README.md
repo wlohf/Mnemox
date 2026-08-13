@@ -20,6 +20,7 @@
 
 | 日期 | 文档 | 状态 |
 | --- | --- | --- |
+| 2026-08-13 | [笔记、上下文与记忆边界决策](superpowers/specs/2026-08-13-note-context-memory-architecture.md) | 当前有效：笔记三层逻辑存储、三阶段检索、记忆候选和学习证据边界；代码迁移尚未开始 |
 | 2026-08-03 | [学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md) | 当前有效：混合 RAG、概念图谱、时态记忆、学习者模型、投影和受控 Spike |
 | 2026-07-26 | [知识层 / 检索底座 / Agent 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md) | 部分仍有效；关系型核心、FSRS、草案确认、用户隔离和 OpenViking 否决证据继续适用 |
 | 2026-07-26 | [OpenViking Spike 结论](superpowers/specs/2026-07-26-openviking-spike-result.md) | 保留的否决证据：不满足 Windows 桌面分发门槛 |
