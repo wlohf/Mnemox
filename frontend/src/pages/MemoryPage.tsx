@@ -14,6 +14,23 @@ import {
 
 const { Header, Content } = Layout
 
+const declarationStatus = (status: string) => {
+  switch (status) {
+    case 'confirmed': return { label: '已确认', color: 'green' }
+    case 'staged': return { label: '待你确认', color: 'gold' }
+    case 'ignored': return { label: '已忽略', color: 'default' }
+    case 'inaccurate': return { label: '已标记不准确', color: 'red' }
+    default: return { label: '已被修订', color: 'default' }
+  }
+}
+
+const declarationCreator = (createdBy: string) => ({
+  user: '你',
+  model: '自动提炼',
+  agent: 'Agent',
+  system: '系统',
+}[createdBy] || createdBy)
+
 export function MemoryPage() {
   const navigate = useNavigate()
   const [items, setItems] = useState<MemoryItem[]>([])
@@ -262,33 +279,39 @@ export function MemoryPage() {
           loading={declarationsLoading}
           dataSource={declarations}
           locale={{ emptyText: '这条旧记忆尚未有可用的声明记录。之后的手动创建和修订会显示在这里。' }}
-          renderItem={(declaration) => (
-            <List.Item>
-              <List.Item.Meta
-                title={
-                  <Space wrap>
-                    <Tag color={declaration.review_status === 'confirmed' ? 'green' : 'default'}>
-                      {declaration.review_status === 'confirmed' ? '当前声明' : '已被修订'}
-                    </Tag>
-                    <Tag>{declaration.predicate}</Tag>
-                    <span>由 {declaration.created_by === 'user' ? '你' : declaration.created_by} 记录</span>
-                  </Space>
-                }
-                description={
-                  <div>
-                    <div>{declaration.value}</div>
-                    <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
-                      确认时间 {declaration.observed_at ? dayjs(declaration.observed_at).format('YYYY-MM-DD HH:mm') : '-'}
-                      {declaration.valid_to
-                        ? ` · 于 ${dayjs(declaration.valid_to).format('YYYY-MM-DD HH:mm')} 被后续修订替代`
-                        : ' · 当前有效'}
-                      {declaration.source_type ? ` · 来源 ${declaration.source_type}` : ''}
+          renderItem={(declaration) => {
+            const status = declarationStatus(declaration.review_status)
+            const availability = declaration.valid_to
+              ? `于 ${dayjs(declaration.valid_to).format('YYYY-MM-DD HH:mm')} 结束有效`
+              : declaration.review_status === 'staged'
+                ? '等待你的确认，不会用于聊天'
+                : declaration.review_status === 'confirmed'
+                  ? '当前有效'
+                  : '不会用于聊天'
+            return (
+              <List.Item>
+                <List.Item.Meta
+                  title={
+                    <Space wrap>
+                      <Tag color={status.color}>{status.label}</Tag>
+                      <Tag>{declaration.predicate}</Tag>
+                      <span>由 {declarationCreator(declaration.created_by)} 记录</span>
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <div>{declaration.value}</div>
+                      <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
+                        记录时间 {declaration.observed_at ? dayjs(declaration.observed_at).format('YYYY-MM-DD HH:mm') : '-'}
+                        {` · ${availability}`}
+                        {declaration.source_type ? ` · 来源 ${declaration.source_type}` : ''}
+                      </div>
                     </div>
-                  </div>
-                }
-              />
-            </List.Item>
-          )}
+                  }
+                />
+              </List.Item>
+            )
+          }}
         />
       </Modal>
     </Layout>

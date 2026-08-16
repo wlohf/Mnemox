@@ -112,6 +112,7 @@ async def _set_learning_checkpoint(
         memory_type="semantic",
         lock=True,
         respect_lock=False,
+        record_declaration=False,
     )
 
 

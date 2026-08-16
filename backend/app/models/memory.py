@@ -53,7 +53,7 @@ class UserMemory(Base):
 
 
 class MemoryDeclaration(Base):
-    """用户记忆的可审计声明历史。
+    """用户与自动记忆的可审计声明历史。
 
     ``UserMemory`` 保留当前可被产品功能读取的有效值；每一次明确的人工
     声明或修订则写入本表。这样不会让后台提炼结果覆盖用户已经确认的陈述，
@@ -109,7 +109,7 @@ class MemoryDeclaration(Base):
     source_type = Column(String(50), nullable=False, default="manual", comment="来源类型")
     source_id = Column(String(160), nullable=True, comment="来源对象或幂等标识")
     evidence = Column(Text, nullable=True, comment="JSON 证据摘要，不保留原始聊天全文")
-    created_by = Column(String(30), nullable=False, default="user", comment="创建者: user/agent/system")
+    created_by = Column(String(30), nullable=False, default="user", comment="创建者: user/model/agent/system")
     model_version = Column(String(80), nullable=True, comment="模型或规则版本")
     supersedes_id = Column(
         Integer,
