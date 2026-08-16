@@ -28,6 +28,14 @@ class _RecordingContextStore:
         return self.items
 
 
+class _FailingContextStore:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    async def retrieve(self, db, user_id, query, *, top_k=5, source_types=()):
+        raise self.error
+
+
 class NoteContextServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -169,6 +177,25 @@ class NoteContextServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("retrieval_mode=keyword_sql", output)
         self.assertNotIn(query, output)
         self.assertNotIn(excerpt, output)
+
+    async def test_search_note_context_failure_logs_only_fixed_metadata(self):
+        private_values = (
+            "private-query",
+            "private-title",
+            "private-excerpt",
+            "private-prompt",
+        )
+        set_context_store(_FailingContextStore(RuntimeError("; ".join(private_values))))
+
+        async with self.sessionmaker() as session:
+            with self.assertLogs("app.services.note_context_service", level="WARNING") as logs:
+                with self.assertRaises(RuntimeError):
+                    await search_note_context(session, user_id=1, query=private_values[0])
+
+        output = "\n".join(logs.output)
+        self.assertIn("event=contextstore.retrieve status=failure source_types=note", output)
+        for value in private_values:
+            self.assertNotIn(value, output)
 
     async def test_build_note_context_prompt_wraps_untrusted_note_content(self):
         user = await self._create_user("prompt_user")

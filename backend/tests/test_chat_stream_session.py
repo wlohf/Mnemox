@@ -414,6 +414,54 @@ class ChatStreamSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("用户相关笔记摘录", provider.system_prompt)
         self.assertIn("梯度下降复盘", provider.system_prompt)
 
+    async def test_chat_send_degrades_note_context_without_logging_private_error_details(self):
+        db = _FakeDb()
+        provider = _FakeProvider()
+        current_user = User(id=1, username="u", email="u@example.com", hashed_password="x")
+        body = ChatRequest(message="private-query", conversation_id=1, history=[])
+        private_values = ("private-query", "private-title", "private-excerpt", "private-prompt")
+        error = RuntimeError("; ".join(private_values))
+
+        with (
+            patch("app.routers.chat._resolve_materials_and_build_prompt", AsyncMock(return_value=("base prompt", [], []))),
+            patch("app.routers.chat.search_note_context", AsyncMock(side_effect=error)),
+            patch("app.routers.chat.get_relevant_memories", AsyncMock(return_value=[])),
+            patch("app.routers.chat._persist_streamed_chat_turn", AsyncMock()),
+            patch("app.routers.chat.detect_progress_feedback", AsyncMock(return_value=None)),
+            patch("app.routers.chat.AIProviderFactory.create_provider", AsyncMock(return_value=provider)),
+            self.assertLogs("app.routers.chat", level="WARNING") as logs,
+        ):
+            response = await chat_send(body, db=db, current_user=current_user)
+            chunks = [chunk async for chunk in response.body_iterator]
+
+        output = "\n".join(logs.output)
+        self.assertTrue(any("ok" in chunk for chunk in chunks))
+        self.assertIn("构建笔记上下文失败", output)
+        for value in private_values:
+            self.assertNotIn(value, output)
+
+    async def test_chat_send_sync_degrades_note_context_without_logging_private_error_details(self):
+        db = _FakeDb()
+        provider = _FakeProvider()
+        current_user = User(id=1, username="u", email="u@example.com", hashed_password="x")
+        body = ChatRequest(message="private-query", conversation_id=1, history=[])
+        private_values = ("private-query", "private-title", "private-excerpt", "private-prompt")
+        error = RuntimeError("; ".join(private_values))
+
+        with (
+            patch("app.routers.chat._resolve_materials_and_build_prompt", AsyncMock(return_value=("base prompt", [], []))),
+            patch("app.routers.chat.search_note_context", AsyncMock(side_effect=error)),
+            patch("app.routers.chat.AIProviderFactory.create_provider", AsyncMock(return_value=provider)),
+            self.assertLogs("app.routers.chat", level="WARNING") as logs,
+        ):
+            response = await chat_send_sync(body, db=db, current_user=current_user)
+
+        output = "\n".join(logs.output)
+        self.assertEqual(response.reply, "sync ok")
+        self.assertIn("构建同步对话笔记上下文失败", output)
+        for value in private_values:
+            self.assertNotIn(value, output)
+
 
 if __name__ == "__main__":
     unittest.main()

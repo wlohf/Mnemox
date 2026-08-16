@@ -148,6 +148,20 @@ class ContextStoreContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.source_id for item in new_items], [note_id])
         self.assertEqual(deleted_items, [])
 
+    async def test_note_retrieval_keeps_exact_title_match_for_long_cjk_query(self):
+        user_id = await self._create_user("ctx_cjk_title")
+        note_id = await self._create_note(user_id, "行列式", "复习时先写出定义。")
+
+        async with self.sessionmaker() as session:
+            items = await self.store.retrieve(
+                session,
+                user_id,
+                "行列式的计算方法",
+                source_types=("note",),
+            )
+
+        self.assertEqual([item.source_id for item in items], [note_id])
+
     async def test_load_tiered_returns_increasing_detail(self):
         # Arrange
         user_id = await self._create_user("ctx_tier_user")
