@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { detectCoachChatEvent } from './coachApi'
+import {
+  detectCoachChatEvent,
+  markPendingCoachNudgesShown,
+  type CoachNudge,
+} from './coachApi'
 
 describe('coachApi emotional event classifier', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('detects low motivation text', () => {
     expect(detectCoachChatEvent('我学不进去了')).toBe('chat.low_motivation_detected')
     expect(detectCoachChatEvent("I can't study today")).toBe('chat.low_motivation_detected')
@@ -20,5 +28,30 @@ describe('coachApi emotional event classifier', () => {
 
   it('returns null for neutral text', () => {
     expect(detectCoachChatEvent('请解释一下这段材料')).toBeNull()
+  })
+
+  it('marks each visible pending nudge once and leaves existing lifecycle states alone', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: 'nudge-1',
+      status: 'shown',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const nudges = [
+      { id: 'nudge-1', status: 'pending' },
+      { id: 'nudge-1', status: 'pending' },
+      { id: 'nudge-2', status: 'accepted' },
+    ] as CoachNudge[]
+
+    const marked = await markPendingCoachNudgesShown(nudges)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/coach/nudges/nudge-1/shown',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(marked).toEqual([{ id: 'nudge-1', status: 'shown' }])
   })
 })
