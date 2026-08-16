@@ -133,18 +133,23 @@ def _score_note_context(note: Note, tokens: tuple[str, ...]) -> tuple[float, str
     title = str(note.title or "")
     content = str(note.content or "")
     tags = " ".join(_parse_note_tags(note.tags))
+    title_text = title.lower()
+    tag_text = tags.lower()
     haystack = f"{title} {tags} {content}".lower()
     matches = [token for token in tokens if token in haystack]
     if not matches:
         return 0.0, ""
     cjk_bigrams = [token for token in tokens if _CJK_BIGRAM_RE.fullmatch(token)]
     matched_cjk_bigrams = [token for token in matches if _CJK_BIGRAM_RE.fullmatch(token)]
-    if len(cjk_bigrams) >= 4 and len(matched_cjk_bigrams) < 3:
+    has_high_signal_cjk_match = any(
+        token in title_text or token in tag_text for token in matched_cjk_bigrams
+    )
+    if len(cjk_bigrams) >= 4 and len(matched_cjk_bigrams) < 3 and not has_high_signal_cjk_match:
         return 0.0, ""
     score = float(len(matches))
-    if any(token in title.lower() for token in matches):
+    if any(token in title_text for token in matches):
         score += 3.0
-    if any(token in tags.lower() for token in matches):
+    if any(token in tag_text for token in matches):
         score += 1.5
     if content.strip():
         score += 0.2

@@ -78,7 +78,6 @@ async def search_note_context(
     except Exception:
         logger.warning(
             "event=contextstore.retrieve status=failure source_types=note",
-            exc_info=True,
         )
         raise
 
