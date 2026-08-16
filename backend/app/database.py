@@ -171,6 +171,14 @@ async def _run_lightweight_migrations(conn):
         ("wrong_questions", "concept_id", "INTEGER"),
         # Obsidian 增量同步（决策 D6）：笔记外部来源路径
         ("notes", "source_path", "VARCHAR(500)"),
+        # Obsidian Vault 一致性：稳定文件身份、缺失状态和冲突候选。
+        ("notes", "source_vault_id", "VARCHAR(160)"),
+        ("notes", "source_file_id", "VARCHAR(160)"),
+        ("notes", "source_sync_hash", "VARCHAR(64)"),
+        ("notes", "source_sync_state", "VARCHAR(20)"),
+        ("notes", "source_conflict_title", "VARCHAR(200)"),
+        ("notes", "source_conflict_content", "TEXT"),
+        ("notes", "source_conflict_hash", "VARCHAR(64)"),
     ]
 
     for table, column, col_type in other_migrations:
@@ -202,6 +210,22 @@ async def _run_lightweight_migrations(conn):
         await conn.execute(sqlalchemy.text(
             "CREATE INDEX IF NOT EXISTS ix_user_memories_review_status "
             "ON user_memories(review_status)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_notes_source_vault_id "
+            "ON notes(source_vault_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_notes_source_file_id "
+            "ON notes(source_file_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_notes_source_sync_state "
+            "ON notes(source_sync_state)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_notes_source_identity "
+            "ON notes(user_id, source_vault_id, source_file_id)"
         ))
     except Exception:
         pass

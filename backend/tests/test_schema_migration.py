@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260812_06"
+CURRENT_HEAD_REVISION = "20260816_07"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -164,10 +164,28 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         assert {"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}.issubset(
             {column["name"] for column in inspector.get_columns("review_schedule")}
         )
-        assert "source_path" in {column["name"] for column in inspector.get_columns("notes")}
-        assert "ix_notes_source_path" in {
+        assert {
+            "source_path",
+            "source_vault_id",
+            "source_file_id",
+            "source_sync_hash",
+            "source_sync_state",
+            "source_conflict_title",
+            "source_conflict_content",
+            "source_conflict_hash",
+        }.issubset({column["name"] for column in inspector.get_columns("notes")})
+        assert {
+            "ix_notes_source_path",
+            "ix_notes_source_vault_id",
+            "ix_notes_source_file_id",
+            "ix_notes_source_sync_state",
+        }.issubset({
             index["name"] for index in inspector.get_indexes("notes")
+        })
+        note_indexes = {
+            index["name"]: index for index in inspector.get_indexes("notes")
         }
+        assert bool(note_indexes["uq_notes_source_identity"]["unique"])
         assert "ix_wrong_questions_concept_id" in {
             index["name"] for index in inspector.get_indexes("wrong_questions")
         }
@@ -370,6 +388,10 @@ def test_postgresql_offline_ddl_includes_the_concept_foreign_key():
     assert "fk_learner_evidence_source_event_id" in ddl
     assert "fk_projection_outbox_source_event_id" in ddl
     assert "FOREIGN KEY(concept_id) REFERENCES concepts" in ddl
+    assert "ALTER TABLE notes ADD COLUMN source_vault_id" in ddl
+    assert "ALTER TABLE notes ADD COLUMN source_file_id" in ddl
+    assert "ALTER TABLE notes ADD COLUMN source_sync_state" in ddl
+    assert "CREATE UNIQUE INDEX uq_notes_source_identity" in ddl
 
 
 def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
@@ -527,6 +549,51 @@ def test_sqlite_lightweight_migration_upgrades_legacy_outbox_operations_schema(t
     assert "ix_projection_outbox_worker_heartbeats_last_heartbeat_at" in indexes
     assert {"id", "max_attempts", "policy_version"}.issubset(retry_policy_columns)
     assert dead_lettered_at is None
+
+
+def test_sqlite_lightweight_migration_upgrades_legacy_notes_with_vault_sync_state(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-notes.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260812_06")
+
+    async def _run() -> tuple[set[str], set[str]]:
+        async_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}", future=True
+        )
+        try:
+            async with async_engine.begin() as connection:
+                await _run_lightweight_migrations(connection)
+                return await connection.run_sync(
+                    lambda sync_connection: (
+                        {
+                            column["name"]
+                            for column in inspect(sync_connection).get_columns("notes")
+                        },
+                        {
+                            index["name"]
+                            for index in inspect(sync_connection).get_indexes("notes")
+                        },
+                    )
+                )
+        finally:
+            await async_engine.dispose()
+
+    columns, indexes = asyncio.run(_run())
+    assert {
+        "source_vault_id",
+        "source_file_id",
+        "source_sync_hash",
+        "source_sync_state",
+        "source_conflict_title",
+        "source_conflict_content",
+        "source_conflict_hash",
+    }.issubset(columns)
+    assert {
+        "ix_notes_source_vault_id",
+        "ix_notes_source_file_id",
+        "ix_notes_source_sync_state",
+        "uq_notes_source_identity",
+    }.issubset(indexes)
 
 
 def test_sqlite_lightweight_migration_backfills_legacy_mastery_idempotently(tmp_path: Path):
