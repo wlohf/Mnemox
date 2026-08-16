@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -12,6 +13,7 @@ from app.models.material import Chapter, Material
 from app.models.note import Note
 from app.models.question import Question, WrongQuestion
 from app.models.user import User
+from app.routers.concepts import AssociateRequest, associate_text
 from app.services.association_coach_service import create_association_recall_nudge
 from app.services.association_service import (
     attach_note_to_concepts,
@@ -276,6 +278,32 @@ class AssociationCoachAttributionTests(_AssociationTestBase):
         self.assertEqual(first["nudge"]["id"], second["nudge"]["id"])
         self.assertEqual(len(event_count), 1)
         self.assertEqual(len(nudge_count), 1)
+
+    async def test_associations_remain_available_when_coach_attribution_fails(self):
+        user_id = await self._create_user("association_coach_fallback")
+        expected = [{"concept_id": 9, "concept_name": "贝叶斯定理"}]
+
+        async with self.sessionmaker() as session:
+            current_user = User(id=user_id, username="association_coach_fallback")
+            with (
+                patch(
+                    "app.routers.concepts.find_associations",
+                    new=AsyncMock(return_value=expected),
+                ),
+                patch(
+                    "app.routers.concepts.create_association_recall_nudge",
+                    new=AsyncMock(side_effect=RuntimeError("coach unavailable")),
+                ),
+            ):
+                payload = await associate_text(
+                    AssociateRequest(text="开始学贝叶斯定理"),
+                    session,
+                    current_user,
+                )
+
+        self.assertEqual(payload["associations"], expected)
+        self.assertIsNone(payload["event"])
+        self.assertIsNone(payload["nudge"])
 
 
 if __name__ == "__main__":

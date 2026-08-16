@@ -501,6 +501,77 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(feedback[0]["outcome"], "later")
         self.assertIsNotNone(feedback[0].get("snooze_until"))
 
+    async def test_accepted_and_completed_feedback_are_idempotent(self):
+        user_id = await self._create_user("idempotent_feedback")
+        async with self.sessionmaker() as session:
+            nudge = await create_coach_nudge(
+                session,
+                user_id,
+                event_id=None,
+                skill_id="association_recall",
+                policy={"channel": "agent_panel", "priority": "medium", "reason": "explicit_association_request"},
+                result=await LowMotivationSkill().generate(
+                    CoachSkillContext(
+                        user_id=user_id,
+                        event={"event_type": "app.evaluate", "payload": {}},
+                        snapshot={"tasks": {"today_tasks": []}, "review": {"due_review_count": 0}},
+                        policy={},
+                    )
+                ),
+            )
+            first_accepted = await record_coach_feedback(session, user_id, nudge["id"], "accepted")
+            duplicate_accepted = await record_coach_feedback(session, user_id, nudge["id"], "accepted")
+            first_completed = await record_coach_feedback(session, user_id, nudge["id"], "completed")
+            duplicate_completed = await record_coach_feedback(session, user_id, nudge["id"], "completed")
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            stored = (
+                await session.execute(select(CoachNudge).where(CoachNudge.id == nudge["id"]))
+            ).scalar_one()
+            stats = (
+                await session.execute(
+                    select(CoachSkillStats).where(
+                        CoachSkillStats.user_id == user_id,
+                        CoachSkillStats.skill_id == "association_recall",
+                    )
+                )
+            ).scalar_one()
+            feedback = await list_recent_coach_feedback(session, user_id)
+
+        self.assertEqual(stored.status, "completed")
+        self.assertFalse(first_accepted.get("idempotent", False))
+        self.assertTrue(duplicate_accepted["idempotent"])
+        self.assertFalse(first_completed.get("idempotent", False))
+        self.assertTrue(duplicate_completed["idempotent"])
+        self.assertEqual(stats.accepted_count, 1)
+        self.assertEqual(stats.completed_count, 1)
+        self.assertEqual(len(feedback), 2)
+
+    async def test_shown_event_cannot_revert_a_completed_nudge(self):
+        user_id = await self._create_user("shown_after_completion")
+        async with self.sessionmaker() as session:
+            nudge = await create_coach_nudge(
+                session,
+                user_id,
+                event_id=None,
+                skill_id="association_recall",
+                policy={"channel": "agent_panel", "priority": "medium", "reason": "explicit_association_request"},
+                result=await LowMotivationSkill().generate(
+                    CoachSkillContext(
+                        user_id=user_id,
+                        event={"event_type": "app.evaluate", "payload": {}},
+                        snapshot={"tasks": {"today_tasks": []}, "review": {"due_review_count": 0}},
+                        policy={},
+                    )
+                ),
+            )
+            await record_coach_feedback(session, user_id, nudge["id"], "completed")
+            shown = await mark_coach_nudge_shown(session, user_id, nudge["id"])
+            await session.commit()
+
+        self.assertEqual(shown["status"], "completed")
+
     async def test_phase5_workflows_are_user_scoped_and_durable(self):
         owner_id = await self._create_user("workflow_owner")
         other_id = await self._create_user("workflow_other")

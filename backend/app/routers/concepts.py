@@ -13,6 +13,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models.material import Chapter, Material
 from app.models.user import User
+from app.services.association_coach_service import create_association_recall_nudge
 from app.services.association_service import find_associations
 from app.services.concept_service import (
     backfill_wrong_question_concepts,
@@ -133,4 +134,24 @@ async def associate_text(
     associations = await find_associations(
         db, int(current_user.id), body.text, limit=body.limit
     )
-    return {"associations": associations}
+    coach_result = None
+    try:
+        async with db.begin_nested():
+            coach_result = await create_association_recall_nudge(
+                db,
+                int(current_user.id),
+                query_text=body.text,
+                associations=associations,
+            )
+    except Exception as exc:
+        logger.warning(
+            "联想结果已生成，但 Coach 归因写入失败 user_id=%s err=%s",
+            current_user.id,
+            exc,
+            exc_info=True,
+        )
+    return {
+        "associations": associations,
+        "event": coach_result["event"] if coach_result else None,
+        "nudge": coach_result["nudge"] if coach_result else None,
+    }

@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachNudge
@@ -33,6 +33,7 @@ SNOOZE_DURATIONS = {
     "later": timedelta(hours=2),
     "snoozed": timedelta(hours=4),
 }
+IDEMPOTENT_FEEDBACK_OUTCOMES = {"accepted", "helpful", "completed"}
 
 
 def _feedback_status(outcome: str) -> str:
@@ -70,14 +71,46 @@ async def record_coach_feedback(
     if outcome not in COACH_FEEDBACK_OUTCOMES:
         raise ValueError("不支持的反馈类型")
 
-    result = await db.execute(select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id))
-    nudge = result.scalar_one_or_none()
-    if not nudge:
-        raise ValueError("Coach nudge 不存在或无权访问")
-
     now = datetime.now()
-    nudge.status = _feedback_status(outcome)
-    nudge.updated_at = now
+    target_status = _feedback_status(outcome)
+    if outcome in IDEMPOTENT_FEEDBACK_OUTCOMES:
+        allowed_statuses = (
+            ("pending", "shown", "snoozed")
+            if target_status == "accepted"
+            else ("pending", "shown", "accepted", "snoozed")
+        )
+        transition = await db.execute(
+            update(CoachNudge)
+            .where(
+                CoachNudge.id == nudge_id,
+                CoachNudge.user_id == user_id,
+                CoachNudge.status.in_(allowed_statuses),
+            )
+            .values(status=target_status, updated_at=now)
+        )
+        result = await db.execute(
+            select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id)
+        )
+        nudge = result.scalar_one_or_none()
+        if not nudge:
+            raise ValueError("Coach nudge 不存在或无权访问")
+        if int(transition.rowcount or 0) == 0:
+            return {
+                "ok": True,
+                "nudge_id": nudge.id,
+                "status": nudge.status,
+                "idempotent": True,
+                "learning_stats": None,
+            }
+    else:
+        result = await db.execute(
+            select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id)
+        )
+        nudge = result.scalar_one_or_none()
+        if not nudge:
+            raise ValueError("Coach nudge 不存在或无权访问")
+        nudge.status = target_status
+        nudge.updated_at = now
 
     payload = {
         "nudge_id": nudge.id,

@@ -1,4 +1,5 @@
 import { apiFetch } from './apiClient'
+import type { ConceptAssociation } from './associationApi'
 
 export type CoachEventType =
   | 'chat.low_motivation_detected'
@@ -72,6 +73,12 @@ export interface CoachNudge {
       reason?: string
       evidence?: string[]
     }
+    source?: {
+      type?: string
+      endpoint?: string
+      event_id?: string
+    }
+    associations?: ConceptAssociation[]
   } | null
   status: CoachNudgeStatus
   expires_at?: string | null
