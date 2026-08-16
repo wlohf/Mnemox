@@ -372,6 +372,80 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one_or_none()
         self.assertIsNotNone(link)
 
+    async def test_symlinked_markdown_outside_vault_is_rejected(self):
+        user_id = await self._create_user("vault_symlink_user")
+        external_note = Path(self.tmpdir.name) / "outside-vault.md"
+        external_note.write_text("这不属于 Vault", encoding="utf-8")
+        symlink = self.vault / "链接到外部.md"
+        try:
+            symlink.symlink_to(external_note)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"当前文件系统不支持符号链接：{exc}")
+
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertEqual(stats["created"], 0)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["failures"], [{
+            "source_path": "链接到外部.md",
+            "reason": "符号链接文件不允许同步",
+        }])
+        async with self.sessionmaker() as session:
+            notes = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalars().all()
+        self.assertEqual(notes, [])
+
+    async def test_oversized_file_is_skipped_without_overwriting_synced_note(self):
+        user_id = await self._create_user("vault_oversized_user")
+        self._write("容量保护.md", "ok")
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self._write("容量保护.md", "01234567890")
+        async with self.sessionmaker() as session:
+            with patch.object(obsidian_sync_service, "MAX_NOTE_CHARS", 10):
+                stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertEqual(stats["updated"], 0)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["failures"], [{
+            "source_path": "容量保护.md",
+            "reason": "文件内容超过单篇同步上限",
+        }])
+        async with self.sessionmaker() as session:
+            note = (
+                await session.execute(
+                    select(Note).where(Note.user_id == user_id, Note.source_path == "容量保护.md")
+                )
+            ).scalar_one()
+        self.assertEqual(note.content, "ok")
+        self.assertEqual(note.source_sync_state, "active")
+
+    async def test_non_utf8_file_is_skipped_without_creating_corrupted_note(self):
+        user_id = await self._create_user("vault_encoding_user")
+        (self.vault / "损坏编码.md").write_bytes(b"\xff\xfe\x00")
+
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertEqual(stats["created"], 0)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(stats["failures"], [{
+            "source_path": "损坏编码.md",
+            "reason": "文件不是 UTF-8 编码",
+        }])
+        async with self.sessionmaker() as session:
+            notes = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalars().all()
+        self.assertEqual(notes, [])
+
     async def test_invalid_vault_path_raises(self):
         with self.assertRaises(VaultPathError):
             validate_vault_path("")

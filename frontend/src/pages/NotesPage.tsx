@@ -1147,7 +1147,14 @@ export function NotesPage() {
                 <Text type="warning">Vault 文件数超过本次同步上限；为避免误判，本次不会标记缺失。请缩小同步范围后重试。</Text>
               )}
               {vaultSyncResult.failed > 0 && (
-                <Text type="warning">{vaultSyncResult.failed} 个文件未能同步。</Text>
+                <div>
+                  <Text type="warning">{vaultSyncResult.failed} 个文件已跳过，现有同步版本不会被覆盖。</Text>
+                  {vaultSyncResult.failures.map((failure) => (
+                    <div key={`${failure.source_path}:${failure.reason}`} style={{ marginTop: 6 }}>
+                      <Text type="secondary">{failure.source_path}：{failure.reason}</Text>
+                    </div>
+                  ))}
+                </div>
               )}
               {vaultSyncResult.conflicts.length > 0 && (
                 <div>

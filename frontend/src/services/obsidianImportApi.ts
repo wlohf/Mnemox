@@ -13,6 +13,11 @@ export interface ObsidianVaultConflict {
   source_path: string
 }
 
+export interface ObsidianVaultFailure {
+  source_path: string
+  reason: string
+}
+
 export interface ObsidianVaultSyncResult {
   scanned: number
   created: number
@@ -24,6 +29,7 @@ export interface ObsidianVaultSyncResult {
   missing: number
   conflicted: number
   conflicts: ObsidianVaultConflict[]
+  failures: ObsidianVaultFailure[]
 }
 
 export interface ObsidianVaultConflictResolution {

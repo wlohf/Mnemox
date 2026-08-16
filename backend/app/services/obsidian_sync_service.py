@@ -41,6 +41,10 @@ class VaultConflictError(ValueError):
     """vault 冲突不存在或解决策略无效。"""
 
 
+class VaultFileError(ValueError):
+    """单个 vault 文件不适合安全同步。"""
+
+
 def validate_vault_path(vault_path: str) -> Path:
     """校验并解析 vault 路径（生产环境强制白名单根目录）。"""
     raw = str(vault_path or "").strip()
@@ -79,6 +83,44 @@ def _filesystem_identity(path: Path) -> str:
     """Return an identifier stable across same-volume renames and moves."""
     stat = path.stat()
     return f"{int(stat.st_dev)}:{int(stat.st_ino)}"
+
+
+def _read_vault_markdown(vault: Path, file_path: Path) -> str:
+    """Read one safe, complete UTF-8 Markdown file without silent truncation."""
+    if file_path.is_symlink():
+        raise VaultFileError("符号链接文件不允许同步")
+
+    try:
+        resolved = file_path.resolve(strict=True)
+        resolved.relative_to(vault)
+    except FileNotFoundError as exc:
+        raise VaultFileError("文件在读取前已发生变化") from exc
+    except ValueError as exc:
+        raise VaultFileError("文件不在 Vault 授权目录内") from exc
+
+    if not resolved.is_file():
+        raise VaultFileError("不是可读取的普通文件")
+
+    # UTF-8 code points are at most four bytes. Read one additional byte so a
+    # growing or oversized file is rejected before it can be partially stored.
+    max_bytes = MAX_NOTE_CHARS * 4
+    with resolved.open("rb") as source:
+        raw = source.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise VaultFileError("文件内容超过单篇同步上限")
+
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VaultFileError("文件不是 UTF-8 编码") from exc
+    if len(content) > MAX_NOTE_CHARS:
+        raise VaultFileError("文件内容超过单篇同步上限")
+    return content
+
+
+def _failure_summary(source_path: str, exc: Exception) -> dict[str, str]:
+    reason = str(exc) if isinstance(exc, VaultFileError) else "文件读取失败"
+    return {"source_path": source_path, "reason": reason}
 
 
 def _snapshot_hash(title: str, content: str) -> str:
@@ -156,6 +198,7 @@ async def sync_vault(
         "missing": 0,
         "conflicted": 0,
         "conflicts": [],
+        "failures": [],
     }
     changed_notes: list[Note] = []
     seen_file_ids: set[str] = set()
@@ -166,7 +209,7 @@ async def sync_vault(
             break
         stats["scanned"] += 1
         try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")[:MAX_NOTE_CHARS]
+            content = _read_vault_markdown(vault, file_path)
             title = file_path.stem[:200] or "未命名笔记"
             file_id = _filesystem_identity(file_path)
             seen_file_ids.add(file_id)
@@ -254,6 +297,7 @@ async def sync_vault(
                     stats["skipped"] += 1
         except Exception as exc:
             stats["failed"] += 1
+            stats["failures"].append(_failure_summary(source_path, exc))
             logger.warning("vault 文件同步失败 path=%s err=%s", source_path, exc)
 
     # A partial or failed scan cannot distinguish an unseen file from a deleted

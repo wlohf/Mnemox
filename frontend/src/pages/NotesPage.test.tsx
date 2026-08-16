@@ -247,12 +247,13 @@ describe('NotesPage folder switching', () => {
         created: 0,
         updated: 0,
         skipped: 0,
-        failed: 0,
+        failed: 1,
         truncated: false,
         renamed: 0,
         missing: 0,
         conflicted: 1,
         conflicts: [{ note_id: 11, title: '科研记录', source_path: '科研/记录.md' }],
+        failures: [{ source_path: '链接笔记.md', reason: '符号链接文件不允许同步' }],
       }
     })
     container = document.createElement('div')
@@ -294,6 +295,8 @@ describe('NotesPage folder switching', () => {
     expect(container.textContent).toContain('科研/记录.md')
     expect(container.textContent).toContain('保留本地')
     expect(container.textContent).toContain('采用 Vault')
+    expect(container.textContent).toContain('链接笔记.md')
+    expect(container.textContent).toContain('符号链接文件不允许同步')
     expect(container.textContent).not.toContain('vault 版本二')
   })
 })
