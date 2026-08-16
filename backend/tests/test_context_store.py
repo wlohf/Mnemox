@@ -53,6 +53,15 @@ class ContextStoreContractTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             return ids
 
+    async def _create_note(self, user_id: int, title: str, content: str, tags: str = "[]") -> int:
+        async with self.sessionmaker() as session:
+            note = Note(user_id=user_id, title=title, content=content, tags=tags, note_type="general")
+            session.add(note)
+            await session.flush()
+            note_id = int(note.id)
+            await session.commit()
+            return note_id
+
     async def test_retrieve_finds_matching_material_and_note(self):
         # Arrange
         user_id = await self._create_user("ctx_user")
@@ -89,6 +98,55 @@ class ContextStoreContractTests(unittest.IsolatedAsyncioTestCase):
             items = await self.store.retrieve(session, outsider, "贝叶斯")
 
         self.assertEqual(items, [])
+
+    async def test_note_retrieval_preserves_chat_quality_and_metadata(self):
+        user_id = await self._create_user("ctx_note_profile")
+        await self._create_note(user_id, "无关笔记", "今天整理了桌面。")
+        matched_id = await self._create_note(
+            user_id,
+            "梯度下降复盘",
+            "梯度下降沿损失函数方向调整参数，帮助优化目标函数。",
+            '["机器学习", "优化"]',
+        )
+
+        async with self.sessionmaker() as session:
+            items = await self.store.retrieve(
+                session,
+                user_id,
+                "梯度下降为什么能优化参数",
+                top_k=3,
+                source_types=("note",),
+            )
+
+        self.assertEqual(items[0].source_id, matched_id)
+        self.assertIn("梯度下降", items[0].excerpt)
+        self.assertEqual(items[0].metadata["tags"], ["机器学习", "优化"])
+        self.assertIn("关键词匹配", items[0].metadata["reason"])
+        self.assertEqual(items[0].metadata["retrieval_mode"], "keyword_sql")
+        self.assertIn("updated_at", items[0].metadata)
+
+    async def test_note_retrieval_reads_current_sql_state_after_update_and_deletion(self):
+        user_id = await self._create_user("ctx_note_lifecycle")
+        note_id = await self._create_note(user_id, "学习记录", "初始关键词只存在于旧内容。")
+
+        async with self.sessionmaker() as session:
+            note = await session.get(Note, note_id)
+            note.content = "更新关键词只存在于新内容。"
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            old_items = await self.store.retrieve(session, user_id, "初始关键词", source_types=("note",))
+            new_items = await self.store.retrieve(session, user_id, "新内容更新关键词", source_types=("note",))
+            note = await session.get(Note, note_id)
+            await session.delete(note)
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            deleted_items = await self.store.retrieve(session, user_id, "新内容更新关键词", source_types=("note",))
+
+        self.assertEqual(old_items, [])
+        self.assertEqual([item.source_id for item in new_items], [note_id])
+        self.assertEqual(deleted_items, [])
 
     async def test_load_tiered_returns_increasing_detail(self):
         # Arrange
