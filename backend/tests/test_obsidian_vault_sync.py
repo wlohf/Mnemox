@@ -134,6 +134,17 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notes[0].content, "Mnemox 本地版本")
         self.assertEqual(notes[0].source_sync_state, "conflict")
         self.assertEqual(notes[0].source_conflict_content, "Vault 版本")
+        self.assertIsNone(notes[0].source_vault_id)
+        self.assertIsNone(notes[0].source_file_id)
+
+        async with self.sessionmaker() as session:
+            await resolve_vault_conflict(session, user_id, int(notes[0].id), "keep_local")
+            await session.commit()
+            note = (
+                await session.execute(select(Note).where(Note.id == notes[0].id))
+            ).scalar_one()
+        self.assertIsNotNone(note.source_vault_id)
+        self.assertIsNotNone(note.source_file_id)
 
     async def test_renamed_file_keeps_the_existing_note_identity(self):
         user_id = await self._create_user("vault_rename_user")
