@@ -172,6 +172,17 @@ export async function markCoachNudgeShown(nudgeId: string): Promise<CoachNudge |
   }
 }
 
+export async function markPendingCoachNudgesShown(nudges: CoachNudge[]): Promise<CoachNudge[]> {
+  const pendingIds = Array.from(new Set(
+    nudges
+      .filter((nudge) => nudge.status === 'pending')
+      .map((nudge) => nudge.id)
+      .filter(Boolean),
+  ))
+  const results = await Promise.all(pendingIds.map((nudgeId) => markCoachNudgeShown(nudgeId)))
+  return results.filter((nudge): nudge is CoachNudge => nudge !== null)
+}
+
 export async function recordCoachNudgeFeedback(
   nudgeId: string,
   body: { outcome: CoachFeedbackOutcome; notes?: string },

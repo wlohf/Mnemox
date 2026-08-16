@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Card, Col, Collapse, Dropdown, Empty, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
 import { BulbOutlined, CheckCircleOutlined, CloseCircleOutlined, ExperimentOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
@@ -31,6 +31,7 @@ import {
 } from '../services/agentApi'
 import {
   listCoachNudges,
+  markPendingCoachNudgesShown,
   recordCoachNudgeFeedback,
   type CoachFeedbackOutcome,
   type CoachNudge,
@@ -152,6 +153,7 @@ export function AgentPage() {
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
   const [goalContext, setGoalContext] = useState<AgentGoalContext | null>(null)
   const [coachNudges, setCoachNudges] = useState<CoachNudge[]>([])
+  const markedCoachNudgeIds = useRef(new Set<string>())
   const [agentLoading, setAgentLoading] = useState<string | null>(null)
   const [showDebug, setShowDebug] = useState(false)
   const [memoryCandidates, setMemoryCandidates] = useState<AgentMemoryCandidate[]>([])
@@ -206,6 +208,29 @@ export function AgentPage() {
   useEffect(() => {
     void load(false)
   }, [])
+
+  useEffect(() => {
+    const pending = coachNudges.filter(
+      (nudge) => nudge.status === 'pending' && !markedCoachNudgeIds.current.has(nudge.id),
+    )
+    if (pending.length === 0) return
+    for (const nudge of pending) {
+      markedCoachNudgeIds.current.add(nudge.id)
+    }
+
+    void markPendingCoachNudgesShown(pending).then((shownNudges) => {
+      const shownById = new Map(shownNudges.map((nudge) => [nudge.id, nudge]))
+      for (const nudge of pending) {
+        if (!shownById.has(nudge.id)) {
+          markedCoachNudgeIds.current.delete(nudge.id)
+        }
+      }
+      if (shownById.size === 0) return
+      setCoachNudges((current) => current.map((nudge) => (
+        shownById.has(nudge.id) ? { ...nudge, ...shownById.get(nudge.id) } : nudge
+      )))
+    })
+  }, [coachNudges])
 
   const openDraft = async (action: AgentAction) => {
     setDraftLoading(true)
@@ -622,6 +647,7 @@ export function AgentPage() {
                       {nudge.suggested_action?.label || '去处理'}
                     </Button>
                   ) : null,
+                  <Button key="completed" size="small" onClick={() => void sendCoachFeedback(nudge, 'completed')}>已完成</Button>,
                   <Button key="helpful" size="small" onClick={() => void sendCoachFeedback(nudge, 'helpful')}>有帮助</Button>,
                   <Button key="later" size="small" onClick={() => void sendCoachFeedback(nudge, 'later')}>稍后</Button>,
                   <Button key="dismiss" size="small" danger onClick={() => void sendCoachFeedback(nudge, 'too_disruptive')}>太打扰</Button>,
