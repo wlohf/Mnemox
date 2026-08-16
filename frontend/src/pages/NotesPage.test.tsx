@@ -54,10 +54,20 @@ const obsidianImportMocks = vi.hoisted(() => ({
   syncObsidianVault: vi.fn(),
 }))
 
+const syncEngineMocks = vi.hoisted(() => ({
+  syncAll: vi.fn(),
+}))
+
 vi.mock('../services/obsidianImportApi', () => ({
   importObsidianNote: obsidianImportMocks.importObsidianNote,
   resolveObsidianVaultConflict: obsidianImportMocks.resolveObsidianVaultConflict,
   syncObsidianVault: obsidianImportMocks.syncObsidianVault,
+}))
+
+vi.mock('../sync/SyncEngine', () => ({
+  syncEngine: {
+    syncAll: syncEngineMocks.syncAll,
+  },
 }))
 
 const noteApiMocks = vi.hoisted(() => ({
@@ -229,17 +239,21 @@ describe('NotesPage folder switching', () => {
   })
 
   it('syncs a vault and exposes conflict choices without rendering external content', async () => {
-    obsidianImportMocks.syncObsidianVault.mockResolvedValue({
-      scanned: 1,
-      created: 0,
-      updated: 0,
-      skipped: 0,
-      failed: 0,
-      truncated: false,
-      renamed: 0,
-      missing: 0,
-      conflicted: 1,
-      conflicts: [{ note_id: 11, title: '科研记录', source_path: '科研/记录.md' }],
+    syncEngineMocks.syncAll.mockResolvedValue(undefined)
+    obsidianImportMocks.syncObsidianVault.mockImplementation(async () => {
+      expect(syncEngineMocks.syncAll).toHaveBeenCalledTimes(1)
+      return {
+        scanned: 1,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+        truncated: false,
+        renamed: 0,
+        missing: 0,
+        conflicted: 1,
+        conflicts: [{ note_id: 11, title: '科研记录', source_path: '科研/记录.md' }],
+      }
     })
     container = document.createElement('div')
     document.body.appendChild(container)

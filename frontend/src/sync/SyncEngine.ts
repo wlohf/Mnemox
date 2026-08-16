@@ -40,7 +40,7 @@ class SyncEngine {
   private listeners = new Set<Listener>()
   private state: SyncState = { status: 'idle', online: navigator.onLine, failedCount: 0 }
   private intervalId: ReturnType<typeof setInterval> | null = null
-  private processing = false
+  private currentSyncPromise: Promise<void> | null = null
   private authenticated = false
 
   // ── Registration ──
@@ -90,7 +90,22 @@ class SyncEngine {
   // ── Public API ──
 
   async syncAll(options: SyncOptions = {}) {
-    if (this.processing) return
+    if (this.currentSyncPromise) {
+      await this.currentSyncPromise
+      return
+    }
+    const syncPromise = this.runSync(options)
+    this.currentSyncPromise = syncPromise
+    try {
+      await syncPromise
+    } finally {
+      if (this.currentSyncPromise === syncPromise) {
+        this.currentSyncPromise = null
+      }
+    }
+  }
+
+  private async runSync(options: SyncOptions = {}) {
     if (!this.authenticated || !getToken()) {
       this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, lastError: undefined })
       return
@@ -100,7 +115,6 @@ class SyncEngine {
       return
     }
 
-    this.processing = true
     this.setState({ status: 'syncing', online: true })
 
     try {
@@ -131,7 +145,6 @@ class SyncEngine {
         this.setState({ status: 'error', online: this.state.online, lastError: message })
       }
     } finally {
-      this.processing = false
     }
   }
 

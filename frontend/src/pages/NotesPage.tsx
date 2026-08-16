@@ -410,6 +410,9 @@ export function NotesPage() {
       return
     }
     setVaultSyncing(true)
+    // Vault sync reads the server copy. Flush and pull IndexedDB edits first
+    // so a local pending update cannot bypass the conflict decision flow.
+    await syncEngine.syncAll()
     const result = await syncObsidianVault(selectedVaultPath)
     setVaultSyncing(false)
     if (!result) {
@@ -417,7 +420,7 @@ export function NotesPage() {
       return
     }
     setVaultSyncResult(result)
-    void syncEngine.syncAll()
+    await syncEngine.syncAll()
     message.success(`Vault 同步完成：新增 ${result.created}，更新 ${result.updated}`)
   }
 
@@ -440,7 +443,7 @@ export function NotesPage() {
         conflicts: previous.conflicts.filter((conflict) => conflict.note_id !== noteId),
       }
     })
-    void syncEngine.syncAll()
+    await syncEngine.syncAll()
     message.success(strategy === 'keep_local' ? '已保留 Mnemox 本地内容' : '已采用 Vault 版本')
   }
 
@@ -1141,7 +1144,7 @@ export function NotesPage() {
                 重命名 {vaultSyncResult.renamed} · 缺失 {vaultSyncResult.missing} · 冲突 {vaultSyncResult.conflicted}
               </Text>
               {vaultSyncResult.truncated && (
-                <Text type="warning">Vault 文件数超过本次同步上限，剩余文件将在后续同步中处理。</Text>
+                <Text type="warning">Vault 文件数超过本次同步上限；为避免误判，本次不会标记缺失。请缩小同步范围后重试。</Text>
               )}
               {vaultSyncResult.failed > 0 && (
                 <Text type="warning">{vaultSyncResult.failed} 个文件未能同步。</Text>

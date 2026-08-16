@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -11,6 +12,7 @@ from app.models.concept import ConceptLink
 from app.models.note import Note
 from app.models.user import User
 from app.services.concept_service import upsert_concept
+from app.services import obsidian_sync_service
 from app.services.obsidian_sync_service import (
     VaultPathError,
     resolve_vault_conflict,
@@ -103,6 +105,36 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
         self.assertIn("版本二", note.content)
 
+    async def test_legacy_source_path_with_different_local_content_requires_conflict_resolution(self):
+        user_id = await self._create_user("vault_legacy_conflict_user")
+        self._write("legacy/同名笔记.md", "Vault 版本")
+        async with self.sessionmaker() as session:
+            note = Note(
+                user_id=user_id,
+                title="同名笔记",
+                content="Mnemox 本地版本",
+                note_type="general",
+                tags="[]",
+                source_path="legacy/同名笔记.md",
+            )
+            session.add(note)
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertEqual(stats["created"], 0)
+        self.assertEqual(stats["conflicted"], 1)
+        async with self.sessionmaker() as session:
+            notes = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalars().all()
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].content, "Mnemox 本地版本")
+        self.assertEqual(notes[0].source_sync_state, "conflict")
+        self.assertEqual(notes[0].source_conflict_content, "Vault 版本")
+
     async def test_renamed_file_keeps_the_existing_note_identity(self):
         user_id = await self._create_user("vault_rename_user")
         self._write("旧目录/学习记录.md", "重命名后仍应是同一篇笔记。")
@@ -154,6 +186,28 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
         self.assertEqual(note.source_sync_state, "missing")
         self.assertEqual(note.content, "保留 Mnemox 笔记，等待用户处理。")
+
+    async def test_truncated_sync_never_marks_unscanned_vault_notes_missing(self):
+        user_id = await self._create_user("vault_truncated_user")
+        self._write("a.md", "A")
+        self._write("b.md", "B")
+        async with self.sessionmaker() as session:
+            with patch.object(obsidian_sync_service, "MAX_FILES_PER_SYNC", 2):
+                await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            with patch.object(obsidian_sync_service, "MAX_FILES_PER_SYNC", 1):
+                stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertTrue(stats["truncated"])
+        self.assertEqual(stats["missing"], 0)
+        async with self.sessionmaker() as session:
+            notes = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalars().all()
+        self.assertEqual({note.source_sync_state for note in notes}, {"active"})
 
     async def test_conflicting_vault_change_preserves_local_note_and_records_external_candidate(self):
         user_id = await self._create_user("vault_conflict_user")
@@ -244,6 +298,39 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
                 await session.execute(select(Note).where(Note.id == note_id))
             ).scalar_one()
         self.assertEqual(note.content, "vault 版本二")
+        self.assertEqual(note.source_sync_state, "active")
+        self.assertIsNone(note.source_conflict_content)
+
+    async def test_vault_revert_to_baseline_clears_stale_conflict_candidate(self):
+        user_id = await self._create_user("vault_revert_conflict_user")
+        self._write("回滚冲突.md", "vault 基线")
+
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+            note = (
+                await session.execute(
+                    select(Note).where(Note.user_id == user_id, Note.source_path == "回滚冲突.md")
+                )
+            ).scalar_one()
+            note.content = "Mnemox 本地修改"
+            await session.commit()
+
+        self._write("回滚冲突.md", "vault 候选版本")
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self._write("回滚冲突.md", "vault 基线")
+        async with self.sessionmaker() as session:
+            stats = await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+
+        self.assertEqual(stats["conflicted"], 0)
+        async with self.sessionmaker() as session:
+            note = (
+                await session.execute(select(Note).where(Note.user_id == user_id))
+            ).scalar_one()
         self.assertEqual(note.source_sync_state, "active")
         self.assertIsNone(note.source_conflict_content)
 

@@ -169,7 +169,10 @@ async def sync_vault(
             file_id = _filesystem_identity(file_path)
             seen_file_ids.add(file_id)
             incoming_hash = _snapshot_hash(title, content)
-            note = notes_by_identity.get(file_id) or legacy_notes_by_path.get(source_path)
+            note = notes_by_identity.get(file_id)
+            matched_legacy_path = note is None and source_path in legacy_notes_by_path
+            if note is None:
+                note = legacy_notes_by_path.get(source_path)
             if note is None:
                 note = Note(
                     user_id=user_id,
@@ -200,6 +203,25 @@ async def sync_vault(
                 notes_by_identity[file_id] = note
                 vault_notes_by_identity[file_id] = note
 
+                if matched_legacy_path:
+                    # A relative path alone is not enough evidence to overwrite a
+                    # legacy local note: it may be a different vault, or have
+                    # diverged before stable file identity was introduced.
+                    if _note_snapshot_hash(note) != incoming_hash:
+                        note.source_sync_state = _SYNC_CONFLICT
+                        note.source_conflict_title = title
+                        note.source_conflict_content = content
+                        note.source_conflict_hash = incoming_hash
+                        stats["conflicted"] += 1
+                        stats["conflicts"].append(_conflict_summary(note))
+                        continue
+
+                    note.source_sync_hash = incoming_hash
+                    note.source_sync_state = _SYNC_ACTIVE
+                    _clear_conflict(note)
+                    stats["skipped"] += 1
+                    continue
+
                 baseline_hash = str(note.source_sync_hash or _note_snapshot_hash(note))
                 remote_changed = incoming_hash != baseline_hash
                 local_changed = _note_snapshot_hash(note) != baseline_hash
@@ -220,17 +242,19 @@ async def sync_vault(
                     changed_notes.append(note)
                 else:
                     note.source_sync_state = _SYNC_ACTIVE
-                    if note.source_conflict_hash is None:
-                        _clear_conflict(note)
+                    _clear_conflict(note)
                     stats["skipped"] += 1
         except Exception as exc:
             stats["failed"] += 1
             logger.warning("vault 文件同步失败 path=%s err=%s", source_path, exc)
 
-    for file_id, note in vault_notes_by_identity.items():
-        if file_id not in seen_file_ids and note.source_sync_state not in {_SYNC_MISSING, _SYNC_CONFLICT}:
-            note.source_sync_state = _SYNC_MISSING
-            stats["missing"] += 1
+    # A partial or failed scan cannot distinguish an unseen file from a deleted
+    # file, so retain the last known state until a complete scan succeeds.
+    if not stats["truncated"] and stats["failed"] == 0:
+        for file_id, note in vault_notes_by_identity.items():
+            if file_id not in seen_file_ids and note.source_sync_state not in {_SYNC_MISSING, _SYNC_CONFLICT}:
+                note.source_sync_state = _SYNC_MISSING
+                stats["missing"] += 1
 
     await _attach_notes_to_concepts(db, user_id, changed_notes)
 
