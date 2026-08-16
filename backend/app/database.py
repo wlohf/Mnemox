@@ -179,6 +179,8 @@ async def _run_lightweight_migrations(conn):
         ("notes", "source_conflict_title", "VARCHAR(200)"),
         ("notes", "source_conflict_content", "TEXT"),
         ("notes", "source_conflict_hash", "VARCHAR(64)"),
+        ("notes", "source_conflict_vault_id", "VARCHAR(160)"),
+        ("notes", "source_conflict_file_id", "VARCHAR(160)"),
     ]
 
     for table, column, col_type in other_migrations:

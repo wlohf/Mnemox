@@ -35,12 +35,13 @@ type Listener = () => void
 
 // ── SyncEngine ──
 
-class SyncEngine {
+export class SyncEngine {
   private adapters = new Map<ModuleName, ModuleSyncAdapter>()
   private listeners = new Set<Listener>()
   private state: SyncState = { status: 'idle', online: navigator.onLine, failedCount: 0 }
   private intervalId: ReturnType<typeof setInterval> | null = null
   private currentSyncPromise: Promise<void> | null = null
+  private followUpRequested = false
   private authenticated = false
 
   // ── Registration ──
@@ -90,11 +91,12 @@ class SyncEngine {
   // ── Public API ──
 
   async syncAll(options: SyncOptions = {}) {
+    this.followUpRequested = true
     if (this.currentSyncPromise) {
       await this.currentSyncPromise
       return
     }
-    const syncPromise = this.runSync(options)
+    const syncPromise = this.drainSyncRequests(options)
     this.currentSyncPromise = syncPromise
     try {
       await syncPromise
@@ -103,6 +105,15 @@ class SyncEngine {
         this.currentSyncPromise = null
       }
     }
+  }
+
+  private async drainSyncRequests(options: SyncOptions) {
+    let nextOptions = options
+    do {
+      this.followUpRequested = false
+      await this.runSync(nextOptions)
+      nextOptions = {}
+    } while (this.followUpRequested)
   }
 
   private async runSync(options: SyncOptions = {}) {

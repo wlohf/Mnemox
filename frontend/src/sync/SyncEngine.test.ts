@@ -57,7 +57,6 @@ describe('SyncEngine', () => {
     )
 
     const engine = new SyncEngine()
-    engine.start()
     const adapter = {
       module: 'notes' as const,
       pullAll: vi.fn(async () => undefined),
@@ -70,11 +69,11 @@ describe('SyncEngine', () => {
     }
     engine.registerAdapter(adapter)
 
-    const firstSync = engine.syncAll()
+    engine.start()
     await deleteStarted
     const followUpSync = engine.syncAll()
     releaseDelete?.()
-    await Promise.all([firstSync, followUpSync])
+    await followUpSync
 
     expect(syncMocks.getQueueRows).toHaveBeenCalledTimes(2)
     expect(adapter.pullAll).toHaveBeenCalledTimes(2)

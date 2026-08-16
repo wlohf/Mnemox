@@ -94,6 +94,8 @@ def _clear_conflict(note: Note) -> None:
     note.source_conflict_title = None
     note.source_conflict_content = None
     note.source_conflict_hash = None
+    note.source_conflict_vault_id = None
+    note.source_conflict_file_id = None
 
 
 def _conflict_summary(note: Note) -> dict[str, Any]:
@@ -198,11 +200,6 @@ async def sync_vault(
                     note.source_path = source_path
                     stats["renamed"] += 1
 
-                note.source_vault_id = vault_id
-                note.source_file_id = file_id
-                notes_by_identity[file_id] = note
-                vault_notes_by_identity[file_id] = note
-
                 if matched_legacy_path:
                     # A relative path alone is not enough evidence to overwrite a
                     # legacy local note: it may be a different vault, or have
@@ -212,15 +209,26 @@ async def sync_vault(
                         note.source_conflict_title = title
                         note.source_conflict_content = content
                         note.source_conflict_hash = incoming_hash
+                        note.source_conflict_vault_id = vault_id
+                        note.source_conflict_file_id = file_id
                         stats["conflicted"] += 1
                         stats["conflicts"].append(_conflict_summary(note))
                         continue
 
+                    note.source_vault_id = vault_id
+                    note.source_file_id = file_id
+                    notes_by_identity[file_id] = note
+                    vault_notes_by_identity[file_id] = note
                     note.source_sync_hash = incoming_hash
                     note.source_sync_state = _SYNC_ACTIVE
                     _clear_conflict(note)
                     stats["skipped"] += 1
                     continue
+
+                note.source_vault_id = vault_id
+                note.source_file_id = file_id
+                notes_by_identity[file_id] = note
+                vault_notes_by_identity[file_id] = note
 
                 baseline_hash = str(note.source_sync_hash or _note_snapshot_hash(note))
                 remote_changed = incoming_hash != baseline_hash
@@ -288,6 +296,14 @@ async def resolve_vault_conflict(
         note.title = note.source_conflict_title or note.title
         note.content = note.source_conflict_content or ""
         await _attach_notes_to_concepts(db, user_id, [note])
+
+    if (
+        not note.source_vault_id
+        and note.source_conflict_vault_id
+        and note.source_conflict_file_id
+    ):
+        note.source_vault_id = note.source_conflict_vault_id
+        note.source_file_id = note.source_conflict_file_id
 
     # Keep the accepted vault revision as the new comparison baseline. A later
     # vault edit will surface as a new conflict if the local note still differs.

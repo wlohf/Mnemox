@@ -25,6 +25,8 @@ class Note(Base):
     source_conflict_title = Column(String(200), nullable=True, comment="冲突时保留的 vault 标题")
     source_conflict_content = Column(Text, nullable=True, comment="冲突时保留的 vault 正文")
     source_conflict_hash = Column(String(64), nullable=True, comment="冲突 vault 内容的 SHA-256 摘要")
+    source_conflict_vault_id = Column(String(160), nullable=True, comment="旧路径冲突候选的 vault 稳定标识")
+    source_conflict_file_id = Column(String(160), nullable=True, comment="旧路径冲突候选的文件稳定标识")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
     

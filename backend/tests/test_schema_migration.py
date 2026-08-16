@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260816_07"
+CURRENT_HEAD_REVISION = "20260816_08"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -173,6 +173,8 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "source_conflict_title",
             "source_conflict_content",
             "source_conflict_hash",
+            "source_conflict_vault_id",
+            "source_conflict_file_id",
         }.issubset({column["name"] for column in inspector.get_columns("notes")})
         assert {
             "ix_notes_source_path",
@@ -392,6 +394,8 @@ def test_postgresql_offline_ddl_includes_the_concept_foreign_key():
     assert "ALTER TABLE notes ADD COLUMN source_file_id" in ddl
     assert "ALTER TABLE notes ADD COLUMN source_sync_state" in ddl
     assert "CREATE UNIQUE INDEX uq_notes_source_identity" in ddl
+    assert "ALTER TABLE notes ADD COLUMN source_conflict_vault_id" in ddl
+    assert "ALTER TABLE notes ADD COLUMN source_conflict_file_id" in ddl
 
 
 def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
@@ -587,6 +591,8 @@ def test_sqlite_lightweight_migration_upgrades_legacy_notes_with_vault_sync_stat
         "source_conflict_title",
         "source_conflict_content",
         "source_conflict_hash",
+        "source_conflict_vault_id",
+        "source_conflict_file_id",
     }.issubset(columns)
     assert {
         "ix_notes_source_vault_id",

@@ -122,6 +122,8 @@ HEAD_ONLY_COLUMNS = {
             "source_conflict_title",
             "source_conflict_content",
             "source_conflict_hash",
+            "source_conflict_vault_id",
+            "source_conflict_file_id",
         }
     ),
 }
