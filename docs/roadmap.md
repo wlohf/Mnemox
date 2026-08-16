@@ -3,7 +3,7 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-13
+> 最近核查：2026-08-17
 > 上游决策：[2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)
 
 本文件是"接下来做什么、按什么顺序做"的唯一权威来源。需求范围见 [需求基线](requirements.md)，实现约定见 [技术基线](technical.md)，执行状态见 [进度文档](progress.md)。每个阶段收口时更新本文件与进度文档。
@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 部分完成（授权/注入/RAG 可见化主体已落地；Phase 1 主线整合、历史分支归档和换行规则已收口；真实浏览器 E2E 与草案确认执行待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 部分完成（学习者模型/outbox/API/前端证据下钻、数据库演练和 PostgreSQL 常驻 worker 已验证，离线校准基线已建立；显式失败队列、告警、运行时唯一跨实例心跳和活跃队列聚合指标已收口；图谱/关键词保底/拉取同步/联想计算已有；ContextStore 迁移、候选 Spike、Coach 闭环和真实数据质量验证未完成） |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（学习者模型/outbox/API/前端证据下钻、数据库演练和 PostgreSQL 常驻 worker 已验证；聊天笔记 ContextStore 迁移、Vault 同步安全边界、Coach 联想归因闭环以及人工/自动 SQL 记忆声明已交付；候选 Spike、真实数据质量验证和正式 PostgreSQL 多实例验收未完成） |
 | Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 AgentKernel 原型实现中；运行时 Spike、调度、自学习归因、知识巩固与写回未开始 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
@@ -61,22 +61,22 @@
 
 | # | 事项 | 完成标准 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明和 `projection_outbox`；定义稳定 ID、版本、删除和重建语义 | 🔶 学习证据/概念状态/outbox 迁移、删除级联和数据库演练已验证；记忆声明未开始 |
+| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明和 `projection_outbox`；定义稳定 ID、版本、删除和重建语义 | 🔶 学习证据/概念状态/outbox 迁移、删除级联和数据库演练已验证；SQL 记忆声明已覆盖人工与自动来源，图谱投影语义待定 |
 | 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 同事务 outbox、事件级在线消费、幂等/失败重试/崩溃恢复、525 条分页重放、范围隔离和 PostgreSQL 应用生命周期 worker 已验证；显式 DLQ/人工重试、公开轻量存活检查、运行时唯一心跳、告警代码和受保护活跃队列指标已收口；真实 PostgreSQL 多实例发布验收和其他投影流待补 |
-| 3 | `ContextStore` 单流迁移 | 至少一个真实资料/笔记/记忆业务流只依赖接口；关键词降级可观测；更新、删除、用户隔离和质量集通过 | 🔶 接口和保底实现已有；当前业务检索尚未收敛，`ingest/forget` 仍为 no-op |
+| 3 | `ContextStore` 单流迁移 | 至少一个真实资料/笔记/记忆业务流只依赖接口；关键词降级可观测；更新、删除、用户隔离和质量集通过 | ✅ 聊天笔记检索已迁移到 ContextStore，保留关键词 SQL 降级、模式指示与用户隔离回归；更广泛的 `ingest/forget` 迁移仍待评估 |
 | 4 | Qdrant 检索 Spike | 对同一资料集比较 dense+sparse/BM25+rerank 与现有基线；通过 Windows 打包、无 embedding 降级、删除/重建、延迟和成本门槛后再决定是否采纳 | ⏳ 未开始；OpenViking 已否决并保留为历史结论 |
 | 5 | 概念图谱 MVP 与 GraphStore Spike | 三表、上传抽取、错题回填、人工改名/合并/删除、来源和质量集完成；只有 SQL 不足时才评估 Neo4j，Spike 不通过不影响 SQL 图 | 🔶 表、结构入图、抽取/回填接口和版本化迁移已有；自动闭环、人工编辑和质量集未完成 |
-| 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | ⏳ 未开始 |
+| 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | 🔶 SQL 声明基础已完成：人工和自动来源均保留来源、版本、审核、替代和删除语义；Graphiti Spike 未开始 |
 | 7 | 学习者模型 | 直接证据主导、间接信号只校准风险/置信度；一次练习或复习可更新概念状态，前端展示证据、模型版本和人工修正 | 🔶 后端、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 已验证；当前真实库没有 holdout case，真实数据校准和推荐排序待补 |
-| 8 | Obsidian、联想与体验 | 拉取式同步稳定 ID/冲突/删除；联想接入 Coach 的 shown/feedback/采纳事件；概念地图、先修缺口和建议理由可下钻 | 🔶 拉取同步和联想计算已有；Coach 闭环、删除和前端下钻未完成 |
+| 8 | Obsidian、联想与体验 | 拉取式同步稳定 ID/冲突/删除；联想接入 Coach 的 shown/feedback/采纳事件；概念地图、先修缺口和建议理由可下钻 | 🔶 Vault 稳定身份、冲突候选、失败保护和用户可见提示已完成；联想 Coach 的 shown/accepted/completed 归因已完成；概念地图与先修缺口下钻待补 |
 
 当前执行检查点（不得跳步）：
 
 1. 真实数据达到至少 50 个 holdout case 后运行离线回放和版本对比，校准可靠度、权重与半衰期；门槛不足时保持 `collect_more_data`。
-2. 迁移一条真实资料或笔记检索路径到 `ContextStore`，保留可观测的关键词降级，并补更新、删除和用户隔离回归。
-3. 收口 Obsidian 的稳定文件 ID、删除与冲突策略，并提供用户可见的处理流程。
-4. 为 Coach 联想记录 shown、accepted、executed 事件，形成后续干预归因的事实输入。
-5. 建立可审核、可删除的 SQL 记忆声明，再决定是否进入 Graphiti Spike。
+2. 已完成聊天笔记检索到 `ContextStore` 的迁移；下一步评估更广泛的更新、删除与 `ingest/forget` 迁移。
+3. 已完成 Obsidian 稳定文件身份、冲突候选和同步输入安全保护；下一步以真实 Vault 数据验证冲突与删除策略。
+4. 已完成 Coach 联想 shown、accepted、completed 事件记录；下一步积累可用于干预归因的真实样本。
+5. 已建立可审核、可删除的人工与自动 SQL 记忆声明；下一步才评估 Graphiti Spike。
 6. 以上数据与反馈闭环验收后才评估候选 Spike，并在兼容周期验收后规划移除 `Concept.mastery`；在此之前不进入 AgentRuntime 的后台自学习归因。
 
 阶段验收：规范数据可重放并重建全部投影；至少一个真实业务流完成 `ContextStore` 迁移；候选检索/图/时态记忆技术有可复现的 go/no-go 证据；上传资料后概念关系可人工修正；一次练习/复习能更新 `user_concept_state` 并展示理由；联想有 Coach 的 shown/accepted/executed 基线；删除和用户隔离有回归测试。拉取式同步达到上述标准即可，不把 watchdog 误标为已完成。

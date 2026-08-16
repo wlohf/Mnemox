@@ -2,16 +2,16 @@
 
 > 状态：维护中
 >
-> 更新日期：2026-08-13
+> 更新日期：2026-08-17
 >
 > 当前发布版本：v1.3.0
-> 当前阶段：Phase 1 学习者模型和 Outbox 运维闭环已收口；真实数据校准与其余底座进行中；Phase 2 等待 Phase 1 验收
+> 当前阶段：Phase 1 学习智能底座继续收口；聊天笔记 ContextStore、Coach 联想归因、Vault 同步安全边界和可审计记忆声明已交付；真实数据校准与 Graphiti Spike 仍待验收
 
 本文件记录可执行的项目状态。需求范围见 [需求文档](requirements.md)，工程实现见 [技术文档](technical.md)，按周变化记录见 `docs/updates/`。
 
 ## 1. 阶段判断
 
-Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Windows 桌面交付的第一轮实现。当前处于 **v1.3.0 之后的 Phase 1 主线整合与生产化阶段**：默认 SQLite 升级和一次性 PostgreSQL 演练已完成；学习者模型、同事务 projection outbox、分页重放、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 均已验证。Outbox 的显式 DLQ、用户范围人工重试、告警代码、受保护活跃队列指标和运行时唯一跨实例心跳已收口。上述能力已进入 `main` 开发基线，但尚未形成新的版本 tag、GitHub Release 或 Windows 安装包。下一步是积累真实 holdout 数据，并按发布窗口完成真实 PostgreSQL 多实例验收；Phase 2 不提前展开。
+Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Windows 桌面交付的第一轮实现。当前处于 **v1.3.0 之后的 Phase 1 生产化阶段**：默认 SQLite 升级和一次性 PostgreSQL 演练已完成；学习者模型、同事务 projection outbox、分页重放、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 均已验证，相关 Outbox 运维闭环已进入 `main` 开发基线。当前功能分支进一步完成聊天笔记到 ContextStore 的首条真实迁移、显式联想的 Coach 归因闭环、Vault 同步输入安全边界，以及人工和自动记忆的可审计 SQL 声明链路；这些增量尚未合入 `main` 或发布。下一步是积累真实 holdout 数据、完成正式 PostgreSQL 多实例验收，并对 Graphiti 等候选组件进行可复现 Spike；Phase 2 不提前展开。
 
 2026-07-26 完成方向基线梳理；2026-08-03 进一步将资料检索、概念关系、时态记忆和学习者模型拆为四层，并固化规范数据、事件投影和候选技术 Spike 的边界，见 [学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。2026-08-05 已完成学习者模型首个垂直切片的正确性收口，包括 projection outbox、批量重放/API、默认 SQLite 升级、一次性 PostgreSQL 演练、前端证据下钻和校准基线；阶段顺序仍以 [路线图](roadmap.md) 为唯一权威来源，候选组件仍未引入。
 
@@ -19,12 +19,12 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 | 范畴 | 状态 |
 | --- | --- |
-| 版本与发布 | `v1.3.0` 仍是最新发布版，其 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）保持不变；Phase 1 与 Outbox 运维闭环已进入 `main` 的 post-v1.3 开发基线，尚未作为新版本发布。 |
-| 后端能力 | 31 个路由模块、25 个模型模块、47 个服务模块，覆盖学习、AI、RAG、笔记上下文、学习者模型、事件投影、Agent 与 Coach。 |
-| 前端能力 | 17 个业务页面，主工作台、学习工具、洞察、设置和笔记上下文提示均已接入。 |
+| 版本与发布 | `v1.3.0` 已发布；`origin/main`、版本 tag、GitHub Release 和 Windows 安装包（`Mnemox-Setup-1.3.0.exe`、`latest.yml`、blockmap）已存在。Phase 1 后续能力保留在 `feature/phase2-agent-upgrade`，尚未合入 `main` 或作为新版本发布。 |
+| 后端能力 | 覆盖学习、AI、RAG、笔记上下文、学习者模型、事件投影、Agent 与 Coach；当前新增 SQL 记忆声明、自动来源审计与 Vault 同步安全边界。 |
+| 前端能力 | 主工作台、学习工具、洞察、设置、笔记上下文提示和记忆依据/审核状态均已接入。 |
 | 桌面端 | Electron 壳、Windows NSIS 构建、更新器和桌面提醒桥接已存在。 |
-| 自动化测试 | 后端 50 个测试文件；前端 22 个测试文件；桌面端 7 个测试文件。 |
-| 主线与分支 | `feature/phase2-agent-upgrade` 的名称是历史遗留，不代表 Phase 2 已启动；其有效内容已整合进 `main`。已合入的 OpenHands 分支退役，早期 `vk/2ba2-` 独立历史仅归档、不参与合并。 |
+| 自动化测试 | 后端 `354 passed, 53 subtests passed`；前端 `24 files / 72 tests passed`；桌面端 7 个测试文件。 |
+| 当前工作分支 | `feature/phase2-agent-upgrade` 是历史分支名，不代表 Phase 2 已启动；当前优先级仍严格按 Phase 1 路线图执行。 |
 
 ## 3. v1.3.0 已完成
 
@@ -42,8 +42,8 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 
 | 模块 | 结果 |
 | --- | --- |
-| 后端 | `152 passed, 53 subtests passed` |
-| 前端测试 | `19 passed files, 60 passed tests` |
+| 后端 | `354 passed, 53 subtests passed` |
+| 前端测试 | `24 passed files, 72 passed tests` |
 | 前端构建与 lint | `npm.cmd run build`、`npm.cmd run lint` 通过 |
 | 桌面端 | `21 passed` |
 | 文档与 Git | 文档已接入导航，`git diff --check` 通过 |
@@ -67,6 +67,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 - v1.3.0 发布提交、tag、GitHub Release 和 Windows 安装包保持不变；本次合并只更新主线，不冒充一次新版本发布。
 - `openhands/rag-agent-hardening` 已由历史 PR 合入并退役；`vk/2ba2-` 与当前主线没有共同 Git 祖先，只保留归档标签，不使用 `--allow-unrelated-histories` 强行合并。
 - 2026-08-13 Outbox 运维闭环已提交为 `1ffec29`（`feat: harden projection outbox operations`）：涵盖 DLQ/人工重试、版本化共享重试策略、跨实例心跳与告警、受保护指标、活跃队列索引及迁移 head `20260812_06`。聚焦后端回归为 `55 passed`，前端为 `22 files / 67 tests passed`，构建与 lint 通过；全后端命令在 10 分钟上限超时，不能写作全量通过。真实 PostgreSQL 双会话并发验收仍保留给发布窗口。
+- 2026-08-17 已在 `feature/phase2-agent-upgrade` 完成并验证四项功能：聊天笔记 ContextStore 迁移（`7b11a09`，检索基础为 `0fb094f`）、联想结果接入 Coach 归因链（`af3e42e`）、Vault 同步安全边界（`2b17dd3`），以及自动记忆声明审计（`87d457f`，依赖人工声明基础 `fe67c63`）。这些增量尚未合入 `main` 或发布新版本。
 - `scripts/seed_showcase_account.py` 已纳入版本控制；它包含固定本地 Demo 凭据，只能用于本地演示，不能作为生产初始化方式。
 
 ## 6. 下一阶段工作
@@ -77,7 +78,7 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾（接入低动力 Coach 技能 + 防疲劳 + 反馈）、FSRS 替换 SM-2 调度 | 🔶 主体完成（FSRS 优先、SM-2 降级；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化：授权审计、注入防护、RAG 可见化、关键路径验证、仓库卫生 | 🔶 部分完成（授权/注入/RAG 可见化主体和 API 冒烟已完成；真实浏览器 E2E、草案确认执行和卫生收口待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、ContextStore/Qdrant Spike、概念图/Neo4j Spike、时态记忆/Graphiti Spike、学习者模型、Obsidian 与联想 | 🔶 MVP 部分完成；学习者模型/outbox/API/前端证据下钻、离线校准基线、数据库演练、PostgreSQL 常驻 worker、DLQ/告警/跨实例指标已验证；统一检索迁移、候选 Spike、同步冲突/删除、Coach 联想反馈和真实数据质量评测待补 |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、ContextStore/Qdrant Spike、概念图/Neo4j Spike、时态记忆/Graphiti Spike、学习者模型、Obsidian 与联想 | 🔶 MVP 持续收口；学习者模型/outbox/API/前端证据下钻、ContextStore 聊天笔记迁移、Vault 同步安全边界、Coach 联想反馈与 SQL 记忆声明已验证；候选 Spike、真实数据质量评测和正式 PostgreSQL 多实例验收待补 |
 | Phase 2 | AgentRuntime：AgentKernel/LangGraph 受控比较、单一纵向切片、后台调度器、干预效果自学习、知识巩固与周报 | 🔶 AgentKernel 原型实现中；运行时 Spike、后台调度、自学习归因、指标看板、知识巩固和 Obsidian 写回未开始 |
 | Phase 3 | 生态：MCP Server、语音、AnkiConnect 评估、一键 Demo、发布自动化 | 未开始 |
 
@@ -92,10 +93,10 @@ Mnemox 已完成核心学习工具、个性化学习闭环、Agent/Coach 和 Win
 按以下顺序推进，每一项都要留下测试、迁移和验收证据：
 
 1. **真实数据校准**：积累至少 50 个 holdout case 后运行 `backend/calibrate_learner_model.py`，比较三个模型版本；未达到门槛时保持 `collect_more_data`。
-2. **`ContextStore` 首条真实链路**：迁移一条资料或笔记检索路径，保留关键词降级，并补更新、删除和用户隔离回归。
-3. **Obsidian 同步一致性**：完成稳定文件 ID、删除与冲突策略和用户可见处理流程。
-4. **Coach 联想反馈闭环**：记录 shown、accepted、executed 事件，为后续干预归因提供事实输入。
-5. **记忆声明与时态记忆准备**：先建立可审核、可删除的 SQL 记忆声明，再决定是否做 Graphiti Spike。
+2. **`ContextStore` 首条真实链路**：已完成聊天笔记检索迁移，保留关键词降级和用户隔离；下一步补全更广泛的 `ingest/forget` 业务迁移。
+3. **Obsidian 同步一致性**：稳定文件身份、冲突候选、删除保护和用户可见失败原因已交付；下一步以真实 Vault 数据继续验证冲突策略。
+4. **Coach 联想反馈闭环**：已记录 shown、accepted、completed 事件并可恢复关联详情；下一步积累归因数据。
+5. **记忆声明与时态记忆准备**：人工与自动记忆均已接入可审核、可删除的 SQL 声明；下一步才可决定是否做 Graphiti Spike。
 6. **兼容与候选 Spike**：数据校准和兼容周期验收后，再规划移除 `Concept.mastery`；候选组件必须先完成可复现的 go/no-go 评估。
 7. **Phase 2（等待 Phase 1 验收）**：再比较 AgentKernel 与 LangGraph，随后才进入 SSE/草案闭环、后台调度、自学习归因和知识写回。
 
