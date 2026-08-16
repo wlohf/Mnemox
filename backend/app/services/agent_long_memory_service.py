@@ -180,6 +180,27 @@ async def upsert_agent_memory(
         clean_status = "staged"
     clean_type = memory_type if memory_type in {"semantic", "episodic", "profile"} else "semantic"
 
+    now = _now()
+    # Source-specific idempotency is useful for agent-generated entries, but
+    # it must never bypass a direct user correction that has the same semantic
+    # key. Check locked user memories by key before narrowing to a source
+    # identity, otherwise a new source could create a contradictory sibling.
+    if respect_lock:
+        locked_result = await db.execute(
+            select(UserMemory)
+            .where(
+                UserMemory.user_id == user_id,
+                UserMemory.memory_key == clean_key,
+                UserMemory.is_locked == 1,
+            )
+            .order_by(UserMemory.id.desc())
+            .limit(1)
+        )
+        locked_row = locked_result.scalar_one_or_none()
+        if locked_row:
+            locked_row.last_seen_at = now
+            return locked_row
+
     conditions = [UserMemory.user_id == user_id, UserMemory.memory_key == clean_key]
     if source_type and source_id:
         conditions = [
@@ -190,7 +211,6 @@ async def upsert_agent_memory(
 
     result = await db.execute(select(UserMemory).where(*conditions).order_by(UserMemory.id.desc()).limit(1))
     row = result.scalar_one_or_none()
-    now = _now()
     evidence_value = _json_dumps(evidence or [])
 
     if row:

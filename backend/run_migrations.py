@@ -106,6 +106,7 @@ HEAD_ONLY_TABLES = frozenset(
         "projection_outbox",
         "projection_outbox_worker_heartbeats",
         "projection_outbox_retry_policy",
+        "memory_declarations",
     }
 )
 HEAD_ONLY_COLUMNS = {

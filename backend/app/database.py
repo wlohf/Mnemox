@@ -454,6 +454,61 @@ async def _run_lightweight_migrations(conn):
     except Exception as exc:
         raise RuntimeError("SQLite projection outbox operations migration failed") from exc
 
+    # Memory declarations are an additive audit table. Fresh local databases
+    # receive it through metadata; this DDL upgrades older local SQLite files
+    # without rebuilding or overwriting their current user memories.
+    try:
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS memory_declarations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                memory_id INTEGER NOT NULL,
+                subject VARCHAR(160) NOT NULL,
+                predicate VARCHAR(80) NOT NULL,
+                value TEXT NOT NULL,
+                valid_from DATETIME NOT NULL,
+                valid_to DATETIME NULL,
+                observed_at DATETIME NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                review_status VARCHAR(20) NOT NULL DEFAULT 'confirmed',
+                source_event_id INTEGER NULL,
+                source_type VARCHAR(50) NOT NULL DEFAULT 'manual',
+                source_id VARCHAR(160) NULL,
+                evidence TEXT NULL,
+                created_by VARCHAR(30) NOT NULL DEFAULT 'user',
+                model_version VARCHAR(80) NULL,
+                supersedes_id INTEGER NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(memory_id) REFERENCES user_memories(id) ON DELETE CASCADE,
+                FOREIGN KEY(supersedes_id) REFERENCES memory_declarations(id) ON DELETE SET NULL
+            )
+            """
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_id "
+            "ON memory_declarations(user_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_memory_id "
+            "ON memory_declarations(memory_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_review_status "
+            "ON memory_declarations(review_status)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_memory_observed "
+            "ON memory_declarations(user_id, memory_id, observed_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_review_observed "
+            "ON memory_declarations(user_id, review_status, observed_at)"
+        ))
+    except Exception as exc:
+        raise RuntimeError("SQLite memory declaration migration failed") from exc
+
 
 async def init_db():
     """Initialize SQLite development storage without mutating production schema."""

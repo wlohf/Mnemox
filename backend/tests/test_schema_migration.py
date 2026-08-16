@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260816_08"
+CURRENT_HEAD_REVISION = "20260816_09"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -156,6 +156,7 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "projection_outbox",
             "projection_outbox_worker_heartbeats",
             "projection_outbox_retry_policy",
+            "memory_declarations",
         }.issubset(inspector.get_table_names())
 
         assert {"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}.issubset(
@@ -197,6 +198,29 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         assert "dead_lettered_at" in {
             column["name"] for column in inspector.get_columns("projection_outbox")
         }
+        assert {
+            "user_id",
+            "memory_id",
+            "subject",
+            "predicate",
+            "value",
+            "valid_from",
+            "valid_to",
+            "observed_at",
+            "confidence",
+            "review_status",
+            "source_type",
+            "created_by",
+            "supersedes_id",
+        }.issubset(
+            {column["name"] for column in inspector.get_columns("memory_declarations")}
+        )
+        assert {
+            "ix_memory_declarations_user_memory_observed",
+            "ix_memory_declarations_user_review_observed",
+        }.issubset(
+            {index["name"] for index in inspector.get_indexes("memory_declarations")}
+        )
         assert "ix_projection_outbox_dead_lettered_at" in {
             index["name"] for index in inspector.get_indexes("projection_outbox")
         }
@@ -362,7 +386,7 @@ def test_postgresql_migration_runner_releases_lock_after_upgrade_failure():
     ]
 
 
-def test_postgresql_offline_ddl_includes_the_concept_foreign_key():
+def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     output = StringIO()
     config = Config(str(BACKEND_DIR / "alembic.ini"), output_buffer=output)
     config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
@@ -396,6 +420,10 @@ def test_postgresql_offline_ddl_includes_the_concept_foreign_key():
     assert "CREATE UNIQUE INDEX uq_notes_source_identity" in ddl
     assert "ALTER TABLE notes ADD COLUMN source_conflict_vault_id" in ddl
     assert "ALTER TABLE notes ADD COLUMN source_conflict_file_id" in ddl
+    assert "CREATE TABLE memory_declarations" in ddl
+    assert "FOREIGN KEY(user_id) REFERENCES users" in ddl
+    assert "FOREIGN KEY(memory_id) REFERENCES user_memories" in ddl
+    assert "CREATE INDEX ix_memory_declarations_user_memory_observed" in ddl
 
 
 def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
@@ -599,6 +627,55 @@ def test_sqlite_lightweight_migration_upgrades_legacy_notes_with_vault_sync_stat
         "ix_notes_source_file_id",
         "ix_notes_source_sync_state",
         "uq_notes_source_identity",
+    }.issubset(indexes)
+
+
+def test_sqlite_lightweight_migration_adds_memory_declaration_audit_table(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-memories.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260816_08")
+
+    async def _run() -> tuple[set[str], set[str]]:
+        async_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{database_path.as_posix()}", future=True
+        )
+        try:
+            async with async_engine.begin() as connection:
+                await _run_lightweight_migrations(connection)
+                return await connection.run_sync(
+                    lambda sync_connection: (
+                        {
+                            column["name"]
+                            for column in inspect(sync_connection).get_columns("memory_declarations")
+                        },
+                        {
+                            index["name"]
+                            for index in inspect(sync_connection).get_indexes("memory_declarations")
+                        },
+                    )
+                )
+        finally:
+            await async_engine.dispose()
+
+    columns, indexes = asyncio.run(_run())
+    assert {
+        "user_id",
+        "memory_id",
+        "subject",
+        "predicate",
+        "value",
+        "valid_from",
+        "valid_to",
+        "observed_at",
+        "confidence",
+        "review_status",
+        "source_type",
+        "created_by",
+        "supersedes_id",
+    }.issubset(columns)
+    assert {
+        "ix_memory_declarations_user_memory_observed",
+        "ix_memory_declarations_user_review_observed",
     }.issubset(indexes)
 
 

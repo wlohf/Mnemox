@@ -11,12 +11,33 @@ export interface MemoryItem {
   source_conversation_id?: number | null
   source_type?: string | null
   source_id?: string | number | null
-  evidence?: string[] | string | null
+  evidence?: unknown
   expires_at?: string | null
   review_status?: 'staged' | 'confirmed' | 'ignored' | 'inaccurate' | string | null
   memory_type?: string | null
   material_id?: number | null
   last_seen_at?: string | null
+}
+
+export interface MemoryDeclaration {
+  id: number
+  memory_id: number
+  subject: string
+  predicate: string
+  value: string
+  valid_from: string | null
+  valid_to: string | null
+  observed_at: string | null
+  confidence: number
+  review_status: 'confirmed' | 'superseded' | 'ignored' | string
+  source_event_id: number | null
+  source_type: string
+  source_id: string | null
+  evidence: unknown
+  created_by: string
+  model_version: string | null
+  supersedes_id: number | null
+  created_at: string | null
 }
 
 export async function createMemory(data: {
@@ -39,6 +60,14 @@ export async function createMemory(data: {
 export async function listMemories(): Promise<MemoryItem[]> {
   try {
     return await apiFetch<MemoryItem[]>('/api/memory/memories')
+  } catch {
+    return []
+  }
+}
+
+export async function listMemoryDeclarations(id: number): Promise<MemoryDeclaration[]> {
+  try {
+    return await apiFetch<MemoryDeclaration[]>(`/api/memory/memories/${id}/declarations`)
   } catch {
     return []
   }
