@@ -137,6 +137,7 @@ def to_note_context_indicators(hits: list[NoteContextHit]) -> list[dict]:
             "tags": hit.tags,
             "reason": hit.reason,
             "score": round(hit.score, 3),
+            "retrieval_mode": hit.retrieval_mode,
         }
         for hit in hits
     ]
