@@ -3,7 +3,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from app.models.user import User
-from app.routers.chat import ChatRequest, chat_send
+from app.routers.chat import ChatRequest, chat_send, chat_send_sync
 
 
 class _FakeScalarResult:
@@ -35,6 +35,11 @@ class _FakeProvider:
         self.system_prompt = kwargs.get("system_prompt")
         self.messages = kwargs.get("messages")
         yield "ok"
+
+    async def chat(self, **kwargs):
+        self.system_prompt = kwargs.get("system_prompt")
+        self.messages = kwargs.get("messages")
+        return "sync ok"
 
 
 class _FakeWebSearchProvider(_FakeProvider):
@@ -351,6 +356,7 @@ class ChatStreamSessionTests(unittest.IsolatedAsyncioTestCase):
                 "score": 4.2,
                 "reason": "关键词匹配：梯度下降",
                 "updated_at": None,
+                "retrieval_mode": "keyword_sql",
             },
         )()
 
@@ -370,6 +376,43 @@ class ChatStreamSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("梯度下降复盘", provider.system_prompt)
         self.assertTrue(any("note_context_indicators" in chunk for chunk in chunks))
         self.assertTrue(any("梯度下降复盘" in chunk for chunk in chunks))
+        note_events = [
+            json.loads(chunk.removeprefix("data: ").strip())
+            for chunk in chunks
+            if "note_context_indicators" in chunk
+        ]
+        self.assertEqual(note_events[0]["notes"][0]["retrieval_mode"], "keyword_sql")
+
+    async def test_chat_send_sync_appends_note_context(self):
+        db = _FakeDb()
+        provider = _FakeProvider()
+        current_user = User(id=1, username="u", email="u@example.com", hashed_password="x")
+        body = ChatRequest(message="梯度下降怎么坚持学", conversation_id=1, history=[])
+        hit = type(
+            "Hit",
+            (),
+            {
+                "id": 7,
+                "title": "梯度下降复盘",
+                "excerpt": "先完成一个最小步骤。",
+                "tags": ["机器学习"],
+                "score": 4.2,
+                "reason": "关键词匹配：梯度下降",
+                "updated_at": None,
+                "retrieval_mode": "keyword_sql",
+            },
+        )()
+
+        with (
+            patch("app.routers.chat._resolve_materials_and_build_prompt", AsyncMock(return_value=("base prompt", [], []))),
+            patch("app.routers.chat.search_note_context", AsyncMock(return_value=[hit])),
+            patch("app.routers.chat.AIProviderFactory.create_provider", AsyncMock(return_value=provider)),
+        ):
+            response = await chat_send_sync(body, db=db, current_user=current_user)
+
+        self.assertEqual(response.reply, "sync ok")
+        self.assertIn("用户相关笔记摘录", provider.system_prompt)
+        self.assertIn("梯度下降复盘", provider.system_prompt)
 
 
 if __name__ == "__main__":
