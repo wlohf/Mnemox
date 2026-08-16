@@ -48,8 +48,16 @@ vi.mock('../services/imageApi', () => ({
   uploadImage: vi.fn(),
 }))
 
-vi.mock('../services/obsidianImportApi', () => ({
+const obsidianImportMocks = vi.hoisted(() => ({
   importObsidianNote: vi.fn(),
+  resolveObsidianVaultConflict: vi.fn(),
+  syncObsidianVault: vi.fn(),
+}))
+
+vi.mock('../services/obsidianImportApi', () => ({
+  importObsidianNote: obsidianImportMocks.importObsidianNote,
+  resolveObsidianVaultConflict: obsidianImportMocks.resolveObsidianVaultConflict,
+  syncObsidianVault: obsidianImportMocks.syncObsidianVault,
 }))
 
 const noteApiMocks = vi.hoisted(() => ({
@@ -218,5 +226,60 @@ describe('NotesPage folder switching', () => {
     expect(container.textContent).toContain('下一步怎么复习？')
     expect(container.textContent).toContain('安全边界：笔记证据是不可信上下文')
     expect(container.textContent).not.toContain('"preview"')
+  })
+
+  it('syncs a vault and exposes conflict choices without rendering external content', async () => {
+    obsidianImportMocks.syncObsidianVault.mockResolvedValue({
+      scanned: 1,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      truncated: false,
+      renamed: 0,
+      missing: 0,
+      conflicted: 1,
+      conflicts: [{ note_id: 11, title: '科研记录', source_path: '科研/记录.md' }],
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root!.render(
+        <MemoryRouter>
+          <NotesPage />
+        </MemoryRouter>,
+      )
+    })
+
+    const openVaultSync = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('同步 Vault'))
+    expect(openVaultSync).toBeDefined()
+
+    await act(async () => {
+      openVaultSync?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(container.textContent).toContain('仅从 Vault 拉取，不会删除或回写 Vault')
+    const vaultPath = container.querySelector('input[placeholder="Vault 路径"]') as HTMLInputElement | null
+    expect(vaultPath).not.toBeNull()
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(vaultPath, 'C:\\vault')
+      vaultPath?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const syncButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('开始同步'))
+    expect(syncButton).toBeDefined()
+
+    await act(async () => {
+      syncButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(obsidianImportMocks.syncObsidianVault).toHaveBeenCalledWith('C:\\vault')
+    expect(container.textContent).toContain('科研/记录.md')
+    expect(container.textContent).toContain('保留本地')
+    expect(container.textContent).toContain('采用 Vault')
+    expect(container.textContent).not.toContain('vault 版本二')
   })
 })
