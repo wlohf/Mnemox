@@ -11,7 +11,12 @@ from app.models.concept import ConceptLink
 from app.models.note import Note
 from app.models.user import User
 from app.services.concept_service import upsert_concept
-from app.services.obsidian_sync_service import VaultPathError, sync_vault, validate_vault_path
+from app.services.obsidian_sync_service import (
+    VaultPathError,
+    resolve_vault_conflict,
+    sync_vault,
+    validate_vault_path,
+)
 
 
 class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
@@ -179,6 +184,68 @@ class VaultSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(note.content, "Mnemox 本地修改")
         self.assertEqual(note.source_sync_state, "conflict")
         self.assertEqual(note.source_conflict_content, "vault 版本二")
+
+    async def test_conflict_resolution_keep_local_preserves_note_and_accepts_vault_baseline(self):
+        user_id = await self._create_user("vault_keep_local_user")
+        self._write("冲突保留本地.md", "vault 版本一")
+
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+            note = (
+                await session.execute(
+                    select(Note).where(Note.user_id == user_id, Note.source_path == "冲突保留本地.md")
+                )
+            ).scalar_one()
+            note_id = int(note.id)
+            note.content = "Mnemox 保留版本"
+            await session.commit()
+
+        self._write("冲突保留本地.md", "vault 版本二")
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            result = await resolve_vault_conflict(session, user_id, note_id, "keep_local")
+            await session.commit()
+
+        self.assertEqual(result["strategy"], "keep_local")
+        async with self.sessionmaker() as session:
+            note = (
+                await session.execute(select(Note).where(Note.id == note_id))
+            ).scalar_one()
+        self.assertEqual(note.content, "Mnemox 保留版本")
+        self.assertEqual(note.source_sync_state, "active")
+        self.assertIsNone(note.source_conflict_content)
+
+    async def test_conflict_resolution_use_vault_replaces_local_note_with_candidate(self):
+        user_id = await self._create_user("vault_use_vault_user")
+        self._write("冲突采用Vault.md", "vault 版本一")
+
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            await session.commit()
+            note = (
+                await session.execute(
+                    select(Note).where(Note.user_id == user_id, Note.source_path == "冲突采用Vault.md")
+                )
+            ).scalar_one()
+            note_id = int(note.id)
+            note.content = "Mnemox 将被替换版本"
+            await session.commit()
+
+        self._write("冲突采用Vault.md", "vault 版本二")
+        async with self.sessionmaker() as session:
+            await sync_vault(session, user_id, str(self.vault))
+            result = await resolve_vault_conflict(session, user_id, note_id, "use_vault")
+            await session.commit()
+
+        self.assertEqual(result["strategy"], "use_vault")
+        async with self.sessionmaker() as session:
+            note = (
+                await session.execute(select(Note).where(Note.id == note_id))
+            ).scalar_one()
+        self.assertEqual(note.content, "vault 版本二")
+        self.assertEqual(note.source_sync_state, "active")
+        self.assertIsNone(note.source_conflict_content)
 
     async def test_synced_note_attaches_to_existing_concepts(self):
         # Arrange：先有概念"条件概率"，vault 文件提到它
