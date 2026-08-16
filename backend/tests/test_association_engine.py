@@ -12,6 +12,7 @@ from app.models.material import Chapter, Material
 from app.models.note import Note
 from app.models.question import Question, WrongQuestion
 from app.models.user import User
+from app.services.association_coach_service import create_association_recall_nudge
 from app.services.association_service import (
     attach_note_to_concepts,
     find_associations,
@@ -188,6 +189,93 @@ class NoteAttachTests(_AssociationTestBase):
             ).scalar_one_or_none()
         self.assertIsNotNone(link)
         self.assertEqual(link.link_type, "explains")
+
+
+class AssociationCoachAttributionTests(_AssociationTestBase):
+    async def test_explicit_association_request_creates_traceable_nudge(self):
+        user_id = await self._create_user("association_coach")
+        seeded = await FindAssociationsTests._seed_graph_with_evidence(self, user_id)
+
+        async with self.sessionmaker() as session:
+            associations = await find_associations(
+                session,
+                user_id,
+                "今天开始学贝叶斯定理，公式有点绕。",
+            )
+            result = await create_association_recall_nudge(
+                session,
+                user_id,
+                query_text="今天开始学贝叶斯定理，公式有点绕。",
+                associations=associations,
+            )
+            await session.commit()
+
+        self.assertIsNotNone(result["event"])
+        self.assertIsNotNone(result["nudge"])
+        nudge = result["nudge"]
+        self.assertEqual(nudge["skill_id"], "association_recall")
+        self.assertEqual(nudge["channel"], "agent_panel")
+        self.assertEqual(nudge["route"], "/agent")
+        self.assertEqual(
+            nudge["explainability"]["source"]["type"],
+            "association_engine",
+        )
+        self.assertEqual(
+            nudge["explainability"]["association_ids"],
+            [seeded["bayes_id"]],
+        )
+        self.assertEqual(
+            nudge["explainability"]["associations"][0]["evidence"]["notes"],
+            [],
+        )
+        self.assertEqual(
+            nudge["explainability"]["associations"][0]["prerequisites"][0]["evidence"]["notes"][0]["id"],
+            seeded["note_id"],
+        )
+
+    async def test_explicit_association_request_is_deduplicated_for_recent_same_query(self):
+        user_id = await self._create_user("association_coach_dedupe")
+        await FindAssociationsTests._seed_graph_with_evidence(self, user_id)
+
+        async with self.sessionmaker() as session:
+            associations = await find_associations(session, user_id, "开始学贝叶斯定理")
+            first = await create_association_recall_nudge(
+                session,
+                user_id,
+                query_text="开始学贝叶斯定理",
+                associations=associations,
+            )
+            second = await create_association_recall_nudge(
+                session,
+                user_id,
+                query_text="开始学贝叶斯定理",
+                associations=associations,
+            )
+            await session.commit()
+
+            from app.models.coach import CoachEvent, CoachNudge
+
+            event_count = (
+                await session.execute(
+                    select(CoachEvent).where(
+                        CoachEvent.user_id == user_id,
+                        CoachEvent.event_type == "association.recalled",
+                    )
+                )
+            ).scalars().all()
+            nudge_count = (
+                await session.execute(
+                    select(CoachNudge).where(
+                        CoachNudge.user_id == user_id,
+                        CoachNudge.skill_id == "association_recall",
+                    )
+                )
+            ).scalars().all()
+
+        self.assertEqual(first["event"]["id"], second["event"]["id"])
+        self.assertEqual(first["nudge"]["id"], second["nudge"]["id"])
+        self.assertEqual(len(event_count), 1)
+        self.assertEqual(len(nudge_count), 1)
 
 
 if __name__ == "__main__":
