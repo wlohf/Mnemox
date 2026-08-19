@@ -26,6 +26,7 @@ export interface NoteContextIndicator {
   tags?: string[]
   reason?: string
   score?: number
+  retrieval_mode?: string
 }
 
 export interface ProgressFeedback {

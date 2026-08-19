@@ -1,4 +1,5 @@
 import { apiFetch } from './apiClient'
+import type { ConceptAssociation } from './associationApi'
 
 export type CoachEventType =
   | 'chat.low_motivation_detected'
@@ -72,6 +73,12 @@ export interface CoachNudge {
       reason?: string
       evidence?: string[]
     }
+    source?: {
+      type?: string
+      endpoint?: string
+      event_id?: string
+    }
+    associations?: ConceptAssociation[]
   } | null
   status: CoachNudgeStatus
   expires_at?: string | null
@@ -170,6 +177,17 @@ export async function markCoachNudgeShown(nudgeId: string): Promise<CoachNudge |
   } catch {
     return null
   }
+}
+
+export async function markPendingCoachNudgesShown(nudges: CoachNudge[]): Promise<CoachNudge[]> {
+  const pendingIds = Array.from(new Set(
+    nudges
+      .filter((nudge) => nudge.status === 'pending')
+      .map((nudge) => nudge.id)
+      .filter(Boolean),
+  ))
+  const results = await Promise.all(pendingIds.map((nudgeId) => markCoachNudgeShown(nudgeId)))
+  return results.filter((nudge): nudge is CoachNudge => nudge !== null)
 }
 
 export async function recordCoachNudgeFeedback(

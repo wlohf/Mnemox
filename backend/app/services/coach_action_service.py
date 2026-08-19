@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachNudge
@@ -44,9 +44,10 @@ async def create_coach_nudge(
     skill_id: str,
     policy: dict[str, Any],
     result: CoachSkillResult,
+    nudge_id: str | None = None,
 ) -> dict[str, Any]:
     nudge = CoachNudge(
-        id=f"cn_{uuid4().hex[:24]}",
+        id=str(nudge_id or f"cn_{uuid4().hex[:24]}")[:40],
         user_id=user_id,
         event_id=event_id,
         skill_id=skill_id,
@@ -96,21 +97,30 @@ async def list_coach_nudges(
 
 
 async def mark_coach_nudge_shown(db: AsyncSession, user_id: int, nudge_id: str) -> dict[str, Any] | None:
-    result = await db.execute(select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id))
+    now = datetime.now()
+    transition = await db.execute(
+        update(CoachNudge)
+        .where(
+            CoachNudge.id == nudge_id,
+            CoachNudge.user_id == user_id,
+            CoachNudge.status == "pending",
+        )
+        .values(status="shown", updated_at=now)
+    )
+    result = await db.execute(
+        select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id)
+    )
     row = result.scalar_one_or_none()
     if not row:
         return None
-    should_count_shown = row.status == "pending"
-    if should_count_shown:
-        row.status = "shown"
-        row.updated_at = datetime.now()
+    if int(transition.rowcount or 0) > 0:
         await record_skill_shown(db, user_id, row)
         await record_coach_nudge_event(
             db,
             user_id,
             row,
             CanonicalEventType.COACH_NUDGE_SHOWN,
-            occurred_at=row.updated_at,
+            occurred_at=now,
         )
     await db.flush()
     return coach_nudge_to_dict(row)

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachEvent
@@ -35,6 +36,7 @@ async def record_coach_event(
     *,
     dedupe_key: str | None = None,
     occurred_at: datetime | None = None,
+    event_id: str | None = None,
 ) -> dict[str, Any]:
     """Record a normalized event, returning an existing recent one for a dedupe key."""
 
@@ -63,7 +65,7 @@ async def record_coach_event(
             return _event_to_dict(existing)
 
     event = CoachEvent(
-        id=f"ce_{uuid4().hex[:24]}",
+        id=str(event_id or f"ce_{uuid4().hex[:24]}")[:40],
         user_id=user_id,
         event_type=event_type,
         source=source,
@@ -72,9 +74,26 @@ async def record_coach_event(
         dedupe_key=dedupe_key[:160] if dedupe_key else None,
         occurred_at=now,
     )
-    db.add(event)
-    await db.flush()
-    await db.refresh(event)
+    if event_id:
+        try:
+            async with db.begin_nested():
+                db.add(event)
+                await db.flush()
+                await db.refresh(event)
+        except IntegrityError:
+            existing = await db.scalar(
+                select(CoachEvent).where(
+                    CoachEvent.id == event.id,
+                    CoachEvent.user_id == int(user_id),
+                )
+            )
+            if existing is None:
+                raise
+            return _event_to_dict(existing)
+    else:
+        db.add(event)
+        await db.flush()
+        await db.refresh(event)
     return _event_to_dict(event)
 
 

@@ -1248,8 +1248,8 @@ async def chat_send(
         note_prompt = build_note_context_prompt(note_context_hits, max_chars=1800)
         if note_prompt:
             system_prompt = f"{system_prompt or ''}{note_prompt}"
-    except Exception as exc:
-        logger.warning("构建笔记上下文失败: %s", exc)
+    except Exception:
+        logger.warning("构建笔记上下文失败")
         note_context_hits = []
 
     # Fetch memory indicators for SSE
@@ -1546,8 +1546,8 @@ async def chat_send_sync(
         note_prompt = build_note_context_prompt(note_context_hits, max_chars=1800)
         if note_prompt:
             system_prompt = f"{system_prompt or ''}{note_prompt}"
-    except Exception as exc:
-        logger.warning("构建同步对话笔记上下文失败: %s", exc)
+    except Exception:
+        logger.warning("构建同步对话笔记上下文失败")
 
     messages = []
     if body.history:

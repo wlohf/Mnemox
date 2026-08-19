@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。`main` 开发基线已整合 v1.3.0 之后的 Phase 1 学习者模型与事件投影切片：SQLite/PostgreSQL 升级演练、同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。该主线整合不等于发布了新的安装包；生产发布仍需单独完成版本号、完整回归和真实 PostgreSQL 多实例验收。
+当前发布版本仍为 `v1.3.0`。统一开发基线已整合 v1.3.0 之后的 Phase 1 学习者模型与事件投影切片，以及聊天笔记 ContextStore、Coach 联想归因、Vault 同步安全边界和可审计 SQL 记忆声明：同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。该开发基线不等于发布了新的安装包；生产发布仍需单独完成版本号、完整回归和真实 PostgreSQL 多实例验收。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -63,46 +63,18 @@
 ## 系统架构
 
 ```mermaid
-graph TB
-    subgraph Frontend["前端 (React 18 + TypeScript)"]
-        UI["Chat Workspace / Dashboard / Pomodoro / Goals\nReview / WrongQuestions / Notes"]
-        PP["PromptsPage\n自定义 AI 提示词"]
-        UP["UserProfilePage\n学习画像可视化"]
-        AS["AISettingsDrawer\n供应商 / 路由 / Web Search / Embedding"]
-    end
-
-    subgraph Backend["后端 (FastAPI + Python)"]
-        direction TB
-        ET["EventTracker\n学习行为事件追踪"]
-        PS["ProfileService\n用户画像计算"]
-        MS["MemoryService\nEpisodic + Semantic 记忆"]
-        PT["PromptTemplates\n用户自定义 Prompt"]
-        AIS["AI Settings\n供应商配置 / 场景路由 / 密钥加密"]
-
-        subgraph AI["AI 层"]
-            LLM["Multi-LLM Router\nOpenAI / Claude / Gemini / DeepSeek / OpenAI-compatible"]
-            RAG["RAG Service\nLlamaIndex + ChromaDB"]
-        end
-
-        subgraph DB["数据层"]
-            SQLite[("SQLite / PostgreSQL\nlearning_events · user_profiles\npomodoros · memories · conversations\nwrong_questions · prompt_templates")]
-            VDB[("ChromaDB\n向量数据库")]
-        end
-    end
-
-    Frontend -->|REST API| Backend
-    ET --> SQLite
-    PS --> SQLite
-    MS --> SQLite
-    PT --> SQLite
-    AIS --> SQLite
-    LLM --> RAG
-    RAG --> VDB
-    PS -->|画像注入 system prompt| LLM
-    MS -->|记忆注入 system prompt| LLM
-    PT -->|自定义 prompt 注入| LLM
-    AIS -->|模型与场景路由| LLM
+flowchart TB
+    Desktop["Electron Windows 壳"] --> UI["React + TypeScript 学习工作台"]
+    UI -->|REST / SSE| API["FastAPI 领域 API"]
+    API --> Domain["学习 / 对话 / Agent / Coach"]
+    Domain --> SQL[("SQLite / PostgreSQL\n规范数据、事件、证据、声明与 outbox")]
+    Domain --> Notes["ContextStore\n聊天笔记：关键词 SQL 基线"]
+    Domain --> Materials["资料 RAG\nLlamaIndex + ChromaDB / 关键词降级"]
+    Domain --> AI["多模型路由与联网搜索"]
+    SQL --> Learner["LearnerModel / FSRS\n可重算状态与复习调度"]
 ```
+
+SQL 与原始文件是规范来源；Chroma、未来候选向量库、图存储和运行时 checkpoint 都只能作为可重建投影。Qdrant、Neo4j、Graphiti 与 LangGraph 仍处于候选或未评估状态，不属于当前运行时依赖。
 
 ---
 
@@ -143,6 +115,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 ### 3. AI 教练记忆系统
 - **Episodic 记忆**：对话摘要，带时间衰减（久远记忆权重降低）
 - **Semantic 记忆**：从对话中提炼长期事实（学习偏好、目标、薄弱点）
+- **可审计声明**：人工与自动记忆保留来源、有效时间、审核状态、规则/模型版本和修订关系；自动证据不复制聊天全文
 - **画像上下文注入**：每次对话携带用户历史画像数据
 
 ### 4. AI 对话工作区
@@ -152,6 +125,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
 - 聊天输入区支持模型覆盖默认路由；开启联网搜索后，可选择 Tavily、供应商 hosted search、专用搜索总结或本地兜底搜索
 - 自动模式会在配置 Tavily Key 时优先使用 Tavily；没有 Key 或搜索链路失败时，DuckDuckGo / Bing 会作为最终兜底
+- 当前用户的聊天笔记检索只经过 `ContextStore` 边界，返回来源与检索模式；关键词 SQL 是当前可观测基线，不等于完整混合检索已经完成
 - 聊天中的自然语言写入会先生成可编辑草稿，再由用户确认写入笔记、目标任务或当天计划
 
 ### 5. RAG 知识库
@@ -160,6 +134,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - ChromaDB 向量存储，AI 回答自动检索相关章节
 - 意图识别：对话中自动判断是否需要检索资料库
 - **容错降级**：embedding 服务不可用时，资料创建、问答和分析不会 500；资料搜索自动回退到关键词检索
+- 资料 RAG 仍与聊天笔记 ContextStore 单流并存；统一投影、版本更新/删除残留和离线质量集仍是 Phase 1 待办
 
 ### 6. 多 AI 提供商支持
 - OpenAI（GPT-4o / GPT-4）
@@ -180,11 +155,11 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 ### 8. 学习工具集
 - **番茄钟**：计时、统计、任务关联、离线同步；停止时记录原因（提前完成 / 临时中断 / 状态不好），自动纳入画像分析
-- **间隔复习**：艾宾浩斯遗忘曲线调度
+- **间隔复习**：FSRS 优先、SM-2 降级，保留存量复习历史
 - **错题本**：知识点归类、薄弱点追踪
 - **学习目标（OKR）**：目标拆解、7日计划生成、自适应重规划
 - **掌握度地图**：章节级学习进度可视化
-- **笔记系统**：关联资料章节，支持 Obsidian 导入
+- **笔记系统**：关联资料章节，支持 Vault 拉取同步；具备稳定文件身份、冲突候选、路径/软链接/大小/编码保护和用户可见跳过原因
 
 ### 9. 自定义 Prompt 管理
 - 10 种学习场景独立 prompt：AI 教练、费曼学习法、苏格拉底提问、出题、错题分析、复习引导、走神关怀等
@@ -223,7 +198,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 
 ### 14. Anki 风格记忆卡
 - `/anki` 页面支持手动创建、CSV 导入导出、AI 批量生成卡片
-- 使用 SM-2 风格调度字段：到期时间、间隔天数、简易系数、复习评分
+- 当前复习间隔优先由 FSRS 计算，SM-2 作为降级路径；存量到期时间、间隔、简易系数和复习历史继续保留
 - 已接入 IndexedDB 离线缓存和同步适配器
 
 ### 15. 个性化界面与系统设置
@@ -688,11 +663,11 @@ Mnemox/
 
 - [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
 - [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化和 API 冒烟已完成；真实浏览器/桌面 E2E、草案确认执行和卫生收口待补
-- [ ] **Phase 1 · 四层底座 MVP 部分完成**：学习者模型和 projection outbox 切片已收口，前端证据下钻、离线校准基线与 PostgreSQL 常驻 worker 已接入；ContextStore 迁移、候选 Spike、同步冲突/删除、Coach 反馈和生产监控待补
+- [ ] **Phase 1 · 四层底座 MVP 持续收口**：学习者模型、projection outbox、前端证据下钻、离线校准、PostgreSQL worker/监控、聊天笔记 ContextStore 单流、Vault 安全边界、Coach 联想归因和 SQL 记忆声明已接入；独立检索投影、质量集、候选 Spike、真实数据校准与正式多实例验收待补
 - [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
-当前执行顺序：先在真实学习数据积累后运行离线回放，至少达到 50 个 holdout case 才评估候选模型；然后迁移一条真实 ContextStore 检索路径，并继续补其余领域投影。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
+当前执行顺序：先积累至少 50 个 holdout case 并运行离线回放；聊天笔记 ContextStore 单流已完成接口收敛，下一步补可重建检索投影、版本更新/删除残留、质量集和其余领域迁移。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
 
 默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 

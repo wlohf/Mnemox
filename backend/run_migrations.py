@@ -106,13 +106,27 @@ HEAD_ONLY_TABLES = frozenset(
         "projection_outbox",
         "projection_outbox_worker_heartbeats",
         "projection_outbox_retry_policy",
+        "memory_declarations",
     }
 )
 HEAD_ONLY_COLUMNS = {
     "anki_cards": frozenset({"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}),
     "review_schedule": frozenset({"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}),
     "wrong_questions": frozenset({"concept_id"}),
-    "notes": frozenset({"source_path"}),
+    "notes": frozenset(
+        {
+            "source_path",
+            "source_vault_id",
+            "source_file_id",
+            "source_sync_hash",
+            "source_sync_state",
+            "source_conflict_title",
+            "source_conflict_content",
+            "source_conflict_hash",
+            "source_conflict_vault_id",
+            "source_conflict_file_id",
+        }
+    ),
 }
 
 

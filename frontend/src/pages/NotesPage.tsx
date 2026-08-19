@@ -20,7 +20,12 @@ import {
 import dayjs from 'dayjs'
 import { useOfflineNotes, type OfflineNoteItem } from '../hooks/useOfflineNotes'
 import { uploadImage } from '../services/imageApi'
-import { importObsidianNote } from '../services/obsidianImportApi'
+import {
+  importObsidianNote,
+  resolveObsidianVaultConflict,
+  syncObsidianVault,
+  type ObsidianVaultSyncResult,
+} from '../services/obsidianImportApi'
 import {
   askAgentAboutNote,
   assistNoteWithAI,
@@ -33,6 +38,7 @@ import {
 } from '../services/noteApi'
 import { MarkdownLiveEditor, type MarkdownLiveEditorHandle, type MarkdownLiveEditorImageResult } from '../components/MarkdownLiveEditor'
 import { PageShell } from '../components/PageShell'
+import { syncEngine } from '../sync/SyncEngine'
 import '../components/ChatMessageBubble.css'
 
 const { Text } = Typography
@@ -174,6 +180,11 @@ export function NotesPage() {
   const [importMdFiles, setImportMdFiles] = useState<File[]>([])
   const [importAttachments, setImportAttachments] = useState<File[]>([])
   const [importing, setImporting] = useState(false)
+  const [vaultSyncOpen, setVaultSyncOpen] = useState(false)
+  const [vaultPath, setVaultPath] = useState('')
+  const [vaultSyncing, setVaultSyncing] = useState(false)
+  const [vaultSyncResult, setVaultSyncResult] = useState<ObsidianVaultSyncResult | null>(null)
+  const [resolvingVaultNoteId, setResolvingVaultNoteId] = useState<number | null>(null)
   const [noteActionLoading, setNoteActionLoading] = useState<'review' | 'task' | 'ask' | null>(null)
   const [noteActionResult, setNoteActionResult] = useState<NoteActionDraftResult | AskAgentFromNoteResult | null>(null)
   const [noteActionOpen, setNoteActionOpen] = useState(false)
@@ -390,6 +401,50 @@ export function NotesPage() {
     setImportMdFiles([])
     setImportAttachments([])
     if (lastCreated) openNote(lastCreated)
+  }
+
+  const handleVaultSync = async () => {
+    const selectedVaultPath = vaultPath.trim()
+    if (!selectedVaultPath) {
+      message.warning('请输入 Vault 路径')
+      return
+    }
+    setVaultSyncing(true)
+    // Vault sync reads the server copy. Flush and pull IndexedDB edits first
+    // so a local pending update cannot bypass the conflict decision flow.
+    await syncEngine.syncAll()
+    const result = await syncObsidianVault(selectedVaultPath)
+    setVaultSyncing(false)
+    if (!result) {
+      message.error('Vault 同步失败，请检查路径与后端连接')
+      return
+    }
+    setVaultSyncResult(result)
+    await syncEngine.syncAll()
+    message.success(`Vault 同步完成：新增 ${result.created}，更新 ${result.updated}`)
+  }
+
+  const handleVaultConflictResolution = async (
+    noteId: number,
+    strategy: 'keep_local' | 'use_vault',
+  ) => {
+    setResolvingVaultNoteId(noteId)
+    const result = await resolveObsidianVaultConflict(noteId, strategy)
+    setResolvingVaultNoteId(null)
+    if (!result) {
+      message.error('冲突处理失败，请稍后重试')
+      return
+    }
+    setVaultSyncResult((previous) => {
+      if (!previous) return previous
+      return {
+        ...previous,
+        conflicted: Math.max(0, previous.conflicted - 1),
+        conflicts: previous.conflicts.filter((conflict) => conflict.note_id !== noteId),
+      }
+    })
+    await syncEngine.syncAll()
+    message.success(strategy === 'keep_local' ? '已保留 Mnemox 本地内容' : '已采用 Vault 版本')
   }
 
   const handleCreate = async () => {
@@ -624,6 +679,7 @@ export function NotesPage() {
       rightExtra={(
         <Space wrap>
           <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>导入 Obsidian</Button>
+          <Button icon={<ImportOutlined />} onClick={() => setVaultSyncOpen(true)}>同步 Vault</Button>
           <Button icon={<PlusOutlined />} onClick={handleCreate}>新建笔记</Button>
           <Button icon={<RobotOutlined />} onClick={openAIAssist} disabled={!active}>AI 辅助</Button>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave} disabled={!active}>保存</Button>
@@ -1058,6 +1114,78 @@ export function NotesPage() {
               上传笔记中引用的图片文件（如 ![[image.png]] 引用的图片）
             </div>
           </div>
+        </Space>
+      </Modal>
+
+      <Modal
+        title="同步 Obsidian Vault"
+        open={vaultSyncOpen}
+        onCancel={() => setVaultSyncOpen(false)}
+        footer={null}
+        width={680}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Text type="secondary">
+            仅从 Vault 拉取，不会删除或回写 Vault。删除的 Vault 文件只会标记为缺失；双方修改同一篇笔记时需由你选择。
+          </Text>
+          <Input
+            placeholder="Vault 路径"
+            value={vaultPath}
+            onChange={(event) => setVaultPath(event.target.value)}
+            onPressEnter={() => void handleVaultSync()}
+          />
+          <Button type="primary" loading={vaultSyncing} onClick={() => void handleVaultSync()}>
+            开始同步
+          </Button>
+          {vaultSyncResult && (
+            <Space direction="vertical" style={{ width: '100%' }} size="small">
+              <Text>
+                扫描 {vaultSyncResult.scanned} · 新增 {vaultSyncResult.created} · 更新 {vaultSyncResult.updated} ·
+                重命名 {vaultSyncResult.renamed} · 缺失 {vaultSyncResult.missing} · 冲突 {vaultSyncResult.conflicted}
+              </Text>
+              {vaultSyncResult.truncated && (
+                <Text type="warning">Vault 文件数超过本次同步上限；为避免误判，本次不会标记缺失。请缩小同步范围后重试。</Text>
+              )}
+              {vaultSyncResult.failed > 0 && (
+                <div>
+                  <Text type="warning">{vaultSyncResult.failed} 个文件已跳过，现有同步版本不会被覆盖。</Text>
+                  {vaultSyncResult.failures.map((failure) => (
+                    <div key={`${failure.source_path}:${failure.reason}`} style={{ marginTop: 6 }}>
+                      <Text type="secondary">{failure.source_path}：{failure.reason}</Text>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {vaultSyncResult.conflicts.length > 0 && (
+                <div>
+                  <Text strong>需要处理的冲突</Text>
+                  {vaultSyncResult.conflicts.map((conflict) => (
+                    <div key={conflict.note_id} style={{ marginTop: 8 }}>
+                      <Space wrap>
+                        <Text>{conflict.title}</Text>
+                        <Text type="secondary">{conflict.source_path}</Text>
+                        <Button
+                          size="small"
+                          loading={resolvingVaultNoteId === conflict.note_id}
+                          onClick={() => void handleVaultConflictResolution(conflict.note_id, 'keep_local')}
+                        >
+                          保留本地
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          loading={resolvingVaultNoteId === conflict.note_id}
+                          onClick={() => void handleVaultConflictResolution(conflict.note_id, 'use_vault')}
+                        >
+                          采用 Vault
+                        </Button>
+                      </Space>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Space>
+          )}
         </Space>
       </Modal>
     </PageShell>

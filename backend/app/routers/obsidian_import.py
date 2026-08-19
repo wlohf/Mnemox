@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import PurePosixPath
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -18,7 +19,12 @@ from app.routers.images import _detect_image_extension, _read_limited
 from app.database import get_db
 from app.auth import get_current_user
 from app.models.user import User
-from app.services.obsidian_sync_service import VaultPathError, sync_vault
+from app.services.obsidian_sync_service import (
+    VaultConflictError,
+    VaultPathError,
+    resolve_vault_conflict,
+    sync_vault,
+)
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
@@ -190,6 +196,10 @@ class VaultSyncRequest(BaseModel):
     vault_path: str
 
 
+class VaultConflictResolutionRequest(BaseModel):
+    strategy: Literal["keep_local", "use_vault"]
+
+
 @router.post("/sync-vault")
 async def sync_obsidian_vault(
     body: VaultSyncRequest,
@@ -206,3 +216,22 @@ async def sync_obsidian_vault(
     except VaultPathError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return stats
+
+
+@router.post("/sync-vault/conflicts/{note_id}/resolve")
+async def resolve_obsidian_vault_conflict(
+    note_id: int,
+    body: VaultConflictResolutionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resolve a stored pull conflict without writing anything back to Vault."""
+    try:
+        return await resolve_vault_conflict(
+            db,
+            int(current_user.id),
+            note_id,
+            body.strategy,
+        )
+    except VaultConflictError as exc:
+        raise HTTPException(status_code=404, detail="未找到待解决的 Vault 冲突") from exc

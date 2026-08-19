@@ -3,9 +3,33 @@ import { useNavigate } from 'react-router-dom'
 import { Layout, Card, Button, List, Space, Tag, Modal, Input, InputNumber, message, Checkbox } from 'antd'
 import { ArrowLeftOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { listMemories, updateMemory, deleteMemory, type MemoryItem } from '../services/memoryApi'
+import {
+  deleteMemory,
+  listMemoryDeclarations,
+  listMemories,
+  updateMemory,
+  type MemoryDeclaration,
+  type MemoryItem,
+} from '../services/memoryApi'
 
 const { Header, Content } = Layout
+
+const declarationStatus = (status: string) => {
+  switch (status) {
+    case 'confirmed': return { label: '已确认', color: 'green' }
+    case 'staged': return { label: '待你确认', color: 'gold' }
+    case 'ignored': return { label: '已忽略', color: 'default' }
+    case 'inaccurate': return { label: '已标记不准确', color: 'red' }
+    default: return { label: '已被修订', color: 'default' }
+  }
+}
+
+const declarationCreator = (createdBy: string) => ({
+  user: '你',
+  model: '自动提炼',
+  agent: 'Agent',
+  system: '系统',
+}[createdBy] || createdBy)
 
 export function MemoryPage() {
   const navigate = useNavigate()
@@ -15,6 +39,9 @@ export function MemoryPage() {
   const [cat, setCat] = useState('preference')
   const [conf, setConf] = useState<number>(0.7)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [declarationMemory, setDeclarationMemory] = useState<MemoryItem | null>(null)
+  const [declarations, setDeclarations] = useState<MemoryDeclaration[]>([])
+  const [declarationsLoading, setDeclarationsLoading] = useState(false)
 
   const load = async () => {
     const data = await listMemories()
@@ -34,6 +61,9 @@ export function MemoryPage() {
 
   const saveEdit = async () => {
     if (!editing) return
+    const semanticChanged = editing.memory_value !== val
+      || editing.category !== cat
+      || Number(editing.confidence || 0.7) !== conf
     const updated = await updateMemory(editing.id, {
       memory_value: val,
       category: cat,
@@ -45,9 +75,20 @@ export function MemoryPage() {
       message.error('更新记忆失败')
       return
     }
-    message.success('记忆已更新')
+    message.success(semanticChanged ? '修订已保存，并已防止自动覆盖' : '记忆已更新')
     setEditing(null)
     await load()
+  }
+
+  const openDeclarations = async (m: MemoryItem) => {
+    setDeclarationMemory(m)
+    setDeclarations([])
+    setDeclarationsLoading(true)
+    try {
+      setDeclarations(await listMemoryDeclarations(m.id))
+    } finally {
+      setDeclarationsLoading(false)
+    }
   }
 
   const remove = (m: MemoryItem) => {
@@ -180,6 +221,7 @@ export function MemoryPage() {
                     <Button key="i" size="small" onClick={() => quickToggleIgnored(m)}>
                       {(m.status || 'active') === 'ignored' ? '恢复' : '忽略'}
                     </Button>,
+                    <Button key="p" size="small" onClick={() => void openDeclarations(m)}>查看依据</Button>,
                     <Button key="e" size="small" icon={<EditOutlined />} onClick={() => openEdit(m)}>编辑</Button>,
                     <Button key="d" size="small" danger icon={<DeleteOutlined />} onClick={() => remove(m)}>删除</Button>,
                   ]}
@@ -192,6 +234,8 @@ export function MemoryPage() {
                         <div style={{ color: '#999', fontSize: 12 }}>
                           置信度 {Number(m.confidence || 0).toFixed(2)} · 最近更新 {m.last_seen_at ? dayjs(m.last_seen_at).format('YYYY-MM-DD HH:mm') : '-'}
                           {m.source_conversation_id ? ` · 来源对话 #${m.source_conversation_id}` : ''}
+                          {m.source_type ? ` · 来源 ${m.source_type}` : ''}
+                          {m.review_status ? ` · 审核 ${m.review_status}` : ''}
                         </div>
                       </div>
                     }
@@ -222,6 +266,53 @@ export function MemoryPage() {
           <div style={{ marginBottom: 4 }}>置信度 (0-1)</div>
           <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} value={conf} onChange={(v) => setConf(Number(v ?? 0.7))} />
         </div>
+      </Modal>
+
+      <Modal
+        title={declarationMemory ? `记忆依据：${declarationMemory.memory_key}` : '记忆依据'}
+        open={!!declarationMemory}
+        onCancel={() => setDeclarationMemory(null)}
+        footer={<Button onClick={() => setDeclarationMemory(null)}>关闭</Button>}
+        width={720}
+      >
+        <List
+          loading={declarationsLoading}
+          dataSource={declarations}
+          locale={{ emptyText: '这条旧记忆尚未有可用的声明记录。之后的手动创建和修订会显示在这里。' }}
+          renderItem={(declaration) => {
+            const status = declarationStatus(declaration.review_status)
+            const availability = declaration.valid_to
+              ? `于 ${dayjs(declaration.valid_to).format('YYYY-MM-DD HH:mm')} 结束有效`
+              : declaration.review_status === 'staged'
+                ? '等待你的确认，不会用于聊天'
+                : declaration.review_status === 'confirmed'
+                  ? '当前有效'
+                  : '不会用于聊天'
+            return (
+              <List.Item>
+                <List.Item.Meta
+                  title={
+                    <Space wrap>
+                      <Tag color={status.color}>{status.label}</Tag>
+                      <Tag>{declaration.predicate}</Tag>
+                      <span>由 {declarationCreator(declaration.created_by)} 记录</span>
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <div>{declaration.value}</div>
+                      <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
+                        记录时间 {declaration.observed_at ? dayjs(declaration.observed_at).format('YYYY-MM-DD HH:mm') : '-'}
+                        {` · ${availability}`}
+                        {declaration.source_type ? ` · 来源 ${declaration.source_type}` : ''}
+                      </div>
+                    </div>
+                  }
+                />
+              </List.Item>
+            )
+          }}
+        />
       </Modal>
     </Layout>
   )

@@ -3,7 +3,7 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-13
+> 最近核查：2026-08-19
 >
 > 当前发布版本：v1.3.0
 > 对应发布基线：`main@v1.3.0`
@@ -173,7 +173,7 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 2. 统一 Prompt Injection 防护层，为资料、笔记、搜索和工具结果建立明确的不可信上下文边界。
 3. 收口 RAG 状态的产品语义：资料侧栏和设置入口已展示在线/关键词回退/最近错误；还需让聊天等入口保持同一状态含义，并用浏览器 E2E 验证降级提示。
 4. 保留 API 冒烟，同时补真实浏览器/桌面 E2E，覆盖 Agent 草案确认与执行。
-5. PostgreSQL 16 演练库的 v1.3.0 到当前 head 升级测试已完成；正式生产库仍须在发布窗口先做快照，再执行升级与数据核对。
+5. PostgreSQL 16 演练已验证 v1.3.0 到早期 Phase 1 迁移、数据保留和 Outbox 链路；后续 Vault/记忆声明迁移已通过 SQLite lightweight migration 与 Alembic 离线 DDL 回归。正式生产库仍须在发布窗口先做快照，再升级到当前 head `20260816_09` 并执行 schema、数据和多实例运行核对。
 6. 仓库卫生：清理明确过期的 `release/` 资产，规范提交分支和未提交文件状态。
 
 ### P1：四层学习智能底座（Phase 1）
@@ -187,7 +187,7 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 7. 联想引擎：接入 Coach 呈现、shown/feedback/采纳事件和保守阈值调参。
 8. 概念级体验：完成概念地图、先修缺口、资料小节下钻与学习建议理由展示。
 
-当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、学习者模型 API、前端证据下钻和 SQLite/PostgreSQL 迁移演练已完成；525 条分页重放、跨用户/概念隔离、幂等/重试/崩溃恢复、严格 API 输入校验和聚焦回归均有证据。校准报告当前为 0 个 holdout case，真实数据校准、常驻 worker/监控与移除 legacy 字段按此顺序后置，Phase 2 不提前展开。
+当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、学习者模型 API、前端证据下钻、PostgreSQL 常驻 worker/受保护聚合指标和 SQLite/PostgreSQL 迁移演练已有验证证据；聊天笔记已通过 `ContextStore` 接口收敛，Vault 同步安全边界、Coach 联想 shown/accepted/completed 归因，以及人工/自动 SQL 记忆声明也已进入统一开发基线。校准报告当前为 0 个 holdout case；独立检索投影、版本更新/删除残留、真实数据校准、候选 Spike、正式 PostgreSQL 多实例验收与移除 legacy 字段继续后置，Phase 2 不提前展开。
 
 ### P2：Agent 升级（Phase 2，垂直切片）
 

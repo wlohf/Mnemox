@@ -8,6 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.services.memory_declaration_service import (
+    delete_memory_declarations,
+    list_memory_declarations,
+    record_manual_memory_declaration,
+)
 from app.services.memory_service import list_memories, list_summaries, get_relevant_memories
 from app.models.memory import UserMemory
 from app.auth import get_current_user
@@ -64,6 +69,28 @@ async def get_memories(
     return rows
 
 
+@router.get("/memories/{memory_id}/declarations")
+async def get_memory_declarations(
+    memory_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the user's auditable declaration history for one memory."""
+    result = await db.execute(
+        select(UserMemory.id).where(
+            UserMemory.id == memory_id,
+            UserMemory.user_id == current_user.id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return await list_memory_declarations(
+        db,
+        user_id=current_user.id,
+        memory_id=memory_id,
+    )
+
+
 @router.get("/relevant")
 async def get_relevant(
     topic: str = Query("", description="Topic hint for relevance scoring"),
@@ -104,7 +131,14 @@ async def create_memory(
     row = result.scalar_one_or_none()
     if row:
         row.memory_value = body.memory_value
+        row.category = body.category
         row.confidence = max(0.0, min(1.0, body.confidence))
+        row.status = "active"
+        row.review_status = "confirmed"
+        row.source_type = "manual"
+        row.source_id = None
+        row.evidence = None
+        row.is_locked = 1
         row.last_seen_at = now
     else:
         row = UserMemory(
@@ -114,14 +148,26 @@ async def create_memory(
             category=body.category,
             confidence=body.confidence,
             status="active",
+            review_status="confirmed",
+            source_type="manual",
+            is_locked=1,
             created_at=now,
             updated_at=now,
             last_seen_at=now,
         )
         db.add(row)
     await db.flush()
+    await record_manual_memory_declaration(db, memory=row, user_id=current_user.id, observed_at=now)
     await db.refresh(row)
-    return {"id": row.id, "memory_key": row.memory_key, "memory_value": row.memory_value}
+    return {
+        "id": row.id,
+        "memory_key": row.memory_key,
+        "memory_value": row.memory_value,
+        "category": row.category,
+        "confidence": row.confidence,
+        "status": row.status,
+        "is_locked": row.is_locked,
+    }
 
 
 
@@ -139,18 +185,38 @@ async def update_memory(
     if not row:
         raise HTTPException(status_code=404, detail="记忆不存在")
 
+    next_confidence = (
+        max(0.0, min(1.0, body.confidence))
+        if body.confidence is not None
+        else row.confidence
+    )
+    next_category = body.category if body.category is not None else row.category
+    is_semantic_correction = any(
+        (
+            body.memory_value != row.memory_value,
+            next_category != row.category,
+            next_confidence != row.confidence,
+        )
+    )
     row.memory_value = body.memory_value
-    if body.category is not None:
-        row.category = body.category
-    if body.confidence is not None:
-        row.confidence = max(0.0, min(1.0, body.confidence))
+    row.category = next_category
+    row.confidence = next_confidence
     if body.status is not None and body.status in ("active", "ignored"):
         row.status = body.status
     if body.is_locked is not None:
         row.is_locked = 1 if int(body.is_locked) == 1 else 0
+    if is_semantic_correction:
+        # A direct user correction always wins over later background extraction.
+        row.is_locked = 1
+        row.review_status = "confirmed"
+        row.source_type = "manual"
+        row.source_id = None
+        row.evidence = None
     row.last_seen_at = datetime.now()
 
     await db.flush()
+    if is_semantic_correction:
+        await record_manual_memory_declaration(db, memory=row, user_id=current_user.id)
     await db.refresh(row)
     return {
         "id": row.id,
@@ -175,5 +241,6 @@ async def delete_memory(
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="记忆不存在")
+    await delete_memory_declarations(db, user_id=current_user.id, memory_id=memory_id)
     await db.delete(row)
     return {"ok": True}

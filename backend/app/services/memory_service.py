@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage, ChatConversation
 from app.models.memory import ConversationSummary, UserMemory
+from app.services.memory_declaration_service import record_automatic_memory_declaration
 from app.utils.prompt_safety import wrap_untrusted_context
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
@@ -439,6 +440,20 @@ async def upsert_user_memories_from_turn(
         if key in RESERVED_MEMORY_KEYS:
             continue
         now = datetime.now()
+        locked_result = await db.execute(
+            select(UserMemory)
+            .where(
+                UserMemory.memory_key == key,
+                UserMemory.user_id == user_id,
+                UserMemory.is_locked == 1,
+            )
+            .order_by(UserMemory.id.desc())
+            .limit(1)
+        )
+        locked_memory = locked_result.scalar_one_or_none()
+        if locked_memory:
+            locked_memory.last_seen_at = now
+            continue
         evidence = json.dumps(
             [
                 {
@@ -494,6 +509,15 @@ async def upsert_user_memories_from_turn(
             row.status = "staged"
             row.review_status = STAGED_REVIEW_STATUS
             row.last_seen_at = now
+        await db.flush()
+        await record_automatic_memory_declaration(
+            db,
+            memory=row,
+            user_id=user_id,
+            created_by="model",
+            model_version="chat-memory-extract-v1",
+            observed_at=now,
+        )
 
 
 async def list_memories(db: AsyncSession, user_id: int = 1) -> List[dict]:
@@ -747,6 +771,22 @@ async def _upsert_reflection_memories(
         if mem_type not in ("semantic", "episodic"):
             mem_type = "semantic"
 
+        now = datetime.now()
+        locked_result = await db.execute(
+            select(UserMemory)
+            .where(
+                UserMemory.memory_key == key,
+                UserMemory.user_id == user_id,
+                UserMemory.is_locked == 1,
+            )
+            .order_by(UserMemory.id.desc())
+            .limit(1)
+        )
+        locked_memory = locked_result.scalar_one_or_none()
+        if locked_memory:
+            locked_memory.last_seen_at = now
+            continue
+
         existing_result = await db.execute(
             select(UserMemory).where(
                 UserMemory.memory_key == key,
@@ -756,7 +796,6 @@ async def _upsert_reflection_memories(
             )
         )
         row = existing_result.scalar_one_or_none()
-        now = datetime.now()
         evidence = json.dumps(
             [
                 {
@@ -787,7 +826,7 @@ async def _upsert_reflection_memories(
             if mem_type:
                 row.memory_type = mem_type
         else:
-            new_mem = UserMemory(
+            row = UserMemory(
                 user_id=user_id,
                 memory_key=key,
                 memory_value=val,
@@ -804,7 +843,16 @@ async def _upsert_reflection_memories(
                 memory_type=mem_type,
                 last_seen_at=now,
             )
-            db.add(new_mem)
+            db.add(row)
+        await db.flush()
+        await record_automatic_memory_declaration(
+            db,
+            memory=row,
+            user_id=user_id,
+            created_by="model",
+            model_version="reflection-memory-candidate-v1",
+            observed_at=now,
+        )
 
 
 async def _create_review_schedules_from_reflection(

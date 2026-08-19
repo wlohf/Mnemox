@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Alert, Button, Card, Col, Collapse, Dropdown, Empty, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Collapse, Dropdown, Empty, Input, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
 import { BulbOutlined, CheckCircleOutlined, CloseCircleOutlined, ExperimentOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { PageShell } from '../components/PageShell'
 import {
@@ -31,10 +31,17 @@ import {
 } from '../services/agentApi'
 import {
   listCoachNudges,
+  markCoachNudgeShown,
+  markPendingCoachNudgesShown,
   recordCoachNudgeFeedback,
   type CoachFeedbackOutcome,
   type CoachNudge,
 } from '../services/coachApi'
+import {
+  findConceptAssociations,
+  type AssociationRecallResponse,
+  type ConceptAssociation,
+} from '../services/associationApi'
 
 const { Paragraph, Text } = Typography
 
@@ -152,6 +159,13 @@ export function AgentPage() {
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
   const [goalContext, setGoalContext] = useState<AgentGoalContext | null>(null)
   const [coachNudges, setCoachNudges] = useState<CoachNudge[]>([])
+  const markedCoachNudgeIds = useRef(new Set<string>())
+  const [associationText, setAssociationText] = useState('')
+  const [associationLoading, setAssociationLoading] = useState(false)
+  const [associationResult, setAssociationResult] = useState<AssociationRecallResponse | null>(null)
+  const [expandedAssociationIds, setExpandedAssociationIds] = useState<Set<number>>(new Set())
+  const associationShownNudgeIds = useRef(new Set<string>())
+  const associationFeedbackIds = useRef(new Set<string>())
   const [agentLoading, setAgentLoading] = useState<string | null>(null)
   const [showDebug, setShowDebug] = useState(false)
   const [memoryCandidates, setMemoryCandidates] = useState<AgentMemoryCandidate[]>([])
@@ -206,6 +220,29 @@ export function AgentPage() {
   useEffect(() => {
     void load(false)
   }, [])
+
+  useEffect(() => {
+    const pending = coachNudges.filter(
+      (nudge) => nudge.status === 'pending' && !markedCoachNudgeIds.current.has(nudge.id),
+    )
+    if (pending.length === 0) return
+    for (const nudge of pending) {
+      markedCoachNudgeIds.current.add(nudge.id)
+    }
+
+    void markPendingCoachNudgesShown(pending).then((shownNudges) => {
+      const shownById = new Map(shownNudges.map((nudge) => [nudge.id, nudge]))
+      for (const nudge of pending) {
+        if (!shownById.has(nudge.id)) {
+          markedCoachNudgeIds.current.delete(nudge.id)
+        }
+      }
+      if (shownById.size === 0) return
+      setCoachNudges((current) => current.map((nudge) => (
+        shownById.has(nudge.id) ? { ...nudge, ...shownById.get(nudge.id) } : nudge
+      )))
+    })
+  }, [coachNudges])
 
   const openDraft = async (action: AgentAction) => {
     setDraftLoading(true)
@@ -277,7 +314,152 @@ export function AgentPage() {
       return
     }
     message.success('已记录 Coach 反馈')
+    setCoachNudges((current) => current.map((item) => (
+      item.id === nudge.id ? { ...item, status: result.status as CoachNudge['status'] } : item
+    )))
+    setAssociationResult((current) => current?.nudge?.id === nudge.id
+      ? { ...current, nudge: { ...current.nudge, status: result.status } }
+      : current)
     await loadCoachNudges()
+  }
+
+  const restoreAssociationFromNudge = (nudge: CoachNudge) => {
+    const associations = nudge.explainability?.associations
+    if (!Array.isArray(associations) || associations.length === 0) return false
+    setAssociationResult({
+      associations,
+      event: nudge.event_id
+        ? { id: nudge.event_id, event_type: 'association.recalled' }
+        : null,
+      nudge: {
+        id: nudge.id,
+        skill_id: nudge.skill_id,
+        title: nudge.title,
+        body: nudge.body,
+        status: nudge.status,
+        suggested_action: nudge.suggested_action,
+        explainability: nudge.explainability,
+      },
+    })
+    setExpandedAssociationIds(new Set())
+    return true
+  }
+
+  const recallAssociations = async () => {
+    const text = associationText.trim()
+    if (!text) {
+      message.warning('请输入要联想的学习内容')
+      return
+    }
+    setAssociationLoading(true)
+    try {
+      const result = await findConceptAssociations(text)
+      setAssociationResult(result)
+      setExpandedAssociationIds(new Set())
+      if (result.nudge) {
+        setCoachNudges((current) => (
+          current.some((item) => item.id === result.nudge?.id)
+            ? current
+            : [result.nudge as CoachNudge, ...current]
+        ))
+        if (!associationShownNudgeIds.current.has(result.nudge.id)) {
+          associationShownNudgeIds.current.add(result.nudge.id)
+          const shown = await markCoachNudgeShown(result.nudge.id)
+          if (!shown) {
+            associationShownNudgeIds.current.delete(result.nudge.id)
+          } else {
+            setCoachNudges((current) => current.map((item) => (
+              item.id === shown.id ? { ...item, ...shown } : item
+            )))
+            setAssociationResult((current) => current?.nudge?.id === shown.id
+              ? { ...current, nudge: { ...current.nudge, status: shown.status } }
+              : current)
+          }
+        }
+      }
+      if (result.associations.length === 0) {
+        message.info('暂未找到带有历史证据的关联')
+      }
+    } catch {
+      message.error('联想请求失败，请稍后重试')
+    } finally {
+      setAssociationLoading(false)
+    }
+  }
+
+  const recordAssociationFeedback = async (outcome: CoachFeedbackOutcome) => {
+    const nudgeId = associationResult?.nudge?.id
+    if (!nudgeId || associationFeedbackIds.current.has(`${nudgeId}:${outcome}`)) return
+    associationFeedbackIds.current.add(`${nudgeId}:${outcome}`)
+    const result = await recordCoachNudgeFeedback(nudgeId, { outcome })
+    if (!result) {
+      associationFeedbackIds.current.delete(`${nudgeId}:${outcome}`)
+      message.error('Coach 反馈记录失败')
+      return
+    }
+    setCoachNudges((current) => current.map((item) => (
+      item.id === nudgeId ? { ...item, status: result.status as CoachNudge['status'] } : item
+    )))
+    if (outcome === 'completed') {
+      message.success('已记录这次联想处理')
+      setAssociationResult((current) => current ? {
+        ...current,
+        nudge: current.nudge ? { ...current.nudge, status: 'completed' } : null,
+      } : current)
+    } else {
+      setAssociationResult((current) => current ? {
+        ...current,
+        nudge: current.nudge ? { ...current.nudge, status: result.status } : null,
+      } : current)
+    }
+  }
+
+  const renderAssociation = (association: ConceptAssociation) => {
+    const expanded = expandedAssociationIds.has(association.concept_id)
+    const evidenceItems = [
+      ...(association.evidence?.notes || []).map((item) => ({ ...item, type: '笔记' })),
+      ...(association.evidence?.wrong_questions || []).map((item) => ({ ...item, type: '错题' })),
+      ...(association.prerequisites || []).flatMap((item) => [
+        ...(item.evidence?.notes || []).map((source) => ({ ...source, type: `先修笔记：${item.name}` })),
+        ...(item.evidence?.wrong_questions || []).map((source) => ({ ...source, type: `先修错题：${item.name}` })),
+      ]),
+    ]
+    return (
+      <List.Item
+        actions={[
+          <Button
+            key="evidence"
+            size="small"
+            onClick={() => {
+              const next = new Set(expandedAssociationIds)
+              if (next.has(association.concept_id)) next.delete(association.concept_id)
+              else next.add(association.concept_id)
+              setExpandedAssociationIds(next)
+              if (!expanded) void recordAssociationFeedback('accepted')
+            }}
+          >
+            {expanded ? '收起依据' : '查看依据'}
+          </Button>,
+        ]}
+      >
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space wrap>
+            <Tag color="blue">{association.concept_name}</Tag>
+            <Tag>掌握度 {Math.round(Number(association.mastery || 0))}%</Tag>
+          </Space>
+          <Text type="secondary">{association.reason || '存在相关历史证据'}</Text>
+          {expanded && (
+            <Space direction="vertical" size={2}>
+              {evidenceItems.length > 0 ? evidenceItems.map((item) => (
+                <Text key={`${item.type}-${item.id}`} type="secondary">
+                  {item.type}：{item.title || item.knowledge_point || item.id}
+                </Text>
+              )) : <Text type="secondary">暂无可展开的直接证据。</Text>}
+            </Space>
+          )}
+        </Space>
+      </List.Item>
+    )
   }
 
   const runMemoryLearning = async () => {
@@ -616,12 +798,14 @@ export function AgentPage() {
                       type="primary"
                       onClick={() => {
                         void sendCoachFeedback(nudge, 'accepted')
+                        if (nudge.skill_id === 'association_recall' && restoreAssociationFromNudge(nudge)) return
                         navigate(nudge.route || nudge.suggested_action?.route || '/agent')
                       }}
                     >
                       {nudge.suggested_action?.label || '去处理'}
                     </Button>
                   ) : null,
+                  <Button key="completed" size="small" onClick={() => void sendCoachFeedback(nudge, 'completed')}>已完成</Button>,
                   <Button key="helpful" size="small" onClick={() => void sendCoachFeedback(nudge, 'helpful')}>有帮助</Button>,
                   <Button key="later" size="small" onClick={() => void sendCoachFeedback(nudge, 'later')}>稍后</Button>,
                   <Button key="dismiss" size="small" danger onClick={() => void sendCoachFeedback(nudge, 'too_disruptive')}>太打扰</Button>,
@@ -640,8 +824,8 @@ export function AgentPage() {
                   {(nudge.explainability?.sources || []).length > 0 && (
                     <Space wrap>
                       {(nudge.explainability?.sources || []).slice(0, 4).map((source) => (
-                        <Tag key={`${source.type}-${source.id}`} color={source.type === 'note' ? 'blue' : 'purple'}>
-                          {source.type === 'note' ? '笔记' : '记忆'}：{source.title || source.id}
+                        <Tag key={`${source.type}-${source.id}`} color={source.type === 'note' ? 'blue' : source.type === 'wrong_question' ? 'red' : 'purple'}>
+                          {source.type === 'note' ? '笔记' : source.type === 'wrong_question' ? '错题' : '记忆'}：{source.title || source.id}
                         </Tag>
                       ))}
                     </Space>
@@ -650,6 +834,41 @@ export function AgentPage() {
               </List.Item>
             )}
           />
+        </Card>
+
+        <Card
+          size="small"
+          title="知识联想"
+          extra={<Tag color={associationResult?.associations.length ? 'blue' : 'default'}>显式请求</Tag>}
+        >
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Text type="secondary">粘贴正在学习的内容，查看与已有概念、笔记和错题的关联。不会自动创建任务或修改知识状态。</Text>
+            <Input.TextArea
+              value={associationText}
+              rows={3}
+              maxLength={2000}
+              showCount
+              placeholder="例如：今天开始学贝叶斯定理，公式有点绕。"
+              onChange={(event) => setAssociationText(event.target.value)}
+            />
+            <Button type="primary" loading={associationLoading} onClick={() => void recallAssociations()}>
+              查找关联
+            </Button>
+            {associationResult && (
+              <List
+                size="small"
+                header={associationResult.associations.length > 0 ? '可追溯的旧知识关联' : undefined}
+                dataSource={associationResult.associations}
+                locale={{ emptyText: '没有达到证据门槛的关联。' }}
+                renderItem={renderAssociation}
+              />
+            )}
+            {associationResult?.nudge && associationResult.nudge.status !== 'completed' && (
+              <Button size="small" onClick={() => void recordAssociationFeedback('completed')}>
+                已处理这次联想
+              </Button>
+            )}
+          </Space>
         </Card>
 
         <Row gutter={[12, 12]}>

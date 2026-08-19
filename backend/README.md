@@ -32,7 +32,7 @@ OPENAI_API_KEY=your_api_key_here
 python run_migrations.py
 ```
 
-SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260812_06`，默认 SQLite 已验证升级到该版本；正式 PostgreSQL 仍须先快照，并在发布窗口执行升级和多实例 Outbox 验收。
+SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260816_09`，SQLite lightweight migration 已覆盖同一组 Vault/记忆声明增量；正式 PostgreSQL 仍须先快照，并在发布窗口执行当前 head 升级、schema 核对和多实例 Outbox 验收。
 
 ### 4. 启动服务
 

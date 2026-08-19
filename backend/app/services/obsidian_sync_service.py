@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -26,10 +27,22 @@ logger = logging.getLogger(__name__)
 MAX_FILES_PER_SYNC = 500
 MAX_NOTE_CHARS = 200_000
 _SKIP_DIR_PREFIXES = (".",)  # .obsidian / .trash / .git 等
+_SYNC_ACTIVE = "active"
+_SYNC_MISSING = "missing"
+_SYNC_CONFLICT = "conflict"
+_CONFLICT_STRATEGIES = {"keep_local", "use_vault"}
 
 
 class VaultPathError(ValueError):
     """vault 路径不合法或不被允许。"""
+
+
+class VaultConflictError(ValueError):
+    """vault 冲突不存在或解决策略无效。"""
+
+
+class VaultFileError(ValueError):
+    """单个 vault 文件不适合安全同步。"""
 
 
 def validate_vault_path(vault_path: str) -> Path:
@@ -66,23 +79,129 @@ def _iter_markdown_files(vault: Path):
         yield path, relative.as_posix()
 
 
+def _filesystem_identity(path: Path) -> str:
+    """Return an identifier stable across same-volume renames and moves."""
+    stat = path.stat()
+    return f"{int(stat.st_dev)}:{int(stat.st_ino)}"
+
+
+def _read_vault_markdown(vault: Path, file_path: Path) -> str:
+    """Read one safe, complete UTF-8 Markdown file without silent truncation."""
+    if file_path.is_symlink():
+        raise VaultFileError("符号链接文件不允许同步")
+
+    try:
+        resolved = file_path.resolve(strict=True)
+        resolved.relative_to(vault)
+    except FileNotFoundError as exc:
+        raise VaultFileError("文件在读取前已发生变化") from exc
+    except ValueError as exc:
+        raise VaultFileError("文件不在 Vault 授权目录内") from exc
+
+    if not resolved.is_file():
+        raise VaultFileError("不是可读取的普通文件")
+
+    # UTF-8 code points are at most four bytes. Read one additional byte so a
+    # growing or oversized file is rejected before it can be partially stored.
+    max_bytes = MAX_NOTE_CHARS * 4
+    with resolved.open("rb") as source:
+        raw = source.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise VaultFileError("文件内容超过单篇同步上限")
+
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VaultFileError("文件不是 UTF-8 编码") from exc
+    if len(content) > MAX_NOTE_CHARS:
+        raise VaultFileError("文件内容超过单篇同步上限")
+    return content
+
+
+def _failure_summary(source_path: str, exc: Exception) -> dict[str, str]:
+    reason = str(exc) if isinstance(exc, VaultFileError) else "文件读取失败"
+    return {"source_path": source_path, "reason": reason}
+
+
+def _snapshot_hash(title: str, content: str) -> str:
+    payload = f"{title}\0{content}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _note_snapshot_hash(note: Note) -> str:
+    return _snapshot_hash(str(note.title or ""), str(note.content or ""))
+
+
+def _clear_conflict(note: Note) -> None:
+    note.source_conflict_title = None
+    note.source_conflict_content = None
+    note.source_conflict_hash = None
+    note.source_conflict_vault_id = None
+    note.source_conflict_file_id = None
+
+
+def _conflict_summary(note: Note) -> dict[str, Any]:
+    return {
+        "note_id": int(note.id),
+        "title": str(note.title or "未命名笔记"),
+        "source_path": str(note.source_path or ""),
+    }
+
+
+async def _attach_notes_to_concepts(
+    db: AsyncSession,
+    user_id: int,
+    notes: list[Note],
+) -> None:
+    for note in notes:
+        try:
+            from app.services.association_service import attach_note_to_concepts
+
+            await attach_note_to_concepts(db, user_id, note)
+        except Exception as exc:
+            logger.warning("vault 笔记挂图失败 note_id=%s err=%s", note.id, exc)
+
+
 async def sync_vault(
     db: AsyncSession,
     user_id: int,
     vault_path: str,
 ) -> dict[str, Any]:
-    """对 vault 做一次增量同步，返回统计。"""
+    """Pull one vault snapshot without deleting or overwriting user changes."""
     vault = validate_vault_path(vault_path)
+    vault_id = _filesystem_identity(vault)
 
     existing_result = await db.execute(
         select(Note).where(Note.user_id == user_id, Note.source_path.is_not(None))
     )
-    notes_by_path: dict[str, Note] = {
-        str(note.source_path): note for note in existing_result.scalars().all()
+    existing_notes = list(existing_result.scalars().all())
+    notes_by_identity: dict[str, Note] = {
+        str(note.source_file_id): note
+        for note in existing_notes
+        if note.source_vault_id == vault_id and note.source_file_id
     }
+    legacy_notes_by_path: dict[str, Note] = {
+        str(note.source_path): note
+        for note in existing_notes
+        if note.source_path and not note.source_vault_id and not note.source_file_id
+    }
+    vault_notes_by_identity = dict(notes_by_identity)
 
-    stats = {"scanned": 0, "created": 0, "updated": 0, "skipped": 0, "failed": 0, "truncated": False}
+    stats: dict[str, Any] = {
+        "scanned": 0,
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "failed": 0,
+        "truncated": False,
+        "renamed": 0,
+        "missing": 0,
+        "conflicted": 0,
+        "conflicts": [],
+        "failures": [],
+    }
     changed_notes: list[Note] = []
+    seen_file_ids: set[str] = set()
 
     for file_path, source_path in _iter_markdown_files(vault):
         if stats["scanned"] >= MAX_FILES_PER_SYNC:
@@ -90,9 +209,15 @@ async def sync_vault(
             break
         stats["scanned"] += 1
         try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")[:MAX_NOTE_CHARS]
+            content = _read_vault_markdown(vault, file_path)
             title = file_path.stem[:200] or "未命名笔记"
-            note = notes_by_path.get(source_path)
+            file_id = _filesystem_identity(file_path)
+            seen_file_ids.add(file_id)
+            incoming_hash = _snapshot_hash(title, content)
+            note = notes_by_identity.get(file_id)
+            matched_legacy_path = note is None and source_path in legacy_notes_by_path
+            if note is None:
+                note = legacy_notes_by_path.get(source_path)
             if note is None:
                 note = Note(
                     user_id=user_id,
@@ -101,31 +226,139 @@ async def sync_vault(
                     note_type="general",
                     tags="[]",
                     source_path=source_path,
+                    source_vault_id=vault_id,
+                    source_file_id=file_id,
+                    source_sync_hash=incoming_hash,
+                    source_sync_state=_SYNC_ACTIVE,
                 )
                 db.add(note)
                 await db.flush()
-                notes_by_path[source_path] = note
+                notes_by_identity[file_id] = note
+                vault_notes_by_identity[file_id] = note
                 stats["created"] += 1
                 changed_notes.append(note)
-            elif (note.content or "") != content or (note.title or "") != title:
-                note.title = title
-                note.content = content
-                stats["updated"] += 1
-                changed_notes.append(note)
             else:
-                stats["skipped"] += 1
+                previous_path = str(note.source_path or "")
+                if previous_path != source_path:
+                    note.source_path = source_path
+                    stats["renamed"] += 1
+
+                if matched_legacy_path:
+                    # A relative path alone is not enough evidence to overwrite a
+                    # legacy local note: it may be a different vault, or have
+                    # diverged before stable file identity was introduced.
+                    if _note_snapshot_hash(note) != incoming_hash:
+                        note.source_sync_state = _SYNC_CONFLICT
+                        note.source_conflict_title = title
+                        note.source_conflict_content = content
+                        note.source_conflict_hash = incoming_hash
+                        note.source_conflict_vault_id = vault_id
+                        note.source_conflict_file_id = file_id
+                        stats["conflicted"] += 1
+                        stats["conflicts"].append(_conflict_summary(note))
+                        continue
+
+                    note.source_vault_id = vault_id
+                    note.source_file_id = file_id
+                    notes_by_identity[file_id] = note
+                    vault_notes_by_identity[file_id] = note
+                    note.source_sync_hash = incoming_hash
+                    note.source_sync_state = _SYNC_ACTIVE
+                    _clear_conflict(note)
+                    stats["skipped"] += 1
+                    continue
+
+                note.source_vault_id = vault_id
+                note.source_file_id = file_id
+                notes_by_identity[file_id] = note
+                vault_notes_by_identity[file_id] = note
+
+                baseline_hash = str(note.source_sync_hash or _note_snapshot_hash(note))
+                remote_changed = incoming_hash != baseline_hash
+                local_changed = _note_snapshot_hash(note) != baseline_hash
+                if remote_changed and local_changed:
+                    note.source_sync_state = _SYNC_CONFLICT
+                    note.source_conflict_title = title
+                    note.source_conflict_content = content
+                    note.source_conflict_hash = incoming_hash
+                    stats["conflicted"] += 1
+                    stats["conflicts"].append(_conflict_summary(note))
+                elif remote_changed:
+                    note.title = title
+                    note.content = content
+                    note.source_sync_hash = incoming_hash
+                    note.source_sync_state = _SYNC_ACTIVE
+                    _clear_conflict(note)
+                    stats["updated"] += 1
+                    changed_notes.append(note)
+                else:
+                    note.source_sync_state = _SYNC_ACTIVE
+                    _clear_conflict(note)
+                    stats["skipped"] += 1
         except Exception as exc:
             stats["failed"] += 1
+            stats["failures"].append(_failure_summary(source_path, exc))
             logger.warning("vault 文件同步失败 path=%s err=%s", source_path, exc)
 
-    # 新/变更笔记挂概念图（失败不影响同步结果）
-    for note in changed_notes:
-        try:
-            from app.services.association_service import attach_note_to_concepts
+    # A partial or failed scan cannot distinguish an unseen file from a deleted
+    # file, so retain the last known state until a complete scan succeeds.
+    if not stats["truncated"] and stats["failed"] == 0:
+        for file_id, note in vault_notes_by_identity.items():
+            if file_id not in seen_file_ids and note.source_sync_state not in {_SYNC_MISSING, _SYNC_CONFLICT}:
+                note.source_sync_state = _SYNC_MISSING
+                stats["missing"] += 1
 
-            await attach_note_to_concepts(db, user_id, note)
-        except Exception as exc:
-            logger.warning("vault 笔记挂图失败 note_id=%s err=%s", note.id, exc)
+    await _attach_notes_to_concepts(db, user_id, changed_notes)
 
     await db.flush()
     return stats
+
+
+async def resolve_vault_conflict(
+    db: AsyncSession,
+    user_id: int,
+    note_id: int,
+    strategy: str,
+) -> dict[str, Any]:
+    """Resolve a stored pull-sync conflict without performing a vault write."""
+    selected = str(strategy or "").strip()
+    if selected not in _CONFLICT_STRATEGIES:
+        raise VaultConflictError("不支持的冲突解决策略")
+
+    result = await db.execute(
+        select(Note).where(
+            Note.id == note_id,
+            Note.user_id == user_id,
+            Note.source_sync_state == _SYNC_CONFLICT,
+        )
+    )
+    note = result.scalar_one_or_none()
+    if note is None or not note.source_conflict_hash:
+        raise VaultConflictError("未找到待解决的 vault 冲突")
+
+    if selected == "use_vault":
+        note.title = note.source_conflict_title or note.title
+        note.content = note.source_conflict_content or ""
+        await _attach_notes_to_concepts(db, user_id, [note])
+
+    if (
+        not note.source_vault_id
+        and note.source_conflict_vault_id
+        and note.source_conflict_file_id
+    ):
+        note.source_vault_id = note.source_conflict_vault_id
+        note.source_file_id = note.source_conflict_file_id
+
+    # Keep the accepted vault revision as the new comparison baseline. A later
+    # vault edit will surface as a new conflict if the local note still differs.
+    note.source_sync_hash = note.source_conflict_hash
+    note.source_sync_state = _SYNC_ACTIVE
+    _clear_conflict(note)
+    await db.flush()
+    return {
+        "ok": True,
+        "note_id": int(note.id),
+        "strategy": selected,
+        "title": str(note.title or "未命名笔记"),
+        "source_path": str(note.source_path or ""),
+    }

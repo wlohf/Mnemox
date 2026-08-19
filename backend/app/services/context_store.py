@@ -1,8 +1,8 @@
 """ContextStore：统一上下文检索底座接口（决策 D3，接口先行）。
 
 目标：收敛 RAG（Chroma）、笔记（关键词）、记忆（SQL）三套割裂检索。
-业务代码只依赖本接口；实现可替换——OpenViking spike 通过则由其实现，
-否则由 Chroma+关键词保底实现承接。本文件先交付接口契约 + 保底实现。
+聊天笔记检索已只依赖本接口；资料 RAG 与记忆路径仍待迁移。实现可替换，
+当前由 SQL 关键词保底实现承接；Qdrant 仅是待验证候选，OpenViking 已否决。
 
 分层加载语义（对齐 OpenViking L0/L1/L2）：
 - L0：标题/一行摘要（最省 token）
@@ -11,7 +11,10 @@
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy import or_, select
@@ -24,6 +27,13 @@ from app.models.note import Note
 SOURCE_TYPES = ("material", "note", "memory")
 L0, L1, L2 = 0, 1, 2
 _EXCERPT_CHARS = 200
+_NOTE_CANDIDATE_LIMIT = 80
+_NOTE_WORD_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
+_CJK_BIGRAM_RE = re.compile(r"^[\u4e00-\u9fff]{2}$")
+_NOTE_MARKDOWN_RE = re.compile(
+    r"(```.*?```|`[^`]*`|!\[[^\]]*\]\([^)]+\)|\[[^\]]*\]\([^)]+\)|[#>*_\-]+)",
+    re.S,
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,75 @@ class ContextStore(Protocol):
 def _excerpt(text: str, limit: int = _EXCERPT_CHARS) -> str:
     clean = " ".join(str(text or "").split())
     return clean[:limit]
+
+
+def _compact_note_text(value: Any, *, limit: int | None = None) -> str:
+    text = _NOTE_MARKDOWN_RE.sub(" ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    if limit is not None and len(text) > limit:
+        return text[: max(0, limit - 1)].rstrip() + "…"
+    return text
+
+
+def _note_query_tokens(value: str) -> tuple[str, ...]:
+    text = str(value or "").lower()
+    tokens = [match.group(0) for match in _NOTE_WORD_RE.finditer(text)]
+    for phrase in re.findall(r"[\u4e00-\u9fff]{4,}", text):
+        tokens.extend(phrase[index : index + 2] for index in range(len(phrase) - 1))
+    return tuple(dict.fromkeys(token for token in tokens if len(token) >= 2))
+
+
+def _parse_note_tags(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw = value
+    else:
+        try:
+            raw = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = [part.strip() for part in str(value or "").split(",")]
+    return [str(item).strip() for item in raw if str(item).strip()][:8] if isinstance(raw, list) else []
+
+
+def _note_excerpt(content: str, tokens: tuple[str, ...], *, limit: int = 220) -> str:
+    compact = _compact_note_text(content)
+    if not compact:
+        return ""
+    lowered = compact.lower()
+    first_index = min((lowered.find(token) for token in tokens if token in lowered), default=-1)
+    if first_index < 0:
+        return _compact_note_text(compact, limit=limit)
+    start = max(0, first_index - 60)
+    end = min(len(compact), first_index + limit)
+    prefix = "…" if start else ""
+    suffix = "…" if end < len(compact) else ""
+    return f"{prefix}{compact[start:end].strip()}{suffix}"
+
+
+def _score_note_context(note: Note, tokens: tuple[str, ...]) -> tuple[float, str]:
+    title = str(note.title or "")
+    content = str(note.content or "")
+    tags = " ".join(_parse_note_tags(note.tags))
+    title_text = title.lower()
+    tag_text = tags.lower()
+    haystack = f"{title} {tags} {content}".lower()
+    matches = [token for token in tokens if token in haystack]
+    if not matches:
+        return 0.0, ""
+    cjk_bigrams = [token for token in tokens if _CJK_BIGRAM_RE.fullmatch(token)]
+    matched_cjk_bigrams = [token for token in matches if _CJK_BIGRAM_RE.fullmatch(token)]
+    has_high_signal_cjk_match = any(
+        token in title_text or token in tag_text for token in matched_cjk_bigrams
+    )
+    if len(cjk_bigrams) >= 4 and len(matched_cjk_bigrams) < 3 and not has_high_signal_cjk_match:
+        return 0.0, ""
+    score = float(len(matches))
+    if any(token in title_text for token in matches):
+        score += 3.0
+    if any(token in tag_text for token in matches):
+        score += 1.5
+    if content.strip():
+        score += 0.2
+    return score, "关键词匹配：" + "、".join(matches[:5])
 
 
 class KeywordContextStore:
@@ -173,23 +252,68 @@ class KeywordContextStore:
         ]
 
     async def _retrieve_notes(
-        self, db: AsyncSession, user_id: int, keyword: str, limit: int
+        self, db: AsyncSession, user_id: int, query: str, limit: int
     ) -> list[ContextItem]:
-        stmt = select(Note).where(Note.user_id == user_id)
-        if keyword:
-            like = f"%{keyword}%"
-            stmt = stmt.where(or_(Note.title.ilike(like), Note.content.ilike(like), Note.tags.ilike(like)))
-        result = await db.execute(stmt.order_by(Note.updated_at.desc()).limit(limit))
-        return [
-            ContextItem(
-                source_type="note",
-                source_id=int(note.id),
-                title=str(note.title or ""),
-                excerpt=_excerpt(note.content or ""),
-                score=self._score(keyword, note.title, note.content),
+        tokens = _note_query_tokens(query)
+        if not tokens:
+            result = await db.execute(
+                select(Note)
+                .where(Note.user_id == user_id)
+                .order_by(Note.updated_at.desc(), Note.created_at.desc(), Note.id.desc())
+                .limit(limit)
             )
-            for note in result.scalars().all()
-        ]
+            return [
+                ContextItem(
+                    source_type="note",
+                    source_id=int(note.id),
+                    title=_compact_note_text(note.title or "未命名笔记", limit=80),
+                    excerpt=_note_excerpt(note.content or "", ()),
+                    score=0.1,
+                    metadata={
+                        "tags": _parse_note_tags(note.tags),
+                        "reason": "",
+                        "updated_at": note.updated_at or note.created_at,
+                        "retrieval_mode": "keyword_sql",
+                    },
+                )
+                for note in result.scalars().all()
+            ]
+
+        result = await db.execute(
+            select(Note)
+            .where(Note.user_id == user_id)
+            .order_by(Note.updated_at.desc(), Note.created_at.desc(), Note.id.desc())
+            .limit(_NOTE_CANDIDATE_LIMIT)
+        )
+        ranked: list[ContextItem] = []
+        for index, note in enumerate(result.scalars().all()):
+            score, reason = _score_note_context(note, tokens)
+            if score <= 0:
+                continue
+            excerpt = _note_excerpt(note.content or "", tokens)
+            if not excerpt:
+                continue
+            updated_at = note.updated_at or note.created_at
+            ranked.append(
+                ContextItem(
+                    source_type="note",
+                    source_id=int(note.id),
+                    title=_compact_note_text(note.title or "未命名笔记", limit=80),
+                    excerpt=excerpt,
+                    score=score + max(0.0, (_NOTE_CANDIDATE_LIMIT - index) / _NOTE_CANDIDATE_LIMIT) * 0.1,
+                    metadata={
+                        "tags": _parse_note_tags(note.tags),
+                        "reason": reason,
+                        "updated_at": updated_at,
+                        "retrieval_mode": "keyword_sql",
+                    },
+                )
+            )
+        ranked.sort(
+            key=lambda item: (item.score, item.metadata.get("updated_at") or datetime.min, item.source_id),
+            reverse=True,
+        )
+        return ranked[:limit]
 
     async def _retrieve_memories(
         self, db: AsyncSession, user_id: int, keyword: str, limit: int

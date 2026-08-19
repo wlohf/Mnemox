@@ -14,6 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import UserMemory
+from app.services.memory_declaration_service import (
+    record_automatic_memory_declaration,
+    sync_memory_declaration_review_status,
+)
 
 CORE_PROFILE_KEY = "agent_core_profile"
 CORE_PROFILE_CATEGORY = "system"
@@ -167,6 +171,9 @@ async def upsert_agent_memory(
     expires_at: datetime | None = None,
     lock: bool | None = None,
     respect_lock: bool = True,
+    record_declaration: bool = True,
+    declaration_created_by: str = "agent",
+    declaration_model_version: str = "agent-memory-v1",
 ) -> UserMemory:
     """Create or update a user-scoped Agent memory unless an existing row is locked."""
 
@@ -180,6 +187,27 @@ async def upsert_agent_memory(
         clean_status = "staged"
     clean_type = memory_type if memory_type in {"semantic", "episodic", "profile"} else "semantic"
 
+    now = _now()
+    # Source-specific idempotency is useful for agent-generated entries, but
+    # it must never bypass a direct user correction that has the same semantic
+    # key. Check locked user memories by key before narrowing to a source
+    # identity, otherwise a new source could create a contradictory sibling.
+    if respect_lock:
+        locked_result = await db.execute(
+            select(UserMemory)
+            .where(
+                UserMemory.user_id == user_id,
+                UserMemory.memory_key == clean_key,
+                UserMemory.is_locked == 1,
+            )
+            .order_by(UserMemory.id.desc())
+            .limit(1)
+        )
+        locked_row = locked_result.scalar_one_or_none()
+        if locked_row:
+            locked_row.last_seen_at = now
+            return locked_row
+
     conditions = [UserMemory.user_id == user_id, UserMemory.memory_key == clean_key]
     if source_type and source_id:
         conditions = [
@@ -190,7 +218,6 @@ async def upsert_agent_memory(
 
     result = await db.execute(select(UserMemory).where(*conditions).order_by(UserMemory.id.desc()).limit(1))
     row = result.scalar_one_or_none()
-    now = _now()
     evidence_value = _json_dumps(evidence or [])
 
     if row:
@@ -234,6 +261,15 @@ async def upsert_agent_memory(
 
     await db.flush()
     await db.refresh(row)
+    if record_declaration:
+        await record_automatic_memory_declaration(
+            db,
+            memory=row,
+            user_id=user_id,
+            created_by=declaration_created_by,
+            model_version=declaration_model_version,
+            observed_at=now,
+        )
     return row
 
 
@@ -297,6 +333,12 @@ async def confirm_memory_candidate(db: AsyncSession, user_id: int, memory_id: in
     if lock:
         row.is_locked = 1
     await db.flush()
+    await sync_memory_declaration_review_status(
+        db,
+        user_id=user_id,
+        memory_id=memory_id,
+        review_status=CONFIRMED,
+    )
     await db.refresh(row)
     return memory_to_dict(row)
 
@@ -313,6 +355,12 @@ async def ignore_memory_candidate(
     row.status = "ignored"
     row.last_seen_at = _now()
     await db.flush()
+    await sync_memory_declaration_review_status(
+        db,
+        user_id=user_id,
+        memory_id=memory_id,
+        review_status=row.review_status,
+    )
     await db.refresh(row)
     return memory_to_dict(row)
 
@@ -404,5 +452,6 @@ async def rebuild_core_profile(db: AsyncSession, user_id: int) -> dict[str, Any]
         memory_type=CORE_PROFILE_TYPE,
         lock=True,
         respect_lock=False,
+        record_declaration=False,
     )
     return {"memory": memory_to_dict(memory), "profile": payload}

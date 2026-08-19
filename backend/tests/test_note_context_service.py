@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -7,11 +8,32 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.database import Base
 from app.models.note import Note
 from app.models.user import User
+from app.services.context_store import ContextItem, set_context_store
 from app.services.note_context_service import (
     build_note_context_prompt,
     search_note_context,
     to_note_context_indicators,
 )
+
+
+class _RecordingContextStore:
+    def __init__(self, items: list[ContextItem]):
+        self.items = items
+        self.calls: list[dict] = []
+
+    async def retrieve(self, db, user_id, query, *, top_k=5, source_types=()):
+        self.calls.append(
+            {"db": db, "user_id": user_id, "query": query, "top_k": top_k, "source_types": source_types}
+        )
+        return self.items
+
+
+class _FailingContextStore:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    async def retrieve(self, db, user_id, query, *, top_k=5, source_types=()):
+        raise self.error
 
 
 class NoteContextServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -26,6 +48,7 @@ class NoteContextServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.engine.dispose()
         self.tmpdir.cleanup()
+        set_context_store(None)
 
     async def _create_user(self, username: str) -> User:
         async with self.sessionmaker() as session:
@@ -74,6 +97,105 @@ class NoteContextServiceTests(unittest.IsolatedAsyncioTestCase):
             hits = await search_note_context(session, user_id=intruder.id, query="奖励函数", limit=3)
 
         self.assertEqual(hits, [])
+
+    async def test_search_note_context_uses_configured_store_and_maps_metadata(self):
+        store = _RecordingContextStore(
+            [
+                ContextItem(
+                    source_type="note",
+                    source_id=44,
+                    title="替换实现笔记",
+                    excerpt="来自可替换 ContextStore 的摘录。",
+                    score=8.5,
+                    metadata={
+                        "tags": ["测试"],
+                        "reason": "关键词匹配：替换",
+                        "updated_at": datetime(2026, 8, 9, 12, 0, 0),
+                        "retrieval_mode": "keyword_sql",
+                    },
+                )
+            ]
+        )
+        set_context_store(store)
+
+        async with self.sessionmaker() as session:
+            hits = await search_note_context(session, user_id=123, query="替换", limit=3)
+
+        self.assertEqual(store.calls[0]["source_types"], ("note",))
+        self.assertEqual(store.calls[0]["top_k"], 3)
+        self.assertEqual(hits[0].id, 44)
+        self.assertEqual(hits[0].tags, ["测试"])
+        self.assertEqual(hits[0].retrieval_mode, "keyword_sql")
+
+    async def test_search_note_context_observes_updates_and_deletions(self):
+        user = await self._create_user("adapter_lifecycle")
+        note_id = await self._create_note(user.id, "学习记录", "旧内容初始关键词。")
+
+        async with self.sessionmaker() as session:
+            note = await session.get(Note, note_id)
+            note.content = "新内容更新关键词。"
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            hits = await search_note_context(session, user_id=user.id, query="新内容更新关键词")
+            note = await session.get(Note, note_id)
+            await session.delete(note)
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            deleted_hits = await search_note_context(session, user_id=user.id, query="新内容更新关键词")
+
+        self.assertEqual([hit.id for hit in hits], [note_id])
+        self.assertEqual(deleted_hits, [])
+
+    async def test_search_note_context_logs_redacted_retrieval_telemetry(self):
+        query = "私人查询词"
+        excerpt = "绝不能写进日志的笔记摘录"
+        set_context_store(
+            _RecordingContextStore(
+                [
+                    ContextItem(
+                        source_type="note",
+                        source_id=1,
+                        title="私有标题",
+                        excerpt=excerpt,
+                        score=1.0,
+                        metadata={"retrieval_mode": "keyword_sql"},
+                    )
+                ]
+            )
+        )
+
+        async with self.sessionmaker() as session:
+            with self.assertLogs("app.services.note_context_service", level="INFO") as logs:
+                await search_note_context(session, user_id=1, query=query)
+
+        output = "\n".join(logs.output)
+        self.assertIn("event=contextstore.retrieve", output)
+        self.assertIn("source_types=note", output)
+        self.assertIn("result_count=1", output)
+        self.assertIn("retrieval_mode=keyword_sql", output)
+        self.assertNotIn(query, output)
+        self.assertNotIn(excerpt, output)
+
+    async def test_search_note_context_failure_logs_only_fixed_metadata(self):
+        private_values = (
+            "private-query",
+            "private-title",
+            "private-excerpt",
+            "private-prompt",
+        )
+        set_context_store(_FailingContextStore(RuntimeError("; ".join(private_values))))
+
+        async with self.sessionmaker() as session:
+            with self.assertLogs("app.services.note_context_service", level="WARNING") as logs:
+                with self.assertRaises(RuntimeError):
+                    await search_note_context(session, user_id=1, query=private_values[0])
+
+        output = "\n".join(logs.output)
+        self.assertIn("event=contextstore.retrieve status=failure source_types=note", output)
+        for value in private_values:
+            self.assertNotIn(value, output)
 
     async def test_build_note_context_prompt_wraps_untrusted_note_content(self):
         user = await self._create_user("prompt_user")
