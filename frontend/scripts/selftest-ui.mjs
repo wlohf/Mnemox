@@ -380,7 +380,7 @@ async function run() {
     if (mockState.getAgentExecuteCount() !== 0) {
       throw new Error('Agent execute endpoint was called before confirmation')
     }
-    await confirmation.getByRole('button', { name: '取消' }).click()
+    await confirmation.getByRole('button', { name: /取\s*消/ }).click()
     await confirmation.waitFor({ state: 'hidden' })
     if (mockState.getAgentExecuteCount() !== 0) {
       throw new Error('Cancelling an Agent draft caused a write side effect')
