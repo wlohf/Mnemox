@@ -342,7 +342,7 @@ async function run() {
 
     await page.goto(`${BASE_URL}/pomodoro`, { waitUntil: 'networkidle' })
     await assertText(page.locator('.mnemox-pomodoro-quote'), '如果一个人不知道他要驶向哪个码头')
-    await page.getByPlaceholder('本轮专注任务').fill('自测番茄')
+    await page.getByPlaceholder('临时专注任务').fill('自测番茄')
     await page.getByRole('button', { name: '开始专注' }).click()
     await assertText(page.locator('.mnemox-pomodoro-task'), '自测番茄')
     results.push('pomodoro-page-ok')
