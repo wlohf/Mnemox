@@ -7,6 +7,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:e2e": "node scripts/selftest-ui.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
@@ -44,6 +45,7 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "jsdom": "^29.1.1",
+    "playwright": "^1.62.1",
     "typescript": "^5.2.2",
     "vite": "^8.0.11",
     "vitest": "^4.1.5"

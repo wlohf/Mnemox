@@ -3,6 +3,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 function getRepoRoot(appPath) {
+  if (path.win32.isAbsolute(appPath)) {
+    const normalized = String(appPath).replace(/\\/g, '/').replace(/\/+$/, '')
+    return normalized.slice(0, normalized.lastIndexOf('/'))
+  }
   return path.resolve(appPath, '..')
 }
 
@@ -35,7 +39,8 @@ function getFrontendDistDir({ isPackaged, resourcesPath, appPath }) {
 }
 
 function sqliteUrlFromPath(dbPath) {
-  return `sqlite+aiosqlite:///${path.resolve(dbPath).replace(/\\/g, '/')}`
+  const absolutePath = path.win32.isAbsolute(dbPath) ? dbPath : path.resolve(dbPath)
+  return `sqlite+aiosqlite:///${absolutePath.replace(/\\/g, '/')}`
 }
 
 function ensureStableSecret(userData) {

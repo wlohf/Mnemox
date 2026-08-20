@@ -1,9 +1,11 @@
-import { createRequire } from 'module'
+import { mkdir } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require('C:/Users/xyleisure/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/.pnpm/playwright@1.60.0/node_modules/playwright')
+const { chromium } = require('playwright')
 
-const BASE_URL = 'http://127.0.0.1:5173'
+const BASE_URL = process.env.MNEMOX_E2E_BASE_URL || 'http://127.0.0.1:5173'
+const ARTIFACT_DIR = process.env.MNEMOX_E2E_ARTIFACT_DIR || 'output/playwright'
 
 const today = '2026-06-02'
 const yesterday = '2026-06-01'
@@ -79,6 +81,13 @@ async function seedOfflineNotes(page) {
 }
 
 async function mockRoutes(page) {
+  const state = {
+    agentExecuteCount: 0,
+    nextConversationId: 41,
+    conversations: [],
+    messagesByConversation: new Map(),
+  }
+
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -207,7 +216,88 @@ async function mockRoutes(page) {
       return
     }
 
-    if (pathname === '/api/conversations' || pathname === '/api/chat-projects' || pathname.startsWith('/api/conversations/') || pathname.startsWith('/api/chat-projects/')) {
+    if (pathname === '/api/agent/write/draft' && method === 'POST') {
+      await route.fulfill(json({
+        intent: 'create_note',
+        confidence: 0.96,
+        summary: '将创建一条可审核的验收笔记。',
+        requires_confirmation: true,
+        duplicate_warnings: [],
+        draft: {
+          title: 'Agent 草案确认验收',
+          note_type: 'general',
+          tags: ['验收'],
+          content: '只有用户确认后才允许写入。',
+        },
+      }))
+      return
+    }
+
+    if (pathname === '/api/agent/write/execute' && method === 'POST') {
+      state.agentExecuteCount += 1
+      await route.fulfill(json({
+        status: 'completed',
+        intent: 'create_note',
+        created: { id: 99 },
+        message: '已创建验收笔记',
+      }))
+      return
+    }
+
+    if (pathname === '/api/conversations') {
+      if (method === 'POST') {
+        const payload = JSON.parse(request.postData() || '{}')
+        const conversation = {
+          id: state.nextConversationId++,
+          title: payload.title || '新对话',
+          project_id: payload.project_id ?? null,
+          is_pinned: false,
+          summary: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+        state.conversations.unshift(conversation)
+        state.messagesByConversation.set(conversation.id, [])
+        await route.fulfill(json(conversation))
+      } else {
+        await route.fulfill(json(state.conversations))
+      }
+      return
+    }
+
+    const conversationMessagesMatch = pathname.match(/^\/api\/conversations\/(\d+)\/messages$/)
+    if (conversationMessagesMatch && method === 'POST') {
+      const conversationId = Number(conversationMessagesMatch[1])
+      const payload = JSON.parse(request.postData() || '{}')
+      const existing = state.messagesByConversation.get(conversationId) || []
+      const created = (payload.messages || []).map((message, index) => ({
+        id: existing.length + index + 1,
+        role: message.role,
+        content: message.content,
+        image_data: message.image_data || null,
+        created_at: new Date().toISOString(),
+      }))
+      state.messagesByConversation.set(conversationId, [...existing, ...created])
+      await route.fulfill(json({ messages: created }))
+      return
+    }
+
+    const conversationMatch = pathname.match(/^\/api\/conversations\/(\d+)$/)
+    if (conversationMatch && method === 'GET') {
+      const conversationId = Number(conversationMatch[1])
+      const conversation = state.conversations.find(item => item.id === conversationId)
+      if (!conversation) {
+        await route.fulfill(json({ detail: 'not found' }, 404))
+        return
+      }
+      await route.fulfill(json({
+        ...conversation,
+        messages: state.messagesByConversation.get(conversationId) || [],
+      }))
+      return
+    }
+
+    if (pathname === '/api/chat-projects' || pathname.startsWith('/api/chat-projects/')) {
       await route.fulfill(json([]))
       return
     }
@@ -228,6 +318,10 @@ async function mockRoutes(page) {
   await page.route('**/health', async (route) => {
     await route.fulfill({ status: 200, body: 'ok' })
   })
+
+  return {
+    getAgentExecuteCount: () => state.agentExecuteCount,
+  }
 }
 
 async function assertText(locator, expected) {
@@ -240,43 +334,89 @@ async function assertText(locator, expected) {
 async function run() {
   const browser = await chromium.launch({ headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-  await seedOfflineNotes(page)
-  await mockRoutes(page)
+  try {
+    await page.clock.setFixedTime(new Date(`${today}T12:00:00.000Z`))
+    await seedOfflineNotes(page)
+    const mockState = await mockRoutes(page)
+    const results = []
 
-  const results = []
+    await page.goto(`${BASE_URL}/pomodoro`, { waitUntil: 'networkidle' })
+    await assertText(page.locator('.mnemox-pomodoro-quote'), '如果一个人不知道他要驶向哪个码头')
+    await page.getByPlaceholder('本轮专注任务').fill('自测番茄')
+    await page.getByRole('button', { name: '开始专注' }).click()
+    await assertText(page.locator('.mnemox-pomodoro-task'), '自测番茄')
+    results.push('pomodoro-page-ok')
 
-  await page.goto(`${BASE_URL}/pomodoro`, { waitUntil: 'networkidle' })
-  await assertText(page.locator('.mnemox-pomodoro-quote'), '如果一个人不知道他要驶向哪个码头')
-  await page.getByPlaceholder('本轮专注任务').fill('自测番茄')
-  await page.getByRole('button', { name: '开始专注' }).click()
-  await assertText(page.locator('.mnemox-pomodoro-task'), '自测番茄')
-  results.push('pomodoro-page-ok')
+    await page.goto(`${BASE_URL}/plans?date=${today}`, { waitUntil: 'networkidle' })
+    await assertText(page.locator('.mnemox-doc-header'), today)
+    await assertText(page.locator('.mnemox-task-list'), '优化 Mnemox 右侧今日任务')
+    await page.locator('.mnemox-doc-toolbar').getByRole('button', { name: 'AI 生成' }).click()
+    await assertText(page.locator('.mnemox-task-list'), 'AI 生成的第一项任务')
+    results.push('plans-workbench-ok')
 
-  await page.goto(`${BASE_URL}/plans?date=${today}`, { waitUntil: 'networkidle' })
-  await assertText(page.locator('.mnemox-doc-header'), today)
-  await assertText(page.locator('.mnemox-task-list'), '优化 Mnemox 右侧今日任务')
-  await page.locator('.mnemox-doc-toolbar').getByRole('button', { name: 'AI 生成' }).click()
-  await assertText(page.locator('.mnemox-task-list'), 'AI 生成的第一项任务')
-  results.push('plans-workbench-ok')
+    await page.goto(`${BASE_URL}/notes`, { waitUntil: 'networkidle' })
+    await assertText(page.locator('.mnemox-folder-list'), '全部笔记')
+    await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
+    await page.getByRole('button', { name: '未分类 1' }).click()
+    await assertText(page.locator('.mnemox-file-list'), '临时想法')
+    await page.getByRole('button', { name: '项目 1' }).click()
+    await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
+    results.push('notes-workbench-ok')
 
-  await page.goto(`${BASE_URL}/notes`, { waitUntil: 'networkidle' })
-  await assertText(page.locator('.mnemox-folder-list'), '全部笔记')
-  await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
-  await page.getByRole('button', { name: '未分类 1' }).click()
-  await assertText(page.locator('.mnemox-file-list'), '临时想法')
-  await page.getByRole('button', { name: '项目 1' }).click()
-  await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
-  results.push('notes-workbench-ok')
+    await page.goto(`${BASE_URL}/`, { waitUntil: 'networkidle' })
+    await assertText(page.locator('.mnemox-right-sidebar-content'), '今日任务')
+    await assertText(page.locator('.mnemox-right-sidebar-content'), '优化 Mnemox 右侧今日任务')
+    await page.locator('button').filter({ hasText: '编辑' }).first().click()
+    await page.waitForURL(`**/plans?date=${today}`)
+    results.push('sidebar-task-link-ok')
 
-  await page.goto(`${BASE_URL}/`, { waitUntil: 'networkidle' })
-  await assertText(page.locator('.mnemox-right-sidebar-content'), '今日任务')
-  await assertText(page.locator('.mnemox-right-sidebar-content'), '优化 Mnemox 右侧今日任务')
-  await page.locator('button').filter({ hasText: '编辑' }).first().click()
-  await page.waitForURL(`**/plans?date=${today}`)
-  results.push('sidebar-task-link-ok')
+    await page.goto(`${BASE_URL}/`, { waitUntil: 'networkidle' })
+    const composer = page.getByPlaceholder('输入问题，或让 AI 基于当前资料生成计划...')
+    await composer.fill('帮我记个笔记：验收草案')
+    await page.getByRole('button', { name: '发送' }).click()
+    let confirmation = page.locator('.ant-modal').filter({ hasText: '确认创建笔记' })
+    await confirmation.waitFor()
+    await assertText(confirmation, '只有用户确认后才允许写入。')
+    if (mockState.getAgentExecuteCount() !== 0) {
+      throw new Error('Agent execute endpoint was called before confirmation')
+    }
+    await confirmation.getByRole('button', { name: '取消' }).click()
+    await confirmation.waitFor({ state: 'hidden' })
+    if (mockState.getAgentExecuteCount() !== 0) {
+      throw new Error('Cancelling an Agent draft caused a write side effect')
+    }
 
-  console.log(JSON.stringify({ ok: true, results }, null, 2))
-  await browser.close()
+    await composer.fill('帮我记个笔记：验收草案')
+    await page.getByRole('button', { name: '发送' }).click()
+    confirmation = page.locator('.ant-modal').filter({ hasText: '确认创建笔记' })
+    await confirmation.waitFor()
+    if (mockState.getAgentExecuteCount() !== 0) {
+      throw new Error('Agent execute endpoint was called while the draft was pending')
+    }
+    const executeResponse = page.waitForResponse(response => (
+      new URL(response.url()).pathname === '/api/agent/write/execute'
+      && response.request().method() === 'POST'
+    ))
+    await confirmation.getByRole('button', { name: '确认写入' }).click()
+    await executeResponse
+    await confirmation.waitFor({ state: 'hidden' })
+    if (mockState.getAgentExecuteCount() !== 1) {
+      throw new Error(`Expected exactly one confirmed Agent write, got ${mockState.getAgentExecuteCount()}`)
+    }
+    await assertText(page.locator('.ant-message-notice-content').last(), '已创建验收笔记')
+    results.push('agent-draft-confirmation-ok')
+
+    console.log(JSON.stringify({ ok: true, results }, null, 2))
+  } catch (error) {
+    await mkdir(ARTIFACT_DIR, { recursive: true })
+    await page.screenshot({
+      path: `${ARTIFACT_DIR}/browser-acceptance-failure.png`,
+      fullPage: true,
+    })
+    throw error
+  } finally {
+    await browser.close()
+  }
 }
 
 run().catch(async (error) => {
