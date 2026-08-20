@@ -252,13 +252,13 @@ user_concept_state
 
 默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260816_09`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
 
-一次性 PostgreSQL 16 演练库已从 v1.3 基线升级并验证早期 Phase 1 链路：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。后续迁移已通过 SQLite lightweight migration 与 Alembic 离线 DDL 回归，但当前 head `20260816_09` 仍需在正式 PostgreSQL 发布窗口连同多实例 worker、`SKIP LOCKED`、策略升级、心跳和 Vault/记忆声明 schema 验收。正式环境回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。状态重算只消费截至重算时间的证据，记录最新来源事件、可靠度、模型版本、更新时间和解释摘要；读取已有状态时会刷新时间相关的置信度与遗忘风险。
+一次性 PostgreSQL 16 演练库已从 v1.3 基线升级并验证早期 Phase 1 链路：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。当前 CI 配置进一步为每次变更启动一次性 PostgreSQL 16 空库，通过生产入口升级到 `20260816_09`，验收真实 `SKIP LOCKED`、共享策略升级、双 worker exactly-once 投影和独立心跳，再执行 `alembic check`；该门禁在远程 CI 实跑通过前只算已实现。正式发布窗口仍需在快照保护下核对生产数据、Vault/记忆声明 schema 和回滚准备。正式环境回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。状态重算只消费截至重算时间的证据，记录最新来源事件、可靠度、模型版本、更新时间和解释摘要；读取已有状态时会刷新时间相关的置信度与遗忘风险。
 
 ### 6.4 事件与投影流
 
 目标写入顺序为“领域数据 + `LearningEvent` + `projection_outbox` 同一事务提交 -> 幂等消费者投影”。`record_learning_event` 现在会在同一 SQLAlchemy 事务中创建 outbox 行；`ProjectionOutbox` 具备用户/概念范围、幂等键、模型/载荷版本、`pending/processing/processed/failed` 状态、尝试次数、锁定时间、错误信息和可用时间。`projection_outbox_service` 支持重复消费、崩溃后回收、指数退避、按用户/概念/时间范围重放和状态重建；Review/Anki 完成复习会在请求事务内只消费对应 `source_event_id` 的投影，失败仍保留为可恢复 outbox 行。删除用户或概念会级联清理 outbox、证据和状态。
 
-当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。全局 worker 直接以 PostgreSQL `FOR UPDATE SKIP LOCKED` 认领任务，使并发实例能跳过忙行并继续分配其他用户工作；认领后按用户排序取得 transaction advisory lock。用户范围 API/replay 先取得其用户 advisory lock，再领取行；其行锁冲突同样使用 `SKIP LOCKED` 跳过。SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`OUTBOX_WORKER_ID` 是可配置的逻辑前缀，每个运行时都会持久化独立的心跳 ID；受保护的 `/internal/outbox/metrics` 聚合未完成队列、跨实例活跃/轮询失败 worker、DLQ 和告警，不返回任务载荷或异常正文。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。真实 PostgreSQL 多实例验收仍是发布窗口项目。
+当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。全局 worker 直接以 PostgreSQL `FOR UPDATE SKIP LOCKED` 认领任务，使并发实例能跳过忙行并继续分配其他用户工作；认领后按用户排序取得 transaction advisory lock。用户范围 API/replay 先取得其用户 advisory lock，再领取行；其行锁冲突同样使用 `SKIP LOCKED` 跳过。SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`OUTBOX_WORKER_ID` 是可配置的逻辑前缀，每个运行时都会持久化独立的心跳 ID；受保护的 `/internal/outbox/metrics` 聚合未完成队列、跨实例活跃/轮询失败 worker、DLQ 和告警，不返回任务载荷或异常正文。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。真实 PostgreSQL 16 多实例门禁已编码，远程 CI 通过与正式生产升级仍是发布收口项目。
 
 学习者模型 API 位于 `/api/learner-model`：概念状态及解释、分页证据历史、人工修正/撤销、单概念或批量重算、按用户/概念/时间范围重放，以及用户隔离的 outbox 处理入口均已提供。前端 `/mastery` 页面展示掌握度、置信度、遗忘风险、可靠度、模型版本、计算依据和证据历史，并区分直接、间接、人工和 legacy 来源。
 
@@ -319,6 +319,8 @@ cd frontend
 npm test
 npm run build
 npm run lint
+# 先启动 Vite，并安装 Playwright Chromium
+npm run test:e2e
 
 # 桌面端
 cd desktop
@@ -327,19 +329,21 @@ npm test
 
 发布前还应执行 `git diff --check`，并验证版本号、发布清单和桌面安装包资产保持一致。
 
+CI 还会在独立 PostgreSQL 16 服务库上依次执行 `python run_migrations.py`、`python -m pytest -q tests/acceptance/test_postgres_release_gate.py` 与 `python -m alembic check`。该用例只有在 `POSTGRES_ACCEPTANCE_DATABASE_URL` 明确指向 `postgresql+asyncpg` 时运行，普通 SQLite 单元套件会跳过它。
+
 ## 9. 当前技术债与优化方向
 
 | 优先级 | 事项 | 原因 |
 | --- | --- | --- |
-| P0 | 正式 PostgreSQL 发布升级 | 一次性 PostgreSQL 16 演练已覆盖早期 Phase 1 链路；正式库仍需在发布窗口升级到 `20260816_09`，并执行多实例 worker、`SKIP LOCKED`、策略升级、心跳、Vault/记忆声明 schema、快照、核对与回滚准备。 |
-| P0 | 真实关键路径 E2E | 当前“关键路径”主要是 ASGI API 冒烟；需要浏览器/桌面端覆盖草案确认与执行。 |
+| P0 | 正式 PostgreSQL 发布升级 | PostgreSQL 16 自动门禁已实现，待远程 CI 形成通过证据；正式库仍需在发布窗口升级到 `20260816_09`，并完成快照、生产数据/Vault/记忆声明 schema 核对与回滚准备。 |
+| P0 | 真实关键路径 E2E | Chromium 门禁已覆盖 Agent 草案取消无副作用与确认执行，待 CI 实跑；仍需真实后端集成和 Windows Electron 启动/安装包 E2E。 |
 | P0 | 多用户越权审计与回归测试 | 产品存在多领域详情、写入和文件访问接口，必须持续验证资源归属。 |
 | P0 | 统一 Prompt Injection 防护 | RAG、笔记、搜索和工具返回均会进入模型上下文。 |
 | P2 | RAG 状态前端回归 | 该能力已在 v1.2.0 主体落地，后续随检索迁移继续验证降级状态、最近错误和提示一致性。 |
 | P1 | 拆分超大模块 | `learning`、`analytics`、Agent/Coach 相关实现的复杂度持续上升。 |
 | P1 | 检索碎片化与 ContextStore 迁移 | 聊天笔记已完成首条接口迁移；资料 RAG、记忆、独立检索投影、混合召回、质量集及完整 `ingest/forget` 生命周期仍待统一。 |
 | P1 | 学习者模型数据边界收口 | 后端状态/证据 API、人工修正、批量重算、用户隔离、前端证据下钻和离线校准基线已实现；真实 holdout 数据不足，推荐排序待补。 |
-| P1 | 事件投影与数据生命周期 | `projection_outbox`、同事务写入、事件级在线消费、幂等消费、重试/崩溃恢复、525 条分页重放、范围隔离、删除级联、常驻 worker、DLQ、跨实例聚合指标和告警已验证；ContextStore/图谱/记忆投影及真实 PostgreSQL 多实例发布验收待补。 |
+| P1 | 事件投影与数据生命周期 | `projection_outbox`、同事务写入、事件级在线消费、幂等消费、重试/崩溃恢复、525 条分页重放、范围隔离、删除级联、常驻 worker、DLQ、跨实例聚合指标和告警已验证；PostgreSQL 16 多实例门禁已实现待 CI，ContextStore/图谱/记忆投影及正式发布验收待补。 |
 | P1 | 时态记忆语义 | `MemoryDeclaration` 已覆盖来源、有效时间、审核和替代历史；仍需验证冲突/纠错/删除闭环、筛选 episode 和 Graphiti 候选适配。 |
 | P1 | Obsidian 同步一致性 | 稳定 Vault/文件身份、冲突候选、路径与文件安全保护、扫描失败保护和用户提示已完成；真实多 Vault 冲突/删除、并发幂等、watchdog 与写回仍待验收。 |
 | P1 | 联想与 Coach 反馈闭环 | 显式联想已接入 Coach，并记录 shown/accepted/completed；仍需积累真实样本、验证行为变化归因和保守阈值。 |
@@ -355,7 +359,7 @@ npm test
 
 | 方向 | 摘要 | 决策 | 阶段 |
 | --- | --- | --- | --- |
-| 规范数据与投影 | 关系型核心保留；补学习证据、用户概念状态、记忆声明与 outbox | 新 ADR §2/§4 | 🔶 学习证据/用户概念状态、outbox/API 与人工/自动 SQL 记忆声明已验证；其他通用投影和正式 PostgreSQL 多实例验收待补 |
+| 规范数据与投影 | 关系型核心保留；补学习证据、用户概念状态、记忆声明与 outbox | 新 ADR §2/§4 | 🔶 学习证据/用户概念状态、outbox/API 与人工/自动 SQL 记忆声明已验证；PostgreSQL 16 多实例门禁已实现待 CI，其他通用投影和正式发布验收待补 |
 | 复习调度 | `py-fsrs` 替换手写 SM-2 风格调度 | 保留 | ✅ FSRS 优先 + SM-2 降级；版本化迁移、数据保留回归、离线 DDL 和一次性 PostgreSQL 16 演练完成 |
 | 检索底座 | `ContextStore` 统一检索；Qdrant 为 Spike 候选 | 新 ADR §3/§5 | 🔶 OpenViking 已否决；聊天笔记已完成 ContextStore 接口迁移，当前是关键词 SQL 基线；资料 RAG 仍使用 Chroma，独立投影与完整生命周期未完成 |
 | 概念图谱 | 可审查的关系、证据和人工修正；Neo4j 为条件 Spike | 新 ADR §3/§5 | 🔶 图谱/联想计算有；关系质量、人工编辑、学习者状态和下钻未完成 |
