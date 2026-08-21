@@ -13,6 +13,7 @@ from app.models.material import Material
 from app.models.chat import ChatProjectMaterial, ChatProject
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.material_retrieval_backend import MaterialIndexRebuilder
 
 
 router = APIRouter()
@@ -266,59 +267,14 @@ async def reindex_all(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """重新索引当前用户的所有资料。"""
+    """重新索引当前用户的所有资料，不清空其他用户的 Chroma chunk。"""
     if not settings.RAG_ENABLED:
         return {"ok": False, "message": "RAG 未启用"}
 
-    result = await db.execute(
-        select(Material).where(
-            Material.content.is_not(None),
-            Material.user_id == current_user.id,
-        )
-    )
-    materials = result.scalars().all()
+    rebuilder = MaterialIndexRebuilder(db, rag=get_rag_service())
+    return await rebuilder.rebuild_user(int(current_user.id))
 
-    rag = get_rag_service()
-    status = await rag.get_status(int(current_user.id))
-    if not status.get("embedding_enabled"):
-        return {
-            "ok": False,
-            "materials_indexed": 0,
-            "total_chunks": 0,
-            "message": "未配置 embedding API Key，已跳过向量索引；资料仍可通过普通关键词/全文上下文使用。",
-        }
-    await rag.reset_index("正在重建 RAG 向量索引。", user_id=int(current_user.id))
-    materials_indexed = 0
-    failed = 0
-    total_chunks = 0
-    for mat in materials:
-        project_ids = await _get_material_project_ids(db, mat.id, current_user.id)
-        count = await rag.index_material(
-            material_id=mat.id,
-            title=mat.title,
-            content=mat.content,
-            file_type=mat.file_type,
-            project_ids=project_ids,
-            user_id=current_user.id,
-        )
-        if count > 0:
-            materials_indexed += 1
-            total_chunks += count
-        else:
-            failed += 1
 
-    return {
-        "ok": failed == 0,
-        "materials_indexed": materials_indexed,
-        "materials_total": len(materials),
-        "failed": failed,
-        "total_chunks": total_chunks,
-        "message": (
-            f"已重建 {materials_indexed}/{len(materials)} 份资料，共 {total_chunks} 个片段"
-            if failed == 0
-            else f"重建完成但有 {failed} 份资料索引失败，请查看 RAG 最近错误"
-        ),
-    }
 async def _get_material_project_ids(db: AsyncSession, material_id: int, user_id: int) -> List[int]:
     result = await db.execute(
         select(ChatProjectMaterial.project_id)
