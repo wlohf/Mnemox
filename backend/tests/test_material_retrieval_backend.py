@@ -17,6 +17,9 @@ class _RowsResult:
     def all(self):
         return self._rows
 
+    def scalars(self):
+        return self
+
 
 class _SequenceDb:
     def __init__(self, results):
@@ -79,6 +82,9 @@ class _FakeRag:
     async def remove_material(self, material_id, user_id=None):
         self.removed.append((material_id, user_id))
 
+    def _looks_like_dimension_mismatch(self, _exc):
+        return False
+
 
 class _FakeBackend:
     def __init__(self, hits):
@@ -87,6 +93,12 @@ class _FakeBackend:
     async def search(self, _query, *, scope, top_k=8):
         del scope
         return self.hits[:top_k]
+
+
+class _FailingBackend:
+    async def search(self, _query, *, scope, top_k=8):
+        del scope, top_k
+        raise RuntimeError("backend unavailable")
 
 
 class MaterialRetrievalBackendTests(unittest.IsolatedAsyncioTestCase):
@@ -150,6 +162,33 @@ class MaterialRetrievalBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hits[0].backend_ranks, {"chroma": 1, "keyword": 1})
         self.assertEqual(hits[0].backend_scores, {"chroma": 0.91, "keyword": 2.3})
         self.assertAlmostEqual(hits[0].score, 2 / 61)
+
+    async def test_hybrid_keeps_keyword_results_when_semantic_backend_fails(self):
+        keyword_hit = MaterialChunkHit(
+            text="fallback chunk",
+            score=1.8,
+            material_id=4,
+            material_title="doc",
+            chunk_index=0,
+            source="material:4#chunk:0",
+            backend="keyword",
+            backend_scores={"keyword": 1.8},
+        )
+        hybrid = HybridMaterialRetrievalBackend(
+            _FailingBackend(),
+            _FakeBackend([keyword_hit]),
+        )
+
+        hits = await hybrid.search(
+            "fallback",
+            scope=MaterialSearchScope(user_id=1),
+            top_k=3,
+        )
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].backend, "hybrid")
+        self.assertEqual(hits[0].backend_ranks, {"keyword": 1})
+        self.assertAlmostEqual(hits[0].score, 1 / 61)
 
     def test_tokenizer_keeps_latin_words_and_adds_chinese_bigrams(self):
         tokens = _tokenize("RRF 混合检索效果")
