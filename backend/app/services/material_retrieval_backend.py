@@ -13,7 +13,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,8 +86,14 @@ class MaterialRetrievalBackend(Protocol):
 
 async def resolve_material_ids(db: AsyncSession, scope: MaterialSearchScope) -> List[int]:
     """Resolve explicit IDs/ranges/project scope with user isolation in SQL."""
-    query = select(Material.id).where(Material.user_id == scope.user_id)
+    if (
+        scope.material_id_min is not None
+        and scope.material_id_max is not None
+        and int(scope.material_id_min) > int(scope.material_id_max)
+    ):
+        return []
 
+    query = select(Material.id).where(Material.user_id == scope.user_id)
     if scope.material_ids is not None:
         explicit = sorted({int(item) for item in scope.material_ids})
         if not explicit:
@@ -111,7 +117,12 @@ async def resolve_material_ids(db: AsyncSession, scope: MaterialSearchScope) -> 
     return [int(row[0]) for row in result.all()]
 
 
-def _where_for_chroma(user_id: int, material_ids: Sequence[int]):
+def _where_for_chroma(
+    user_id: int,
+    material_ids: Sequence[int],
+    *,
+    project_id: Optional[int] = None,
+):
     filters: List[Dict[str, Any]] = [{"user_id": str(user_id)}]
     string_ids = [str(item) for item in material_ids]
     if len(string_ids) == 1:
@@ -120,6 +131,8 @@ def _where_for_chroma(user_id: int, material_ids: Sequence[int]):
         filters.append({"material_id": {"$in": string_ids}})
     else:
         return None
+    if project_id is not None:
+        filters.append({"project_id": str(project_id)})
     return {"$and": filters}
 
 
@@ -150,7 +163,11 @@ class ChromaMaterialRetrievalBackend:
         if not material_ids:
             return []
 
-        where_filter = _where_for_chroma(scope.user_id, material_ids)
+        where_filter = _where_for_chroma(
+            scope.user_id,
+            material_ids,
+            project_id=scope.project_id,
+        )
         threshold = float(
             getattr(self.rag, "_similarity_threshold", settings.RAG_SIMILARITY_THRESHOLD)
         )
@@ -171,6 +188,7 @@ class ChromaMaterialRetrievalBackend:
             metas = results.get("metadatas", [[]])[0] or [{}] * len(docs)
             dists = results.get("distances", [[]])[0] or [1.0] * len(docs)
             hits: List[MaterialChunkHit] = []
+            seen_chunks: set[str] = set()
             for doc, meta, dist in zip(docs, metas, dists):
                 semantic_score = 1.0 - float(dist) / 2.0
                 if semantic_score < threshold:
@@ -179,27 +197,32 @@ class ChromaMaterialRetrievalBackend:
                 chunk_index = int(meta.get("chunk_index", 0) or 0)
                 project_raw = meta.get("project_id")
                 project_id = int(project_raw) if str(project_raw or "").isdigit() else None
-                hits.append(
-                    MaterialChunkHit(
-                        text=str(doc or ""),
-                        score=semantic_score,
-                        material_id=material_id,
-                        material_title=str(meta.get("title", "") or ""),
-                        chunk_index=chunk_index,
-                        source=f"material:{material_id}#chunk:{chunk_index}",
-                        backend=self.name,
-                        file_type=str(meta.get("file_type", "") or ""),
-                        project_id=project_id,
-                        backend_scores={self.name: semantic_score},
-                    )
+                hit = MaterialChunkHit(
+                    text=str(doc or ""),
+                    score=semantic_score,
+                    material_id=material_id,
+                    material_title=str(meta.get("title", "") or ""),
+                    chunk_index=chunk_index,
+                    source=f"material:{material_id}#chunk:{chunk_index}",
+                    backend=self.name,
+                    file_type=str(meta.get("file_type", "") or ""),
+                    project_id=project_id,
+                    backend_scores={self.name: semantic_score},
                 )
+                if hit.chunk_key in seen_chunks:
+                    continue
+                seen_chunks.add(hit.chunk_key)
+                hits.append(hit)
             return hits
 
         try:
             return await asyncio.to_thread(_retrieve)
-        except Exception:
-            # RetrievalRouter owns partial-degradation policy; a backend failure must
-            # therefore be representable as an empty candidate list.
+        except Exception as exc:
+            if self.rag._looks_like_dimension_mismatch(exc):
+                await self.rag.reset_index(
+                    "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引资料后再使用语义检索。",
+                    user_id=scope.user_id,
+                )
             return []
 
 
@@ -235,12 +258,14 @@ def _chunk_material_text(content: str) -> List[str]:
         nodes = splitter.get_nodes_from_documents([Document(text=content)])
         return [node.get_content() for node in nodes if node.get_content().strip()]
     except Exception:
-        # Keep keyword retrieval usable even when optional LlamaIndex components are
-        # unavailable. Character windows are only a degradation path.
         size = max(256, chunk_size * 2)
         overlap = min(max(0, chunk_overlap * 2), size // 2)
         step = max(1, size - overlap)
-        return [content[start:start + size] for start in range(0, len(content), step) if content[start:start + size].strip()]
+        return [
+            content[start:start + size]
+            for start in range(0, len(content), step)
+            if content[start:start + size].strip()
+        ]
 
 
 class KeywordMaterialRetrievalBackend:
@@ -349,19 +374,33 @@ class HybridMaterialRetrievalBackend:
         top_k: int = 8,
     ) -> List[MaterialChunkHit]:
         candidate_k = max(int(top_k) * 3, int(top_k), 8)
-        semantic_hits, keyword_hits = await asyncio.gather(
-            self.semantic.search(query, scope=scope, top_k=candidate_k),
-            self.keyword.search(query, scope=scope, top_k=candidate_k),
-        )
+        try:
+            semantic_hits = await self.semantic.search(query, scope=scope, top_k=candidate_k)
+        except Exception:
+            semantic_hits = []
+        try:
+            keyword_hits = await self.keyword.search(query, scope=scope, top_k=candidate_k)
+        except Exception:
+            keyword_hits = []
 
         fused: Dict[str, MaterialChunkHit] = {}
         fused_scores: Dict[str, float] = defaultdict(float)
         for backend_name, hits in (("chroma", semantic_hits), ("keyword", keyword_hits)):
+            seen_backend_keys: set[str] = set()
             for rank, hit in enumerate(hits, start=1):
                 key = hit.chunk_key
+                if key in seen_backend_keys:
+                    continue
+                seen_backend_keys.add(key)
                 fused_scores[key] += 1.0 / (self.rrf_k + rank)
                 if key not in fused:
-                    fused[key] = MaterialChunkHit(**{**hit.__dict__})
+                    fused[key] = MaterialChunkHit(
+                        **{
+                            **hit.__dict__,
+                            "backend_scores": dict(hit.backend_scores),
+                            "backend_ranks": dict(hit.backend_ranks),
+                        }
+                    )
                 target = fused[key]
                 target.backend_scores.update(hit.backend_scores or {backend_name: hit.score})
                 target.backend_ranks[backend_name] = rank
@@ -382,7 +421,6 @@ def create_material_retrieval_backend(
     mode: str = "hybrid",
     rag: Optional[RAGService] = None,
 ) -> MaterialRetrievalBackend:
-    """Factory kept intentionally small so Qdrant/FTS backends can replace parts."""
     normalized = (mode or "hybrid").strip().lower()
     semantic = ChromaMaterialRetrievalBackend(db, rag=rag)
     keyword = KeywordMaterialRetrievalBackend(db)
@@ -480,6 +518,10 @@ class MaterialIndexRebuilder:
             else:
                 failures.append({"material_id": int(material.id), "title": str(material.title or "")})
 
+        last_error = ""
+        if failures:
+            current_status = await self.rag.get_status(user_id)
+            last_error = str(current_status.get("last_error") or "")
         return {
             "ok": not failures,
             "materials_total": len(materials),
@@ -487,6 +529,7 @@ class MaterialIndexRebuilder:
             "failed": len(failures),
             "failures": failures,
             "total_chunks": total_chunks,
+            "last_error": last_error,
             "message": (
                 f"已重建 {indexed}/{len(materials)} 份资料，共 {total_chunks} 个片段"
                 if not failures
