@@ -117,8 +117,10 @@ class MaterialRetrievalBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hits[0].material_id, 7)
         self.assertEqual(hits[0].chunk_index, 3)
         self.assertEqual(hits[0].source, "material:7#chunk:3")
+        self.assertEqual(hits[0].chunk_key, "material:7:chunk:3")
         self.assertEqual(hits[0].project_id, 11)
         self.assertEqual(hits[0].backend, "chroma")
+        self.assertEqual(rag._collection.query_kwargs["n_results"], 16)
         where_filter = rag._collection.query_kwargs["where"]
         self.assertEqual(
             where_filter,
