@@ -8,7 +8,6 @@ only this adapter knows how to read its existing Chroma collection.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -55,8 +54,7 @@ class MaterialChunkHit:
 
     @property
     def chunk_key(self) -> str:
-        digest = hashlib.sha256(self.text.strip().encode("utf-8")).hexdigest()[:16]
-        return f"material:{self.material_id}:chunk:{digest}"
+        return f"material:{self.material_id}:chunk:{self.chunk_index}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -171,7 +169,11 @@ class ChromaMaterialRetrievalBackend:
         threshold = float(
             getattr(self.rag, "_similarity_threshold", settings.RAG_SIMILARITY_THRESHOLD)
         )
-        requested = max(int(top_k), 1)
+        # Legacy indexing writes the same chunk once per project. Without a project
+        # scope, oversample before de-duplication so duplicate project copies do not
+        # crowd distinct chunks out of the requested top-k window.
+        oversample = 1 if scope.project_id is not None else 4
+        requested = max(int(top_k) * oversample, int(top_k), 1)
 
         def _retrieve() -> List[MaterialChunkHit]:
             query_embedding = self.rag._embed_model.get_text_embedding(query)
@@ -213,6 +215,8 @@ class ChromaMaterialRetrievalBackend:
                     continue
                 seen_chunks.add(hit.chunk_key)
                 hits.append(hit)
+                if len(hits) >= int(top_k):
+                    break
             return hits
 
         try:
