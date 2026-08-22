@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.context_store import ContextItem, get_context_store
+from app.services.retrieval_router import RetrievalHit, RetrievalRouter
 from app.utils.prompt_safety import wrap_untrusted_context
 
 
@@ -38,7 +38,7 @@ def _compact_text(value: Any, *, limit: int | None = None) -> str:
     return text
 
 
-def _context_item_to_note_hit(item: ContextItem) -> NoteContextHit:
+def _context_item_to_note_hit(item: RetrievalHit) -> NoteContextHit:
     metadata = item.metadata if isinstance(item.metadata, dict) else {}
     raw_tags = metadata.get("tags", [])
     tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()][:8] if isinstance(raw_tags, list) else []
@@ -68,13 +68,15 @@ async def search_note_context(
     if not str(query or "").strip():
         return []
     try:
-        items = await get_context_store().retrieve(
-            db,
-            user_id,
+        response = await RetrievalRouter(db).search_with_diagnostics(
             query,
+            user_id=user_id,
             top_k=max(1, min(int(limit or 3), 12)),
             source_types=("note",),
         )
+        if "note" in response.diagnostics.degraded_sources:
+            raise RuntimeError("note retrieval failed")
+        items = response.hits
     except Exception:
         logger.warning(
             "event=contextstore.retrieve status=failure source_types=note",
