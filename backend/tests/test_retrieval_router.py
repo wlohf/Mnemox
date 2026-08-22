@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock
 
-from app.services.context_store import L0, L1
+from app.services.context_store import L0, L1, ContextItem
 from app.services.material_retrieval_backend import MaterialChunkHit
 from app.services.retrieval_router import RetrievalHit, RetrievalRouter
 
@@ -20,8 +20,13 @@ class _FakeMaterialBackend:
 
 
 class _FakeContextStore:
+    def __init__(self, items=None):
+        self.items = list(items or [])
+        self.calls = []
+
     async def retrieve(self, *args, **kwargs):
-        return []
+        self.calls.append((args, kwargs))
+        return self.items
 
     async def load_tiered(self, *args, **kwargs):
         return ""
@@ -128,6 +133,32 @@ class RetrievalRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([hit.source_type for hit in response.hits], ["note"])
         self.assertEqual(response.diagnostics.degraded_sources, {"material": "RuntimeError"})
         self.assertEqual(response.diagnostics.fusion, "direct")
+
+    async def test_empty_material_query_returns_recent_context_store_materials(self):
+        store = _FakeContextStore(
+            [
+                ContextItem(
+                    source_type="material",
+                    source_id=12,
+                    title="Recent material",
+                    excerpt="recent preview",
+                    score=0.1,
+                )
+            ]
+        )
+        backend = _FakeMaterialBackend(error=AssertionError("semantic backend should not run"))
+        router = RetrievalRouter(_FakeDb(), material_backend=backend, context_store=store)
+
+        hits = await router.search(
+            "", user_id=9, source_types=("material",), top_k=3
+        )
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].source_id, 12)
+        self.assertEqual(hits[0].metadata["backend"], "context_store")
+        self.assertEqual(hits[0].metadata["source"], "material:12")
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(store.calls[0][1]["source_types"], ("material",))
 
     async def test_l0_loading_uses_title_without_database_access(self):
         router = RetrievalRouter(

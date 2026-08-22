@@ -212,7 +212,7 @@ class RetrievalRouter:
             raise ValueError(f"Unsupported retrieval source(s): {', '.join(unknown)}")
         limit = max(1, min(int(top_k or 8), 50))
         source_limit = max(limit, min(int(per_source_k or limit * 3), 80))
-        if not str(query or "").strip() or not requested:
+        if not requested:
             diagnostics = RetrievalDiagnostics(requested, (), {}, {}, "none")
             return RetrievalResponse([], diagnostics)
 
@@ -278,6 +278,32 @@ class RetrievalRouter:
         material_id_max: int | None,
         project_id: int | None,
     ) -> list[RetrievalHit]:
+        if not str(query or "").strip():
+            items = await self.context_store.retrieve(
+                self.db,
+                user_id,
+                "",
+                top_k=limit,
+                source_types=("material",),
+            )
+            hits: list[RetrievalHit] = []
+            for item in items:
+                if item.source_type != "material":
+                    continue
+                hit = _context_item_to_hit(item)
+                metadata = dict(hit.metadata)
+                metadata.update(
+                    {
+                        "material_id": int(hit.source_id),
+                        "chunk_index": 0,
+                        "source": f"material:{hit.source_id}",
+                        "backend": "context_store",
+                        "score_normalization": "context_store",
+                    }
+                )
+                hits.append(replace(hit, metadata=metadata))
+            return hits[:limit]
+
         scope = MaterialSearchScope(
             user_id=user_id,
             material_ids=material_ids,
