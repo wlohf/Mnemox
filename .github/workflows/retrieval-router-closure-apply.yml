@@ -1,0 +1,43 @@
+name: Apply retrieval router closure
+
+on:
+  push:
+    branches:
+      - agent/retrieval-router-closure
+    paths:
+      - .github/retrieval-router-closure.trigger
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/retrieval-router-closure
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply deterministic repository patch
+        run: python scripts/apply_retrieval_router_integration.py
+      - name: Validate patched Python syntax
+        run: |
+          python -m py_compile \
+            backend/app/services/retrieval_router.py \
+            backend/app/services/note_context_service.py \
+            backend/app/agents/chat_agent.py \
+            backend/app/agents/agent_kernel.py \
+            backend/app/routers/chat.py \
+            backend/app/routers/agent.py \
+            backend/tests/test_retrieval_router.py \
+            backend/tests/test_chat_retrieval_router_integration.py
+      - name: Commit patched files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend docs
+          git commit -m "Integrate RetrievalRouter with material hybrid retrieval"
+          git push origin HEAD:agent/retrieval-router-closure
