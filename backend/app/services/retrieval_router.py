@@ -286,26 +286,35 @@ class RetrievalRouter:
             project_id=project_id,
         )
         chunks = await self.material_backend.search(query, scope=scope, top_k=limit)
-        return [
-            RetrievalHit(
-                source_type="material",
-                source_id=int(chunk.material_id),
-                title=chunk.material_title,
-                excerpt=chunk.text,
-                score=float(chunk.score),
-                metadata={
-                    "material_id": int(chunk.material_id),
-                    "chunk_index": int(chunk.chunk_index),
-                    "source": chunk.source,
-                    "backend": chunk.backend,
-                    "backend_scores": dict(chunk.backend_scores),
-                    "backend_ranks": dict(chunk.backend_ranks),
-                    "file_type": chunk.file_type,
-                    "project_id": chunk.project_id,
-                },
+        if not chunks:
+            return []
+
+        raw_scores = [max(0.0, float(chunk.score)) for chunk in chunks]
+        max_raw_score = max(raw_scores) or 1.0
+        hits: list[RetrievalHit] = []
+        for chunk, raw_score in zip(chunks, raw_scores):
+            hits.append(
+                RetrievalHit(
+                    source_type="material",
+                    source_id=int(chunk.material_id),
+                    title=chunk.material_title,
+                    excerpt=chunk.text,
+                    score=raw_score / max_raw_score,
+                    metadata={
+                        "material_id": int(chunk.material_id),
+                        "chunk_index": int(chunk.chunk_index),
+                        "source": chunk.source,
+                        "backend": chunk.backend,
+                        "backend_scores": dict(chunk.backend_scores),
+                        "backend_ranks": dict(chunk.backend_ranks),
+                        "raw_backend_score": raw_score,
+                        "score_normalization": "per_query_max",
+                        "file_type": chunk.file_type,
+                        "project_id": chunk.project_id,
+                    },
+                )
             )
-            for chunk in chunks
-        ]
+        return hits
 
     async def _search_context_store(
         self, query: str, user_id: int, source_type: str, limit: int

@@ -65,6 +65,9 @@ class RetrievalRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].key, "material:7:chunk:3")
         self.assertEqual(hits[0].metadata["source"], "material:7#chunk:3")
+        self.assertEqual(hits[0].score, 1.0)
+        self.assertEqual(hits[0].metadata["raw_backend_score"], 0.8)
+        self.assertEqual(hits[0].metadata["score_normalization"], "per_query_max")
         self.assertEqual(hits[0].to_material_chunk()["backend"], "hybrid")
         _, scope, requested_k = backend.calls[0]
         self.assertEqual(scope.user_id, 42)
