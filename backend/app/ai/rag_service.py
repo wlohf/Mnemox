@@ -514,12 +514,14 @@ class RAGService:
             if user_id is not None:
                 filters.append({"user_id": str(user_id)})
             where_filter = {"$and": filters} if len(filters) > 1 else filters[0]
-            try:
-                self._collection.delete(where=where_filter)
-            except Exception as e:
-                logger.warning("删除资料 chunk 失败 (material_id=%s): %s", material_id, e)
+            self._collection.delete(where=where_filter)
 
-        await asyncio.to_thread(_remove)
+        try:
+            await asyncio.to_thread(_remove)
+        except Exception as exc:
+            self._last_error = str(exc)[:500]
+            logger.warning("删除资料 chunk 失败 (material_id=%s): %s", material_id, exc)
+            raise
 
     # ------------------------------------------------------------------
     # 检索

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 import hashlib
 import uuid
 
@@ -18,6 +18,8 @@ from ..utils.paths import ensure_data_dirs, get_uploads_dir, to_repo_relative
 from ..auth import get_current_user
 from ..models.user import User
 from ..utils.ownership import get_owned_row
+from ..services.retrieval_projection_service import RetrievalProjectionService, serialize_projection
+from ..services.retrieval_router import RetrievalRouter
 
 
 router = APIRouter()
@@ -43,6 +45,7 @@ class MaterialResponse(BaseModel):
     created_at: str
     updated_at: str
     project_ids: Optional[List[int]] = None
+    retrieval_projection: Optional[dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 
@@ -64,6 +67,7 @@ def _build_material_response(
     material: Material,
     project_ids: Optional[List[int]] = None,
     preview: bool = False,
+    retrieval_projection: Optional[dict[str, Any]] = None,
 ) -> MaterialResponse:
     material_dict = getattr(material, "__dict__", {})
     material_id = material_dict.get("id")
@@ -90,6 +94,7 @@ def _build_material_response(
         created_at=(created_at or material.created_at).isoformat(),
         updated_at=(updated_at or material.updated_at).isoformat(),
         project_ids=project_ids or [],
+        retrieval_projection=retrieval_projection,
     )
 
 
@@ -97,6 +102,19 @@ class MaterialCreate(BaseModel):
     """创建资料请求模型"""
     title: str
     content: Optional[str] = None
+
+
+class MaterialUpdate(BaseModel):
+    """Partial canonical-material updates trigger a versioned projection refresh."""
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    content: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if self.title is None and self.content is None:
+            raise ValueError("至少提供资料标题或资料内容。")
+        return self
 
 
 class QuestionRequest(BaseModel):
@@ -270,7 +288,12 @@ async def upload_material(
         )
         project_ids = [row[0] for row in assoc_result.all()]
 
-        response = _build_material_response(existing, project_ids=project_ids)
+        projection = await RetrievalProjectionService(db).get_projection(int(current_user.id), int(existing.id))
+        response = _build_material_response(
+            existing,
+            project_ids=project_ids,
+            retrieval_projection=serialize_projection(projection),
+        )
         return MaterialUploadResponse(**response.model_dump(), duplicate=True)
 
     # 创建资料记录
@@ -287,7 +310,12 @@ async def upload_material(
             user_id=int(user_id_value) if user_id_value is not None else 0,
         )
 
-        response = _build_material_response(material, project_ids=[])
+        projection = await material_service.projections.get_projection(int(current_user.id), int(material.id))
+        response = _build_material_response(
+            material,
+            project_ids=[],
+            retrieval_projection=serialize_projection(projection),
+        )
         return MaterialUploadResponse(**response.model_dump(), duplicate=False)
     except Exception as e:
         # 如果创建失败，删除已上传的文件
@@ -318,7 +346,12 @@ async def create_material(
             user_id=int(user_id_value) if user_id_value is not None else 0,
         )
 
-        return _build_material_response(material, project_ids=[])
+        projection = await material_service.projections.get_projection(int(current_user.id), int(material.id))
+        return _build_material_response(
+            material,
+            project_ids=[],
+            retrieval_projection=serialize_projection(projection),
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建资料失败: {str(e)}")
 
@@ -348,6 +381,9 @@ async def list_materials(
 
     project_ids_map = {}
     material_ids = [m.id for m in materials]
+    projection_map = await RetrievalProjectionService(db).projection_map(
+        int(current_user.id), material_ids
+    )
     if material_ids:
         assoc_result = await db.execute(
             sa_select(ChatProjectMaterial.material_id, ChatProjectMaterial.project_id)
@@ -363,6 +399,7 @@ async def list_materials(
             m,
             project_ids=sorted(project_ids_map.get(m.id, set())),
             preview=True,
+            retrieval_projection=projection_map.get(int(m.id)),
         )
         for m in materials
     ]
@@ -405,22 +442,24 @@ async def search_materials(
     if not material_ids:
         return []
 
-    rag = get_rag_service()
     top_k_value = max(1, min(top_k, 20))
-    chunks = []
-    if settings.RAG_ENABLED:
-        chunks = await rag.retrieve(query=q, material_ids=material_ids, top_k=top_k_value, user_id=current_user.id)
-    if chunks:
-        return [
-            MaterialSearchResponse(
-                material_id=chunk.get("material_id", 0),
-                title=chunk.get("material_title", ""),
-                score=chunk.get("score", 0),
-                text=chunk.get("text", ""),
-            )
-            for chunk in chunks
-        ]
-    return await _keyword_search_materials(db, int(current_user.id), material_ids, q, top_k_value)
+    hits = await RetrievalRouter(db).search(
+        q,
+        user_id=int(current_user.id),
+        source_types=("material",),
+        material_ids=material_ids,
+        project_id=project_id,
+        top_k=top_k_value,
+    )
+    return [
+        MaterialSearchResponse(
+            material_id=int(hit.source_id),
+            title=str(hit.title),
+            score=float(hit.score),
+            text=str(hit.excerpt),
+        )
+        for hit in hits
+    ]
 
 
 @router.get("/{material_id}", response_model=MaterialResponse)
@@ -453,7 +492,41 @@ async def get_material(
     )
     project_ids = [row[0] for row in proj_result.all()]
 
-    return _build_material_response(material, project_ids=project_ids)
+    projection = await RetrievalProjectionService(db).get_projection(int(current_user.id), material_id)
+    return _build_material_response(
+        material,
+        project_ids=project_ids,
+        retrieval_projection=serialize_projection(projection),
+    )
+
+
+@router.patch("/{material_id}", response_model=MaterialResponse)
+async def update_material(
+    material_id: int,
+    material_data: MaterialUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update owned canonical material content and atomically replace derived chunks."""
+    await get_owned_row(
+        db, Material, material_id, int(current_user.id), not_found_detail="资料不存在"
+    )
+    material_service = get_material_service(db)
+    material = await material_service.update_material(
+        material_id,
+        user_id=int(current_user.id),
+        title=material_data.title,
+        content=material_data.content,
+    )
+    if material is None:
+        raise HTTPException(status_code=404, detail="资料不存在")
+    projection = await material_service.projections.get_projection(int(current_user.id), material_id)
+    project_ids = await material_service.projections.project_ids(material_id, int(current_user.id))
+    return _build_material_response(
+        material,
+        project_ids=project_ids,
+        retrieval_projection=serialize_projection(projection),
+    )
 
 
 @router.delete("/{material_id}")

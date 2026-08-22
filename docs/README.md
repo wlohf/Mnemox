@@ -1,6 +1,6 @@
 # 文档导航
 
-> 更新日期：2026-08-19
+> 更新日期：2026-08-22
 
 本目录只保留当前实现基线、仍有效的架构决策、可复用的验证证据和周期更新。需要判断“现在是什么”和“下一步做什么”时，优先阅读现行基线，不要把历史方案当成待办清单。
 
@@ -20,6 +20,7 @@
 
 | 日期 | 文档 | 状态 |
 | --- | --- | --- |
+| 2026-08-22 | [检索生命周期与质量决策](superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md) | 当前有效：资料 SQL/Chroma 投影契约、更新/删除/重建、离线质量门禁与真实 Qdrant Local no-go |
 | 2026-08-13 | [笔记、上下文与记忆边界决策](superpowers/specs/2026-08-13-note-context-memory-architecture.md) | 当前有效：笔记三层逻辑存储、三阶段检索、记忆候选和学习证据边界；聊天笔记首条 ContextStore 业务流已完成接口收敛，完整生命周期仍待补 |
 | 2026-08-03 | [学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md) | 当前有效：混合 RAG、概念图谱、时态记忆、学习者模型、投影和受控 Spike |
 | 2026-07-26 | [知识层 / 检索底座 / Agent 架构决策](superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md) | 部分仍有效；关系型核心、FSRS、草案确认、用户隔离和 OpenViking 否决证据继续适用 |
@@ -37,6 +38,7 @@
 ## 持续记录
 
 - [更新记录模板](updates/_template.md)
+- [2026-08-22 统一检索生命周期、质量评测与 Qdrant 选型](updates/2026/2026-08-22_retrieval-lifecycle-quality.md)
 - [2026-08-19 分支整合、冲突消解与文档基线校准](updates/2026/2026-08-19_to_2026-08-19.md)
 - [2026-08-13 至 2026-08-17 ContextStore、Coach、Vault 与记忆声明收口](updates/2026/2026-08-13_to_2026-08-17.md)
 - [2026-08-13 Phase 1 主线整合与分支收口](updates/2026/2026-08-13_to_2026-08-13.md)

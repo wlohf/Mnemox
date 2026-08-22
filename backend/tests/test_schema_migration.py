@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260816_09"
+CURRENT_HEAD_REVISION = "20260822_10"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -157,6 +157,8 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "projection_outbox_worker_heartbeats",
             "projection_outbox_retry_policy",
             "memory_declarations",
+            "retrieval_projections",
+            "retrieval_projection_chunks",
         }.issubset(inspector.get_table_names())
 
         assert {"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}.issubset(
@@ -221,6 +223,22 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         }.issubset(
             {index["name"] for index in inspector.get_indexes("memory_declarations")}
         )
+        assert {
+            "source_type",
+            "source_id",
+            "backend",
+            "status",
+            "source_version",
+            "indexed_version",
+            "configuration_fingerprint",
+            "last_error",
+        }.issubset({column["name"] for column in inspector.get_columns("retrieval_projections")})
+        assert "ix_retrieval_projections_user_status" in {
+            index["name"] for index in inspector.get_indexes("retrieval_projections")
+        }
+        assert "ix_retrieval_projection_chunks_user_source" in {
+            index["name"] for index in inspector.get_indexes("retrieval_projection_chunks")
+        }
         assert "ix_projection_outbox_dead_lettered_at" in {
             index["name"] for index in inspector.get_indexes("projection_outbox")
         }
@@ -421,6 +439,10 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "ALTER TABLE notes ADD COLUMN source_conflict_vault_id" in ddl
     assert "ALTER TABLE notes ADD COLUMN source_conflict_file_id" in ddl
     assert "CREATE TABLE memory_declarations" in ddl
+    assert "CREATE TABLE retrieval_projections" in ddl
+    assert "CREATE TABLE retrieval_projection_chunks" in ddl
+    assert "CREATE INDEX ix_retrieval_projections_user_status" in ddl
+    assert "CREATE INDEX ix_retrieval_projection_chunks_user_source" in ddl
     assert "FOREIGN KEY(user_id) REFERENCES users" in ddl
     assert "FOREIGN KEY(memory_id) REFERENCES user_memories" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_memory_observed" in ddl
@@ -677,6 +699,36 @@ def test_sqlite_lightweight_migration_adds_memory_declaration_audit_table(tmp_pa
         "ix_memory_declarations_user_memory_observed",
         "ix_memory_declarations_user_review_observed",
     }.issubset(indexes)
+
+
+def test_sqlite_lightweight_migration_adds_rebuildable_retrieval_manifests(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-retrieval.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260816_09")
+
+    async def _run() -> tuple[set[str], set[str], set[str]]:
+        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+        try:
+            async with async_engine.begin() as connection:
+                await _run_lightweight_migrations(connection)
+                await _run_lightweight_migrations(connection)
+                return await connection.run_sync(
+                    lambda sync_connection: (
+                        {column["name"] for column in inspect(sync_connection).get_columns("retrieval_projections")},
+                        {index["name"] for index in inspect(sync_connection).get_indexes("retrieval_projections")},
+                        {
+                            index["name"]
+                            for index in inspect(sync_connection).get_indexes("retrieval_projection_chunks")
+                        },
+                    )
+                )
+        finally:
+            await async_engine.dispose()
+
+    columns, indexes, chunk_indexes = asyncio.run(_run())
+    assert {"source_id", "status", "source_version", "last_error", "deleted_at"}.issubset(columns)
+    assert "ix_retrieval_projections_user_status" in indexes
+    assert "ix_retrieval_projection_chunks_user_source" in chunk_indexes
 
 
 def test_sqlite_lightweight_migration_backfills_legacy_mastery_idempotently(tmp_path: Path):

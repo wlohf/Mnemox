@@ -3,7 +3,7 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-19
+> 最近核查：2026-08-22
 > 上游决策：[2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)
 
 本文件是"接下来做什么、按什么顺序做"的唯一权威来源。需求范围见 [需求基线](requirements.md)，实现约定见 [技术基线](technical.md)，执行状态见 [进度文档](progress.md)。每个阶段收口时更新本文件与进度文档。
@@ -24,11 +24,11 @@
 
 ## 1. 轨道总览
 
-| 轨道 | 主题 | 前置 | 状态（2026-08-19 复核） |
+| 轨道 | 主题 | 前置 | 状态（2026-08-22 复核） |
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
-| Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认门禁已实现待 CI，真实 Windows Electron E2E 待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（学习者模型/outbox/API/前端证据下钻、聊天笔记 ContextStore 迁移、Vault 安全边界、Coach 归因和 SQL 记忆声明已交付；PostgreSQL 16 多实例门禁已实现待 CI，正式升级、候选 Spike 与真实数据质量验证未完成） |
+| Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认、PostgreSQL 16 与 Windows smoke 已通过 GitHub CI；真实 Windows Electron E2E 待补） |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（`RetrievalRouter`、资料检索生命周期、SQL 分块投影、离线质量集与 Qdrant go/no-go 已完成；下一完整模块为概念图谱自动抽取、人工编辑与先修缺口闭环） |
 | Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 AgentKernel 原型实现中；运行时 Spike、调度、自学习归因、知识巩固与写回未开始 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
@@ -50,10 +50,10 @@
 | 多用户授权审计 | 所有详情/更新/删除/文件接口绑定 `current_user.id` 并有回归测试 |
 | Prompt Injection 统一防护 | 资料、笔记、搜索、工具输出统一不可信上下文边界，含恶意样例测试 |
 | RAG 状态可见化 | 资料侧栏和设置入口展示语义检索/关键词回退/最近错误；聊天等入口状态语义一致，并有浏览器 E2E 验证 |
-| 关键路径集成验证 | API 冒烟覆盖登录、上传、对话、计划、笔记、复习和 Agent 草案生成；Chromium 门禁覆盖番茄钟、计划、笔记、侧栏跳转，以及 Agent 草案取消无副作用/确认后执行，待 CI 实跑；真实 Windows Electron E2E 仍需另行验收 |
+| 关键路径集成验证 | API 冒烟覆盖登录、上传、对话、计划、笔记、复习和 Agent 草案生成；Chromium 门禁已在 GitHub CI 覆盖番茄钟、计划、笔记、侧栏跳转及 Agent 草案取消无副作用/确认后执行；真实 Windows Electron E2E 仍需另行验收 |
 | 仓库卫生 | 已清理被基线替代的历史文档，完成 Phase 1 主线整合、旧分支归档和跨平台换行规则；发布清单仍需在下一版本发布窗口单独核对 |
 
-2026-08-13 主线整合只完成当时的代码与文档基线收口；2026-08-19 又将 08-17 完成的 ContextStore、Coach、Vault 与记忆声明增量收敛到统一开发基线，并在 PR #5 合入后删除 6 个远程旧活动分支。两次整合都不改变阶段验收口径，也不创建新的版本 tag 或安装包。历史名称 `feature/phase2-agent-upgrade` 不作为 Phase 2 启动证据；Phase 2 仍必须等待本路线图列出的 Phase 1 数据、删除、重放和反馈边界验收。当前验收分支新增的 PostgreSQL 16 与 Chromium 门禁只有在 GitHub CI 实跑通过后才算验收证据。
+2026-08-13 和 2026-08-19 的主线整合分别收敛既有功能与 ContextStore、Coach、Vault、记忆声明增量。2026-08-22 PR #8 将 `RetrievalRouter` 资料主链合入 `main@5da524c`；[CI run 32559668354](https://github.com/wlohf/Mnemox/actions/runs/32559668354) 的 Backend、Frontend、PostgreSQL 16、Chromium、Windows smoke 和 Repository integrity 六项均已通过。这些合并不创建新版本 tag 或安装包；真实 Electron E2E 与正式生产升级仍单独验收。Phase 2 仍必须等待 Phase 1 数据、删除、重放和反馈边界收口。
 
 ## 4. Phase 1：四层学习智能底座
 
@@ -61,10 +61,10 @@
 
 | # | 事项 | 完成标准 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明和 `projection_outbox`；定义稳定 ID、版本、删除和重建语义 | 🔶 学习证据/概念状态/outbox 迁移、删除级联和数据库演练已验证；SQL 记忆声明已覆盖人工与自动来源，图谱投影语义待定 |
-| 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 同事务 outbox、事件级在线消费、幂等/失败重试/崩溃恢复、525 条分页重放、范围隔离、DLQ/人工重试、心跳/告警和 PostgreSQL 生命周期 worker 已验证；PostgreSQL 16 空库迁移、`SKIP LOCKED`、共享策略升级、双 worker exactly-once 与心跳门禁已实现待 CI，正式发布升级和其他投影流待补 |
-| 3 | `ContextStore` 笔记单流迁移 | 聊天笔记检索只依赖接口；按“范围过滤 -> 混合召回 -> 重排/分层加载”演进；原文、检索投影和记忆/概念派生层边界明确；关键词降级可观测；更新、删除、用户隔离和质量集通过 | 🔶 主体完成：聊天笔记检索已通过 ContextStore 接口收敛，SQL 原文、关键词降级、模式指示和用户隔离回归已保留；独立检索投影、质量集及更广泛的 `ingest/forget` 生命周期待补 |
-| 4 | Qdrant 检索 Spike | 对同一资料集比较 dense+sparse/BM25+rerank 与现有基线；通过 Windows 打包、无 embedding 降级、删除/重建、延迟和成本门槛后再决定是否采纳 | ⏳ 未开始；OpenViking 已否决并保留为历史结论 |
+| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明、`projection_outbox` 与检索投影；定义稳定 ID、版本、删除和重建语义 | 🔶 学习证据、记忆声明、outbox 与 `retrieval_projections` / SQL chunk 清单已具备版本化迁移；概念图编辑和关系证据仍待闭环 |
+| 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 outbox 幂等、DLQ、分页回放、跨实例心跳与 PostgreSQL 16 多 worker CI 已通过；资料投影已补 `ingest/refresh/forget/rebuild/retry`、配置失效和失败删除墓碑；正式生产升级待发布窗口 |
+| 3 | 统一检索与资料生命周期 | `RetrievalRouter` 收敛资料/笔记/记忆/概念/学习状态；资料投影具备版本、删除、重建、关键词降级、用户隔离和离线质量门禁 | ✅ 主链完成：主聊天、ChatAgent、AgentKernel 与资料搜索使用统一 Router；SQL chunk + Chroma 投影、资料更新、删除恢复、前端状态及 16-case 质量集已接入 |
+| 4 | Qdrant 检索 Spike | 对同一资料集比较 dense+sparse/BM25+rerank 与现有基线；通过 Windows 打包、无 embedding 降级、删除/重建、延迟和成本门槛后再决定是否采纳 | ✅ 已完成受控 go/no-go：Qdrant Local 真机对比未证明明显质量优势，轻量词项重排只追平 Recall@5；保留 Chroma，Qdrant 不进入运行时依赖 |
 | 5 | 概念图谱 MVP 与 GraphStore Spike | 三表、上传抽取、错题回填、人工改名/合并/删除、来源和质量集完成；只有 SQL 不足时才评估 Neo4j，Spike 不通过不影响 SQL 图 | 🔶 表、结构入图、抽取/回填接口和版本化迁移已有；自动闭环、人工编辑和质量集未完成 |
 | 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | 🔶 SQL 声明基础已完成：人工和自动来源均保留来源、版本、审核、替代和删除语义；Graphiti Spike 未开始 |
 | 7 | 学习者模型 | 直接证据主导、间接信号只校准风险/置信度；一次练习或复习可更新概念状态，前端展示证据、模型版本和人工修正 | 🔶 后端、API、前端证据下钻、校准基线和 PostgreSQL 常驻 worker 已验证；当前真实库没有 holdout case，真实数据校准和推荐排序待补 |
@@ -72,12 +72,14 @@
 
 当前执行检查点（不得跳步）：
 
-1. 真实数据达到至少 50 个 holdout case 后运行离线回放和版本对比，校准可靠度、权重与半衰期；门槛不足时保持 `collect_more_data`。
-2. 聊天笔记检索已通过 `ContextStore` 接口收敛，SQL 原文仍是规范来源，关键词降级和检索模式可观测；下一步建立可重建检索投影，并补版本更新、删除残留、质量集及更广泛的 `ingest/forget` 生命周期。
-3. Obsidian 的稳定文件身份、冲突候选、同步输入安全保护和用户可见跳过原因已完成；下一步以真实 Vault 数据验证冲突与删除策略。
-4. Coach 联想已记录 shown、accepted、completed 事件；下一步积累可用于干预归因的真实样本。
-5. 人工与自动 SQL 记忆声明已可审核、修订和删除；下一步先验证删除、纠错与冲突语义，再决定是否进入 Graphiti Spike。
-6. 以上数据与反馈闭环验收后才评估候选 Spike，并在兼容周期验收后规划移除 `Concept.mastery`；在此之前不进入 AgentRuntime 的后台自学习归因。
+1. **下一完整模块：概念图谱闭环**。完成资料上传后的候选概念抽取、先修/相关关系、人工确认、别名/合并/删除、证据回填和先修缺口下钻；SQL 仍是规范图来源。
+2. 随后完成学习者状态证据融合、可解释推荐和推荐理由，再完成 SQL 时态记忆冲突 / 失效 / 纠错，再进入 Coach 教学行为反馈闭环。
+3. 检索生产基线固定为 `RetrievalRouter → Chroma + SQL keyword + RRF`；继续扩大真实问题与资料样本，不因小型合成评测就采用 Qdrant。
+4. 真实学习证据达到至少 50 个 holdout case 后再运行学习者模型离线校准；门槛不足时保持 `collect_more_data`，不阻塞当前功能地基开发。
+5. Obsidian 真实 Vault 冲突 / 删除、正式 PostgreSQL 升级和真实 Windows Electron 启动 / 安装 E2E 属于后续专项验收，不与已通过的 CI smoke 混淆。
+6. 图谱、学习状态、时态记忆和 Coach 闭环完成后，才比较原生 AgentRuntime 与 LangGraph；不提前启动多 Agent、语音或 MCP。
+
+检索生命周期、质量集、实测数据和 Qdrant go/no-go 详见 [2026-08-22 检索生命周期与质量决策](superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md)。
 
 阶段验收：规范数据可重放并重建全部投影；至少一个真实业务流完成 `ContextStore` 迁移；候选检索/图/时态记忆技术有可复现的 go/no-go 证据；上传资料后概念关系可人工修正；一次练习/复习能更新 `user_concept_state` 并展示理由；联想有 Coach 的 shown/accepted/completed 基线；删除和用户隔离有回归测试。拉取式同步达到上述标准即可，不把 watchdog 误标为已完成。
 

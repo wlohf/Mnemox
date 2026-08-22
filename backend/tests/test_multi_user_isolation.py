@@ -20,7 +20,8 @@ from app.routers.ai_settings import ProviderCreate, create_provider, delete_prov
 from app.routers.agent import AgentWriteExecuteRequest, execute_agent_write
 from app.routers.conversations import delete_conversation
 from app.routers.chat_projects import MaterialBatchUpdate, batch_update_materials
-from app.routers.materials import delete_material, get_material, search_materials
+from app.routers.materials import MaterialUpdate, delete_material, get_material, search_materials, update_material
+from app.routers.rag import list_retrieval_projections, retry_retrieval_projection
 from app.routers.notes import delete_note, get_note
 from app.routers.system import dismiss_onboarding, get_onboarding_status
 from app.utils.secret_crypto import is_encrypted_secret
@@ -118,6 +119,23 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessionmaker() as session:
             with self.assertRaises(HTTPException) as ctx:
                 await delete_material(material_id, db=session, current_user=intruder)
+            self.assertEqual(ctx.exception.status_code, 404)
+
+        async with self.sessionmaker() as session:
+            with self.assertRaises(HTTPException) as ctx:
+                await update_material(
+                    material_id,
+                    MaterialUpdate(content="intruder rewrite"),
+                    db=session,
+                    current_user=intruder,
+                )
+            self.assertEqual(ctx.exception.status_code, 404)
+
+        async with self.sessionmaker() as session:
+            projections = await list_retrieval_projections(db=session, current_user=intruder)
+            self.assertEqual(projections["items"], [])
+            with self.assertRaises(HTTPException) as ctx:
+                await retry_retrieval_projection(material_id, db=session, current_user=intruder)
             self.assertEqual(ctx.exception.status_code, 404)
 
         async with self.sessionmaker() as session:

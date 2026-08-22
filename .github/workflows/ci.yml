@@ -200,6 +200,9 @@ jobs:
       - name: Run backend tests
         run: python -m pytest -q
 
+      - name: Enforce deterministic retrieval quality baseline
+        run: python evaluate_retrieval.py --backend hybrid --min-recall-at-5 0.75 --summary-only
+
   postgres-acceptance:
     name: PostgreSQL 16 / migration and multi-worker acceptance
     runs-on: ubuntu-latest

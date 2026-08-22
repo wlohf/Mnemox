@@ -1,0 +1,2 @@
+# Optional offline retrieval comparison only. This is not a runtime dependency.
+qdrant-client>=1.13,<2

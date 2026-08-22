@@ -74,23 +74,65 @@ async def lifespan(app: FastAPI):
         try:
             from app.ai.rag_service import get_rag_service
             from app.models.material import Material
+            from app.models.retrieval import RetrievalProjection
+            from app.services.retrieval_projection_service import RetrievalProjectionService
             from sqlalchemy import select, func
 
             rag = get_rag_service()
             await rag.initialize()
 
-            # 自动索引：ChromaDB 为空时，后台异步索引所有已有资料（不阻塞启动）
+            # Recover missing/stale manifests and interrupted deletes without
+            # making startup depend on embeddings or a healthy vector store.
             status = await rag.get_status()
-            if status.get("total_chunks", 0) == 0:
+            async with async_session_maker() as check_session:
+                material_count = int(
+                    await check_session.scalar(
+                        select(func.count()).select_from(Material).where(Material.content.is_not(None))
+                    )
+                    or 0
+                )
+                active_projection_count = int(
+                    await check_session.scalar(
+                        select(func.count()).select_from(RetrievalProjection).where(
+                            RetrievalProjection.source_type == "material",
+                            RetrievalProjection.status.in_(("ready", "degraded")),
+                        )
+                    )
+                    or 0
+                )
+                recovery_count = int(
+                    await check_session.scalar(
+                        select(func.count()).select_from(RetrievalProjection).where(
+                            RetrievalProjection.status.in_(("pending", "indexing", "failed", "deleting"))
+                        )
+                    )
+                    or 0
+                )
+            if (
+                (status.get("total_chunks", 0) == 0 and material_count > 0)
+                or active_projection_count < material_count
+                or recovery_count > 0
+            ):
                 import asyncio
 
                 async def _bg_index():
                     try:
                         async with async_session_maker() as session:
-                            count_result = await session.execute(
-                                select(func.count()).select_from(Material).where(Material.content.is_not(None))
+                            service = RetrievalProjectionService(session, rag=rag)
+                            delete_result = await session.execute(
+                                select(RetrievalProjection).where(
+                                    RetrievalProjection.last_operation == "forget",
+                                    RetrievalProjection.status.in_(("failed", "deleting")),
+                                )
                             )
-                            total = count_result.scalar() or 0
+                            pending_deletes = [
+                                (int(row.user_id), int(row.source_id))
+                                for row in delete_result.scalars().all()
+                            ]
+                            for owner_id, source_id in pending_deletes:
+                                await service.forget(owner_id, source_id)
+
+                            total = material_count
                             if total == 0:
                                 return
                             logger.info("RAG 后台索引开始：发现 %d 份已有资料需要索引", total)
@@ -101,14 +143,15 @@ async def lifespan(app: FastAPI):
                             failed = 0
                             for mat in result.scalars().all():
                                 try:
-                                    await rag.index_material(
-                                        material_id=mat.id,
-                                        title=mat.title,
-                                        content=mat.content,
-                                        file_type=mat.file_type,
+                                    projection = await service.ingest(
+                                        mat,
                                         user_id=getattr(mat, "user_id", None),
+                                        operation="rebuild",
                                     )
-                                    indexed += 1
+                                    if projection.get("status") == "ready":
+                                        indexed += 1
+                                    elif projection.get("status") == "failed":
+                                        failed += 1
                                 except Exception as item_error:
                                     failed += 1
                                     logger.warning(

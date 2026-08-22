@@ -13,7 +13,7 @@ from app.models.material import Material
 from app.models.chat import ChatProjectMaterial, ChatProject
 from app.auth import get_current_user
 from app.models.user import User
-from app.services.material_retrieval_backend import MaterialIndexRebuilder
+from app.services.retrieval_projection_service import RetrievalProjectionService
 
 
 router = APIRouter()
@@ -79,6 +79,7 @@ class RagSettingsUpdate(BaseModel):
 
 @router.get("/settings")
 async def get_rag_settings_endpoint(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """获取当前 RAG embedding 配置（api_key 脱敏）。"""
@@ -104,12 +105,16 @@ async def get_rag_settings_endpoint(
         "last_error": status.get("last_error", ""),
         "last_retrieval_status": status.get("last_retrieval_status", {}),
         "fallback_active": status.get("fallback_active", False),
+        "projection_summary": await RetrievalProjectionService(db, rag=rag).status_summary(
+            int(current_user.id)
+        ),
     }
 
 
 @router.put("/settings")
 async def update_rag_settings(
     body: RagSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """更新 RAG embedding 配置并热重载服务。"""
@@ -150,13 +155,15 @@ async def update_rag_settings(
     )
     status = await rag.get_status(int(current_user.id))
     status_message = (status.get("last_retrieval_status") or {}).get("message", "")
+    stale_count = await RetrievalProjectionService(db, rag=rag).mark_configuration_stale()
 
     return {
         "ok": True,
         "api_key_masked": _mask_key(api_key),
         "base_url": base_url,
         "model": model,
-        "requires_reindex": "重新索引" in status_message,
+        "requires_reindex": "重新索引" in status_message or stale_count > 0,
+        "stale_projections": stale_count,
         "message": status_message,
         "total_chunks": status.get("total_chunks", 0),
     }
@@ -195,6 +202,7 @@ async def test_rag_embedding(
 
 @router.get("/health")
 async def rag_health(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -217,7 +225,46 @@ async def rag_health(
         "last_error": status.get("last_error", ""),
         "last_retrieval_status": status.get("last_retrieval_status", {}),
         "message": status.get("message", ""),
+        "projection_summary": await RetrievalProjectionService(db, rag=rag).status_summary(
+            int(current_user.id)
+        ),
     }
+
+
+@router.get("/projections")
+async def list_retrieval_projections(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Expose only the authenticated user's durable retrieval lifecycle state."""
+    from app.models.retrieval import RetrievalProjection
+    from app.services.retrieval_projection_service import serialize_projection
+
+    result = await db.execute(
+        select(RetrievalProjection)
+        .where(RetrievalProjection.user_id == int(current_user.id))
+        .order_by(RetrievalProjection.updated_at.desc(), RetrievalProjection.id.desc())
+    )
+    return {
+        "items": [serialize_projection(row) for row in result.scalars().all()],
+        "summary": await RetrievalProjectionService(db).status_summary(int(current_user.id)),
+    }
+
+
+@router.post("/projections/{material_id}/retry")
+async def retry_retrieval_projection(
+    material_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = RetrievalProjectionService(db)
+    projection = await service.get_projection(int(current_user.id), material_id)
+    if projection is None:
+        raise HTTPException(status_code=404, detail="检索投影不存在")
+    try:
+        return await service.retry(int(current_user.id), material_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/reindex/{material_id}")
@@ -240,26 +287,18 @@ async def reindex_material(
     if not material.content:
         return {"ok": False, "message": "资料无文本内容"}
 
-    rag = get_rag_service()
-    status = await rag.get_status(int(current_user.id))
-    if not status.get("embedding_enabled"):
-        return {"ok": False, "chunk_count": 0, "message": "未配置 embedding API Key，资料仍可通过普通关键词/全文上下文使用；配置后可重新索引启用语义检索。"}
-    project_ids = await _get_material_project_ids(db, material.id, current_user.id)
-    count = await rag.index_material(
-        material_id=material.id,
-        title=material.title,
-        content=material.content,
-        file_type=material.file_type,
-        project_ids=project_ids,
-        user_id=current_user.id,
+    projection = await RetrievalProjectionService(db).ingest(
+        material,
+        user_id=int(current_user.id),
+        operation="rebuild",
+        force=True,
     )
-    if count <= 0:
-        status = await rag.get_status(int(current_user.id))
-        last_error = status.get("last_error", "")
-        if last_error:
-            return {"ok": False, "chunk_count": 0, "message": f"索引失败: {last_error}"}
-        return {"ok": False, "chunk_count": 0, "message": "未生成可索引片段，请检查资料内容或 Embedding 配置。"}
-    return {"ok": True, "chunk_count": count}
+    return {
+        "ok": projection.get("status") == "ready",
+        "chunk_count": int(projection.get("vector_chunk_count") or 0),
+        "message": projection.get("last_error") or "资料索引已重建。",
+        "projection": projection,
+    }
 
 
 @router.post("/reindex-all")
@@ -271,8 +310,9 @@ async def reindex_all(
     if not settings.RAG_ENABLED:
         return {"ok": False, "message": "RAG 未启用"}
 
-    rebuilder = MaterialIndexRebuilder(db, rag=get_rag_service())
-    return await rebuilder.rebuild_user(int(current_user.id))
+    return await RetrievalProjectionService(db, rag=get_rag_service()).rebuild_user(
+        int(current_user.id)
+    )
 
 
 async def _get_material_project_ids(db: AsyncSession, material_id: int, user_id: int) -> List[int]:

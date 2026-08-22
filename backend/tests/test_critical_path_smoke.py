@@ -142,6 +142,50 @@ class CriticalPathSmokeTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/notes")
         self.assertEqual(response.status_code, 401)
 
+    async def test_retrieval_projection_endpoints_expose_update_and_delete_lifecycle(self):
+        headers = await self._register_and_login("projection_smoke_user")
+        created = await self.client.post(
+            "/api/materials/create",
+            json={"title": "检索生命周期", "content": "outdated retrieval vocabulary"},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        material = created.json()
+        material_id = int(material["id"])
+        self.assertIn(material["retrieval_projection"]["status"], {"ready", "degraded"})
+
+        projections = await self.client.get("/api/rag/projections", headers=headers)
+        self.assertEqual(projections.status_code, 200, projections.text)
+        self.assertEqual(projections.json()["summary"]["total"], 1)
+
+        updated = await self.client.patch(
+            f"/api/materials/{material_id}",
+            json={"content": "replacement vector lifecycle"},
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["retrieval_projection"]["source_version"], 2)
+
+        obsolete = await self.client.get(
+            "/api/materials/search", params={"query": "outdated"}, headers=headers
+        )
+        replacement = await self.client.get(
+            "/api/materials/search", params={"query": "replacement"}, headers=headers
+        )
+        self.assertEqual(obsolete.status_code, 200, obsolete.text)
+        self.assertEqual(obsolete.json(), [])
+        self.assertEqual(replacement.status_code, 200, replacement.text)
+        self.assertEqual(replacement.json()[0]["material_id"], material_id)
+
+        deleted = await self.client.delete(f"/api/materials/{material_id}", headers=headers)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        remaining = await self.client.get("/api/rag/projections", headers=headers)
+        self.assertEqual(remaining.status_code, 200, remaining.text)
+        tombstone = next(
+            item for item in remaining.json()["items"] if item["source_id"] == material_id
+        )
+        self.assertEqual(tombstone["status"], "deleted")
+
 
 if __name__ == "__main__":
     unittest.main()

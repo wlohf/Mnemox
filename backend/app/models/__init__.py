@@ -23,6 +23,7 @@ from app.models.coach import CoachEvent, CoachNudge, CoachPreference, CoachSkill
 from app.models.note_quote import NoteQuoteUsage  # noqa: F401
 from app.models.concept import Concept, ConceptEdge, ConceptLink  # noqa: F401
 from app.models.prompt_template import PromptTemplate  # noqa: F401
+from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk  # noqa: F401
 from app.models.learner_model import (  # noqa: F401
     LearnerEvidence,
     ProjectionOutbox,

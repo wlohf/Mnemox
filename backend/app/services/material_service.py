@@ -13,6 +13,7 @@ from app.config import settings
 from app.utils.paths import from_repo_relative
 from app.utils.file_extract import extract_text
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.services.retrieval_projection_service import RetrievalProjectionService
 
 
 class MaterialService:
@@ -21,6 +22,7 @@ class MaterialService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.rag = get_rag_service()
+        self.projections = RetrievalProjectionService(db, rag=self.rag)
 
     @staticmethod
     def _wrap_material_context(material: Material, context: str, *, max_chars: int = 6000) -> str:
@@ -74,19 +76,42 @@ class MaterialService:
         await self.db.commit()
         await self.db.refresh(material)
 
-        if sync_to_rag and settings.RAG_ENABLED and content:
-            try:
-                material_id_value = material.__dict__.get("id", 0)
-                await self.rag.index_material(
-                    material_id=int(material_id_value),
-                    title=title,
-                    content=content,
-                    file_type=file_type,
-                    user_id=user_id,
-                )
-            except Exception as e:
-                logger.warning("同步到 RAG 知识库失败: %s", e)
+        try:
+            projection = await self.projections.ingest(
+                material,
+                user_id=int(user_id),
+                operation="ingest",
+                sync_vectors=bool(sync_to_rag),
+            )
+            logger.info("资料 id=%s 检索投影状态: %s", material.id, projection.get("status"))
+        except Exception as e:
+            logger.warning("同步到 RAG 知识库失败: %s", e)
 
+        return material
+
+    async def update_material(
+        self,
+        material_id: int,
+        *,
+        user_id: int,
+        title: str | None = None,
+        content: str | None = None,
+    ) -> Material | None:
+        """Update canonical SQL first, then replace every derived chunk version."""
+        material = await self.db.scalar(
+            select(Material).where(Material.id == int(material_id), Material.user_id == int(user_id))
+        )
+        if material is None:
+            return None
+        if title is not None:
+            material.title = title
+        if content is not None:
+            material.content = content
+            material.content_hash = hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
+            material.content_status = "extracted" if content.strip() else "failed"
+        await self.db.commit()
+        await self.db.refresh(material)
+        await self.projections.refresh(material, user_id=int(user_id))
         return material
 
     async def get_material(self, material_id: int) -> Optional[Material]:
@@ -123,14 +148,16 @@ class MaterialService:
         if file_path_value:
             abs_file_path = from_repo_relative(str(file_path_value))
 
+        await self.projections.prepare_forget(material_user_id, material_id)
         await self.db.delete(material)
         await self.db.commit()
 
-        if settings.RAG_ENABLED:
-            try:
-                await self.rag.remove_material(material_id, user_id=material_user_id)
-            except Exception as e:
-                logger.warning("从 RAG 删除资料失败: %s", e)
+        try:
+            projection = await self.projections.forget(material_user_id, material_id)
+            if projection.get("status") != "deleted":
+                logger.warning("资料向量删除待重试 id=%s: %s", material_id, projection.get("last_error"))
+        except Exception as e:
+            logger.warning("从 RAG 删除资料失败: %s", e)
 
         if abs_file_path and abs_file_path.exists():
             try:

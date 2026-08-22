@@ -9,7 +9,7 @@ vi.mock('antd', () => ({
 
 import { apiFetch, getApiErrorMessage } from './apiClient'
 import { getDashboard } from './learningApi'
-import { getAllProviders } from './aiSettingsApi'
+import { getAllProviders, retryRetrievalProjection } from './aiSettingsApi'
 import { startPomodoro } from './pomodoroApi'
 import { listConversations } from './conversationApi'
 import { listGoals } from './goalApi'
@@ -65,6 +65,38 @@ describe('apiFetch error handling', () => {
     await expect(getAllProviders()).rejects.toMatchObject({
       status: 503,
       message: 'AI 设置服务不可用',
+    })
+  })
+
+  it('retries retrieval projections through the authenticated POST endpoint', async () => {
+    mockFetchResponse(200, {
+      source_type: 'material',
+      source_id: 17,
+      backend: 'chroma',
+      status: 'ready',
+      operation: 'retry',
+      source_version: 2,
+      chunk_count: 3,
+      vector_chunk_count: 3,
+      attempt_count: 2,
+    })
+
+    const projection = await retryRetrievalProjection(17)
+
+    expect(projection.status).toBe('ready')
+    expect(projection.attempt_count).toBe(2)
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/rag/projections/17/retry',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('propagates retrieval projection retry failures to the material sidebar', async () => {
+    mockFetchResponse(404, { detail: '检索投影不存在' })
+
+    await expect(retryRetrievalProjection(17)).rejects.toMatchObject({
+      status: 404,
+      message: '检索投影不存在',
     })
   })
 
