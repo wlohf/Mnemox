@@ -8,6 +8,7 @@
 - 标准化 chunk 来源、backend provenance、跨来源 RRF diagnostics。
 - material 原始 Chroma/BM25/RRF 分数在 Router 边界归一化为 `[0,1]` 相对分数，避免主聊天把 RRF 小数误判为低相关度；原始分数继续保留用于调试。
 - 保留 Agent 检索工具的空查询兼容行为：note、memory、concept、learner state 返回默认近期/高风险项，material 经 ContextStore 返回最近资料摘要且不触发语义 backend。
+- 保留 `search_memories` 原有 `key`、`value_preview`、`locked` 响应字段，同时补充统一 Router 的来源信息和新字段，避免已有前端、评测与调用方发生破坏性变化。
 - 新增 L0/L1/L2 加载。
 - `ChatAgent`、`AgentKernel` 和 Agent 工具 API 新增 `search_concepts`、`search_learner_state`。
 - `context_retrieve` 改走统一 Router。
