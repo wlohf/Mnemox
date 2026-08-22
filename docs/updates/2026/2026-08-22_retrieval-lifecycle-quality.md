@@ -19,7 +19,7 @@
 
 ## 验证结果
 
-- 后端全量：`386 passed, 8 skipped, 53 subtests passed`；其中 4 个 PostgreSQL 服务验收和 4 个可选 Qdrant 用例在默认本地环境跳过。
+- 后端全量：`387 passed, 8 skipped, 53 subtests passed`；其中 4 个 PostgreSQL 服务验收和 4 个可选 Qdrant 用例在默认本地环境跳过。
 - 安装 Qdrant 可选依赖后的生命周期、质量、Qdrant、schema、API 冒烟与多用户隔离聚焦回归：`54 passed`。
 - 新增真实 API 更新/删除/投影状态冒烟及多用户隔离专项：`12 passed`。
 - 前端：`24 files / 74 tests passed`；生产构建与 lint 均通过。

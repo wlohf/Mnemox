@@ -28,7 +28,7 @@ Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach �
 | Qdrant 决策 | 真实 Qdrant Local 比较 dense+sparse+RRF、轻量词项重排和 sparse-only fallback；未满足明显优势门槛，不加入运行时依赖。 |
 | 数据库 | SQLite lightweight migration 与 Alembic 当前 head 为 `20260822_10`；SQL 和原始文件始终是规范来源，向量只是可重建投影。 |
 | 前端 | 资料侧栏展示单条资料投影状态、错误和重试操作；AI 设置展示 ready、degraded、failed 等用户范围统计。 |
-| 本地回归 | 全后端 `386 passed, 8 skipped, 53 subtests passed`；新增资料 API 冒烟/隔离专项 `12 passed`；前端 `24 files / 74 tests passed`，桌面端 `21 passed`，前端构建和 lint 通过。 |
+| 本地回归 | 全后端 `387 passed, 8 skipped, 53 subtests passed`；新增资料 API 冒烟/隔离专项 `12 passed`；前端 `24 files / 74 tests passed`，桌面端 `21 passed`，前端构建和 lint 通过。 |
 | 已通过 CI | PR #8 的 Backend、Frontend、PostgreSQL 16、多 worker 验收、Chromium、Windows smoke 和 Repository integrity 均已通过；Windows smoke 不等于真实 Electron 安装 E2E。 |
 
 ## 3. 已通过的远程验收
