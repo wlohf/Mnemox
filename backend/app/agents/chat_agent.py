@@ -92,6 +92,9 @@ class ChatAgent(BaseAgent):
             if source_type == "memory":
                 item.update(
                     {
+                        "key": hit.title,
+                        "value_preview": hit.excerpt[:240],
+                        "locked": hit.metadata.get("locked"),
                         "memory_key": hit.title,
                         "memory_value": hit.excerpt,
                         "category": hit.metadata.get("category"),
