@@ -6,6 +6,7 @@
 - 主聊天大资料从直接 `rag.retrieve(...)` 迁移到 Router material adapter。
 - material adapter 接入 Chroma + keyword 的可替换 Hybrid backend，并保留 material ID、区间与 project scope。
 - 标准化 chunk 来源、backend provenance、跨来源 RRF diagnostics。
+- material 原始 Chroma/BM25/RRF 分数在 Router 边界归一化为 `[0,1]` 相对分数，避免主聊天把 RRF 小数误判为低相关度；原始分数继续保留用于调试。
 - 新增 L0/L1/L2 加载。
 - `ChatAgent`、`AgentKernel` 和 Agent 工具 API 新增 `search_concepts`、`search_learner_state`。
 - `context_retrieve` 改走统一 Router。
@@ -22,6 +23,6 @@
 
 ## 测试
 
-- 新增 `test_retrieval_router.py`：material scope、chunk provenance、两层 RRF 边界、局部降级、L0 加载。
+- 新增 `test_retrieval_router.py`：material scope、chunk provenance、分数归一化、两层 RRF 边界、局部降级、L0 加载。
 - 新增 `test_chat_retrieval_router_integration.py`：验证主聊天大资料实际调用 Router。
 - 完整 CI 结果记录在对应 PR 中。
