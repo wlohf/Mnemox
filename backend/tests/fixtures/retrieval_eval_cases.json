@@ -1,0 +1,49 @@
+{
+  "version": "retrieval-quality-v1",
+  "description": "Deterministic bilingual retrieval, fusion, lifecycle, and tenant-isolation corpus.",
+  "materials": [
+    {"id": 101, "user_id": 1, "title": "混合检索与排序", "content": "混合检索先通过 dense 向量召回和 BM25 sparse 关键词召回得到候选，再用 reciprocal rank fusion RRF 倒数排名融合，最后使用 reranker cross encoder 精排。"},
+    {"id": 102, "user_id": 1, "title": "BM25 关键词算法", "content": "BM25 根据词频 TF、逆文档频率 IDF 与文档长度归一化计算相关性。稀有关键词逆文档频率更高，但同一文档的词频收益逐渐饱和。"},
+    {"id": 103, "user_id": 1, "title": "Embedding 语义召回", "content": "Embedding 将文本映射为向量，余弦相似度衡量语义接近程度。未配置 embedding 时系统应降级为 SQL keyword BM25 检索。"},
+    {"id": 104, "user_id": 1, "title": "分块和上下文窗口", "content": "Chunk size 决定每个文本分块大小，chunk overlap 保留边界上下文。修改分块大小或重叠后需要重新生成 SQL chunk manifest 和向量投影。"},
+    {"id": 105, "user_id": 1, "title": "知识图谱与 GraphRAG", "content": "概念图谱记录 prerequisite 先修关系、part of 组成关系与资料来源。GraphRAG 可以查询多跳知识关联，但 SQL 概念表仍然是规范事实来源。"},
+    {"id": 106, "user_id": 1, "title": "FSRS 间隔复习", "content": "FSRS 根据记忆稳定性 stability、difficulty 和上次复习结果预测下次复习时间。复习计划负责调度，不直接证明用户真正掌握概念。"},
+    {"id": 107, "user_id": 1, "title": "学习者掌握度证据", "content": "mastery_estimate 使用答题正确率、回忆练习和提示次数等强证据。学习时长和打开资料属于弱证据，只能调整 confidence 和 forgetting risk。"},
+    {"id": 108, "user_id": 1, "title": "多用户隔离与删除", "content": "tenant isolation 要求每次检索先用 SQL 过滤 user_id。删除资料必须同步清理 SQL chunk manifest 和 Chroma vector，失败时保留 tombstone 重试。"},
+    {"id": 109, "user_id": 1, "title": "时态记忆纠错", "content": "用户最新记忆声明通过 supersedes 替代旧声明，旧事实失效但保留审计历史。只有 confirmed 且没有过期的 active memory 可以进入对话。"},
+    {"id": 110, "user_id": 1, "title": "Agent 工具调用确认", "content": "Tool calling 先由模型生成结构化 tool calls，再由应用执行工具。创建计划和修改记忆必须遵循 draft 用户确认 execute，不允许自主绕过确认。"},
+    {"id": 111, "user_id": 1, "title": "索引损坏与重建", "content": "向量库损坏后，rebuild 从规范 SQL 资料内容与原始文件重新计算 chunk 和 embedding。重建范围只能覆盖当前 user_id，不能清空其他用户数据。"},
+    {"id": 112, "user_id": 1, "title": "检索评测指标", "content": "检索离线评测使用 Recall at 5、Recall at 10、MRR、NDCG、平均延迟和 P95 latency。评测还要验证删除残留、无 embedding 降级与用户隔离。"},
+    {"id": 201, "user_id": 2, "title": "另一个用户的绝密笔记资料", "content": "tenant isolation secret sentinel：RRF reranker 顺序属于另一个用户，绝对不能出现在 user one 的结果中。"}
+  ],
+  "notes": [
+    {"id": 301, "user_id": 1, "title": "RRF 与 reranker 对比", "content": "RRF 只融合不同召回列表的排名，reranker 在融合之后逐条判断问题和片段是否真正相关。", "tags": ["RRF", "reranker"]},
+    {"id": 302, "user_id": 1, "title": "学习状态提醒", "content": "打开资料不等于掌握，必须通过无提示回忆测试确认。", "tags": ["mastery", "retrieval practice"]},
+    {"id": 303, "user_id": 2, "title": "隔离哨兵", "content": "secret sentinel RRF reranker", "tags": ["private"]}
+  ],
+  "concepts": [
+    {"id": 401, "user_id": 1, "name": "RRF", "description": "reciprocal rank fusion 倒数排名融合"},
+    {"id": 402, "user_id": 1, "name": "reranker", "description": "cross encoder 在召回和 RRF 融合后精排"},
+    {"id": 403, "user_id": 1, "name": "BM25", "description": "基于 TF IDF 和文档长度的稀疏检索"},
+    {"id": 404, "user_id": 1, "name": "FSRS", "description": "记忆稳定性与间隔复习调度"},
+    {"id": 405, "user_id": 2, "name": "private RRF", "description": "secret sentinel"}
+  ],
+  "cases": [
+    {"id": "fusion-order", "query": "RRF 和 reranker 的顺序是什么", "user_id": 1, "source_types": ["material", "note", "concept"], "relevance": {"material:101": 3, "note:301": 3, "concept:401": 2, "concept:402": 2}, "expected_material_ids": [101], "expected_chunk_ids": ["material:101:chunk:0"], "expected_concepts": ["RRF", "reranker"], "forbidden_user_ids": [2]},
+    {"id": "bm25-idf", "query": "BM25 稀有关键词 IDF 为什么更高", "user_id": 1, "source_types": ["material", "concept"], "relevance": {"material:102": 3, "concept:403": 2}, "expected_material_ids": [102], "forbidden_user_ids": [2]},
+    {"id": "embedding-fallback", "query": "没有 embedding 时如何降级关键词检索", "user_id": 1, "source_types": ["material"], "relevance": {"material:103": 3, "material:112": 1}, "expected_material_ids": [103], "forbidden_user_ids": [2]},
+    {"id": "chunk-overlap", "query": "chunk overlap 修改后为什么要重建索引", "user_id": 1, "source_types": ["material"], "relevance": {"material:104": 3, "material:111": 1}, "expected_material_ids": [104], "forbidden_user_ids": [2]},
+    {"id": "graph-prerequisite", "query": "GraphRAG 如何找到先修关系和概念关联", "user_id": 1, "source_types": ["material"], "relevance": {"material:105": 3}, "expected_material_ids": [105], "forbidden_user_ids": [2]},
+    {"id": "fsrs-stability", "query": "FSRS 如何根据 stability 安排下次复习", "user_id": 1, "source_types": ["material", "concept"], "relevance": {"material:106": 3, "concept:404": 2}, "expected_material_ids": [106], "forbidden_user_ids": [2]},
+    {"id": "strong-vs-weak", "query": "学习时长属于强证据还是弱证据", "user_id": 1, "source_types": ["material", "note"], "relevance": {"material:107": 3, "note:302": 2}, "expected_material_ids": [107], "forbidden_user_ids": [2]},
+    {"id": "delete-tombstone", "query": "删除向量失败如何用 tombstone 重试", "user_id": 1, "source_types": ["material"], "relevance": {"material:108": 3}, "expected_material_ids": [108], "forbidden_user_ids": [2]},
+    {"id": "temporal-memory", "query": "supersedes 如何替代过期旧记忆", "user_id": 1, "source_types": ["material"], "relevance": {"material:109": 3}, "expected_material_ids": [109], "forbidden_user_ids": [2]},
+    {"id": "tool-confirmation", "query": "tool calling 创建计划为什么需要用户确认", "user_id": 1, "source_types": ["material"], "relevance": {"material:110": 3}, "expected_material_ids": [110], "forbidden_user_ids": [2]},
+    {"id": "vector-rebuild", "query": "向量库损坏后从 SQL rebuild 是否影响其他用户", "user_id": 1, "source_types": ["material"], "relevance": {"material:111": 3, "material:108": 1}, "expected_material_ids": [111], "forbidden_user_ids": [2]},
+    {"id": "quality-metrics", "query": "Recall MRR NDCG 和 P95 latency 怎么评测", "user_id": 1, "source_types": ["material"], "relevance": {"material:112": 3}, "expected_material_ids": [112], "forbidden_user_ids": [2]},
+    {"id": "rrf-full-name", "query": "reciprocal rank fusion 倒数排名融合", "user_id": 1, "source_types": ["material", "concept"], "relevance": {"material:101": 3, "concept:401": 3}, "expected_material_ids": [101], "forbidden_user_ids": [2]},
+    {"id": "private-sentinel-owner", "query": "secret sentinel RRF reranker", "user_id": 1, "source_types": ["material", "note", "concept"], "relevance": {"material:101": 3, "note:301": 2, "concept:401": 1, "concept:402": 1}, "expected_material_ids": [101], "forbidden_user_ids": [2]},
+    {"id": "private-sentinel-other-user", "query": "secret sentinel RRF reranker", "user_id": 2, "source_types": ["material", "note", "concept"], "relevance": {"material:201": 3, "note:303": 2, "concept:405": 1}, "expected_material_ids": [201], "forbidden_user_ids": [1]},
+    {"id": "empty-query-compatibility", "query": "", "user_id": 1, "source_types": ["material"], "relevance": {}, "expected_material_ids": [], "forbidden_user_ids": [2], "compatibility_only": true}
+  ]
+}

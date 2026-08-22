@@ -509,6 +509,92 @@ async def _run_lightweight_migrations(conn):
     except Exception as exc:
         raise RuntimeError("SQLite memory declaration migration failed") from exc
 
+    # Retrieval manifests are explicitly rebuildable projections. Keep their
+    # lifecycle/tombstone rows durable even after a material is deleted so a
+    # failed external-vector cleanup can be retried after an application restart.
+    try:
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_projections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_type VARCHAR(30) NOT NULL DEFAULT 'material',
+                source_id INTEGER NOT NULL,
+                backend VARCHAR(30) NOT NULL DEFAULT 'chroma',
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                last_operation VARCHAR(20) NOT NULL DEFAULT 'ingest',
+                source_version INTEGER NOT NULL DEFAULT 1,
+                indexed_version INTEGER NULL,
+                source_signature VARCHAR(64) NULL,
+                content_hash VARCHAR(64) NULL,
+                configuration_fingerprint VARCHAR(64) NULL,
+                embedding_model VARCHAR(160) NULL,
+                chunk_size INTEGER NULL,
+                chunk_overlap INTEGER NULL,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                vector_chunk_count INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                last_indexed_at DATETIME NULL,
+                deleted_at DATETIME NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_retrieval_projection_source_backend
+                    UNIQUE (user_id, source_type, source_id, backend),
+                CONSTRAINT ck_retrieval_projection_status CHECK
+                    (status IN ('pending','indexing','ready','degraded','failed','deleting','deleted')),
+                CONSTRAINT ck_retrieval_projection_source_version CHECK (source_version >= 1),
+                CONSTRAINT ck_retrieval_projection_attempt_count CHECK (attempt_count >= 0),
+                CONSTRAINT ck_retrieval_projection_chunk_count CHECK (chunk_count >= 0),
+                CONSTRAINT ck_retrieval_projection_vector_chunk_count CHECK (vector_chunk_count >= 0),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_retrieval_projections_user_id "
+            "ON retrieval_projections(user_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_retrieval_projections_user_status "
+            "ON retrieval_projections(user_id, status, updated_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_projection_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                projection_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                source_type VARCHAR(30) NOT NULL DEFAULT 'material',
+                source_id INTEGER NOT NULL,
+                source_version INTEGER NOT NULL DEFAULT 1,
+                chunk_index INTEGER NOT NULL,
+                chunk_hash VARCHAR(64) NOT NULL,
+                text TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_retrieval_projection_chunk UNIQUE (projection_id, chunk_index),
+                CONSTRAINT ck_retrieval_projection_chunk_index CHECK (chunk_index >= 0),
+                CONSTRAINT ck_retrieval_chunk_source_version CHECK (source_version >= 1),
+                FOREIGN KEY(projection_id) REFERENCES retrieval_projections(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_retrieval_projection_chunks_projection_id "
+            "ON retrieval_projection_chunks(projection_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_retrieval_projection_chunks_user_id "
+            "ON retrieval_projection_chunks(user_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_retrieval_projection_chunks_user_source "
+            "ON retrieval_projection_chunks(user_id, source_type, source_id)"
+        ))
+    except Exception as exc:
+        raise RuntimeError("SQLite retrieval projection migration failed") from exc
+
 
 async def init_db():
     """Initialize SQLite development storage without mutating production schema."""

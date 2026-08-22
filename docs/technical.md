@@ -2,10 +2,10 @@
 
 > 状态：维护中
 >
-> 基线日期：2026-08-19
+> 基线日期：2026-08-22
 >
 > 当前发布版本：v1.3.0
-> 代码范围：post-v1.3 统一开发基线；除学习者模型、projection outbox、运维 API、数据库演练和前端证据下钻外，已纳入聊天笔记 ContextStore、Coach 联想归因、Vault 同步安全边界和可审计 SQL 记忆声明。AgentKernel 仍只作为多步只读原型，不代表 Phase 2 已启动或替代现有 Planner
+> 代码范围：post-v1.3 统一开发基线；包含 `RetrievalRouter`、资料 SQL 检索投影、Chroma 生命周期、离线质量门禁、Qdrant no-go、学习者模型、projection outbox、ContextStore、Coach 联想归因、Vault 安全和 SQL 记忆声明。AgentKernel 仍为多步只读原型，不代表 Phase 2 启动。
 
 本文件描述当前仓库中已存在的技术实现、运行边界和维护约定。历史方案位于 `docs/superpowers/` 和其他设计文档中；它们用于理解决策过程，不应替代本技术基线。
 
@@ -66,7 +66,7 @@ flowchart LR
 
 - 应用启动和关闭时的数据库初始化、目录准备和资源清理。
 - Episodic Memory 衰减。
-- RAG 初始化与空向量库时的后台索引。
+- RAG 初始化、缺失资料投影补建，以及失败索引/删除墓碑的启动恢复。
 - CORS、速率限制、请求大小限制和安全响应头。
 - 请求参数校验错误的中文友好提示。
 - 已认证上传文件的安全读取，以及可选的前端静态站点托管。
@@ -133,13 +133,31 @@ flowchart LR
 
 AI 设置支持 OpenAI、Claude、Gemini、DeepSeek/Qwen 及 OpenAI-compatible 服务，并可为聊天、复习、错题、Agent 和 Embedding 等场景配置路由。联网搜索可走 provider hosted search、Tavily、应用层搜索，并在失败时回退到 DuckDuckGo/Bing。
 
-### 5.2 RAG 降级策略
+### 5.2 统一检索与 RAG 降级
 
-RAG 使用 LlamaIndex 与 ChromaDB 进行语义检索。Embedding 或向量服务不可用时，资料上传与问答不应返回 500，而应使用关键词检索降级。前端已有 Online/Fallback 状态和最近错误提示；后续仍需在浏览器 E2E 与检索迁移中回归覆盖，确保不同入口的状态语义一致。
+资料、笔记、概念、记忆和学习者状态通过 `RetrievalRouter` 进入主聊天、ChatAgent、AgentKernel 与 `/api/materials/search`。资料后端固定为 `Chroma dense + SQL keyword + RRF`，先按当前用户、项目和资料范围授权，再融合结果并按 L0/L1/L2 装载证据。Embedding 不可用时保留规范 SQL 分块与关键词召回；单个来源故障不应破坏其他来源或使资料上传返回 500。
+
+`retrieval_projections` 记录用户、来源类型/ID、后端、来源版本、已索引版本、embedding/分块配置指纹、状态、错误、尝试次数和时间戳；`retrieval_projection_chunks` 保存带用户、来源版本、序号和内容哈希的可重建 SQL 分块清单。领域资料和原始文件是规范来源，SQL 分块与 Chroma 向量均是派生投影。
+
+```text
+上传 / 更新规范资料
+    -> SQL 分块清单与来源版本提交
+    -> Chroma 向量生成
+    -> ready / degraded / failed
+
+删除规范资料 + 删除墓碑
+    -> SQL 分块同步清除
+    -> Chroma 按 user_id + material_id 删除
+    -> deleted；失败时保留 failed 墓碑供 retry
+```
+
+`RetrievalProjectionService` 提供 `ingest`、`refresh`、`prepare_forget`、`forget`、`retry`、`rebuild_user` 和 `forget_user`；资料更新替换旧清单与向量，配置变化将旧投影标记为降级，服务重启恢复中断的索引或删除。资料侧栏显示单条状态、错误和重试，AI 设置显示当前用户的聚合状态。若 manifest 哈希与当前 SQL 正文不一致，关键词检索直接回退规范正文。
+
+固定语料位于 `backend/tests/fixtures/retrieval_eval_cases.json`。`backend/evaluate_retrieval.py` 离线评测 Recall@5/10、MRR、NDCG@10、平均/P95 延迟、用户隔离、删除残留、空查询和无 embedding 降级；常规 GitHub CI 对生产 hybrid 设置 Recall@5 不低于 `0.75` 的门禁。选型证据见 [检索生命周期与质量 ADR](superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md)。
 
 ### 5.3 笔记上下文
 
-聊天笔记检索已收敛为 `note_context_service -> ContextStore` 单一路径。当前实现使用 `KeywordContextStore` 对当前用户的 SQL 笔记按标题、标签和正文匹配，返回来源、命中摘录和 `retrieval_mode`；摘录经过 `wrap_untrusted_context` 包装并受字符预算限制。ContextStore 异常会降级为无笔记上下文的正常聊天，流式接口以 SSE 返回参考笔记指示器。该收敛完成了首条真实业务流的接口迁移，但尚未完成独立索引投影、Dense/Sparse 混合召回、版本更新/删除残留和离线质量集。
+聊天笔记检索保留 `note_context_service -> ContextStore`，并作为 note source 纳入 `RetrievalRouter`。当前 `KeywordContextStore` 对用户 SQL 笔记按标题、标签和正文匹配；资料 source 已完成独立 SQL chunk 投影、Dense/Sparse 融合、版本更新、删除恢复和离线质量集，但笔记尚未迁移到相同持久化 manifest。摘录经过 `wrap_untrusted_context` 包装并受字符预算限制；笔记来源故障降级为正常聊天，流式接口以 SSE 返回参考指示器。
 
 ### 5.4 Agent 与 Coach
 
@@ -181,7 +199,7 @@ flowchart LR
 
 | 领域 | 当前实现 | 目标规范来源 | 允许的专用投影 |
 | --- | --- | --- | --- |
-| 资料与片段 | 上传文件、`Material`、Chroma | 文件存储 + SQL 的文件/解析版本/chunk 元数据 | `ContextStore` 索引（Chroma、Qdrant 等） |
+| 资料与片段 | 上传文件、SQL `Material`、版本化 SQL chunk 清单和 Chroma | 原始文件 + SQL `Material` | `retrieval_projections`、SQL chunk 清单、Chroma 向量；均可按用户重建或删除 |
 | 笔记 | SQL `Note` Markdown、标签、关联和 `source_path`；另有关键词检索路径 | SQL `notes`（Mnemox 内部原文、归属与更新时间） | `ContextStore` chunk/关键词/向量/摘要；概念关系与记忆候选仅作带来源派生数据 |
 | 知识关系 | `concepts`、`concept_edges`、`concept_links` | SQL 中带来源、置信度和审核状态的概念图 | `GraphStore`（Neo4j 等，若 Spike 通过） |
 | 长期记忆 | `UserMemory` 当前投影、`MemoryDeclaration` 审计历史、会话摘要与事件 | SQL 中带来源、有效时间、审核状态和替代关系的记忆声明 | Graphiti 时态记忆图（若 Spike 通过） |
@@ -195,7 +213,7 @@ flowchart LR
 | 接口 | 负责的能力 | 当前状态 |
 | --- | --- | --- |
 | `BlobStore` | 原始文件、版本、删除与读取授权 | 需要从现有本地上传抽象出来 |
-| `ContextStore` | 入库、混合检索、分层加载、删除 | 聊天笔记已完成首条接口迁移；当前仍为关键词 SQL 基线，独立投影与完整生命周期待补 |
+| `RetrievalRouter` / `ContextStore` | 跨来源查询、范围过滤、混合召回、分层加载、删除 | Router 已统一资料/笔记/概念/记忆/学习状态；资料具备版本化 SQL/Chroma 投影和完整生命周期；笔记仍使用可降级 SQL ContextStore |
 | `ConceptGraph` / `GraphStore` | 关系维护、来源、邻域/路径查询、人工修正 | SQL 图谱已存在；独立图存储尚未评估 |
 | `MemoryStore` / `TemporalMemoryGraph` | 记忆声明、时间有效性、冲突/失效、相关记忆检索 | `MemoryDeclaration` 已覆盖人工/自动来源、审核和替代历史；冲突闭环、筛选 episode 与图投影未实现 |
 | `LearnerModel` | 证据记录、状态聚合、遗忘风险、下一步建议 | `learner_model_service` 已实现证据记录、状态读取/重算和人工修正；复习事件、API 与前端证据下钻已接入，真实数据校准和推荐排序待补 |
@@ -248,17 +266,17 @@ user_concept_state
 
 `learner_model_service` 将证据类型限制为直接证据（`answer`、`recall`、`explanation`、`application`、`hint_count`、`review_result`）、间接信号（`study_duration`、`study_frequency`、`repeated_question`、`interruption`、`recovery`）以及 `legacy_mastery` / `manual_override`。直接证据按可靠度和 90 天半衰期加权；通常 `score` 越高表示表现越好，`hint_count` 的原始分数则表示提示依赖度并在聚合时显式反转。间接信号只调整置信度和遗忘风险，解释摘要明确记录其影响，不能单独提高掌握度。复习路由先写 `LearningEvent`，再在同一事务内写 `review_result` 证据和派生状态。人工修正也写事件和证据，重算时保留直到用户明确清除。Graphiti 的记忆检索可以提供带来源的学习上下文，但不得写成唯一的 mastery 输入。
 
-迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明。SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态；PostgreSQL 只通过 Alembic。
+迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明，`20260822_10` 增加资料检索投影及版本化 SQL chunk 清单。SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态；PostgreSQL 只通过 Alembic。
 
-默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260816_09`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
+默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260822_10`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
 
-一次性 PostgreSQL 16 演练库已从 v1.3 基线升级并验证早期 Phase 1 链路：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。当前 CI 配置进一步为每次变更启动一次性 PostgreSQL 16 空库，通过生产入口升级到 `20260816_09`，验收真实 `SKIP LOCKED`、共享策略升级、双 worker exactly-once 投影和独立心跳，再执行 `alembic check`；该门禁在远程 CI 实跑通过前只算已实现。正式发布窗口仍需在快照保护下核对生产数据、Vault/记忆声明 schema 和回滚准备。正式环境回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。状态重算只消费截至重算时间的证据，记录最新来源事件、可靠度、模型版本、更新时间和解释摘要；读取已有状态时会刷新时间相关的置信度与遗忘风险。
+一次性 PostgreSQL 16 演练库已从 v1.3 基线升级并验证早期 Phase 1 链路：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。当前 CI 为每次变更启动 PostgreSQL 16 空库，通过生产入口升级到当前 head `20260822_10`，验收真实 `SKIP LOCKED`、共享策略升级、双 worker exactly-once 投影和独立心跳，再执行 `alembic check`。PR #8 已通过此前 head 的同一真实门禁；新增迁移需随本模块重新通过。正式发布窗口仍需在快照保护下核对生产数据、Vault、记忆声明、检索投影 schema 和回滚准备；生产回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。
 
 ### 6.4 事件与投影流
 
 目标写入顺序为“领域数据 + `LearningEvent` + `projection_outbox` 同一事务提交 -> 幂等消费者投影”。`record_learning_event` 现在会在同一 SQLAlchemy 事务中创建 outbox 行；`ProjectionOutbox` 具备用户/概念范围、幂等键、模型/载荷版本、`pending/processing/processed/failed` 状态、尝试次数、锁定时间、错误信息和可用时间。`projection_outbox_service` 支持重复消费、崩溃后回收、指数退避、按用户/概念/时间范围重放和状态重建；Review/Anki 完成复习会在请求事务内只消费对应 `source_event_id` 的投影，失败仍保留为可恢复 outbox 行。删除用户或概念会级联清理 outbox、证据和状态。
 
-当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。全局 worker 直接以 PostgreSQL `FOR UPDATE SKIP LOCKED` 认领任务，使并发实例能跳过忙行并继续分配其他用户工作；认领后按用户排序取得 transaction advisory lock。用户范围 API/replay 先取得其用户 advisory lock，再领取行；其行锁冲突同样使用 `SKIP LOCKED` 跳过。SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`OUTBOX_WORKER_ID` 是可配置的逻辑前缀，每个运行时都会持久化独立的心跳 ID；受保护的 `/internal/outbox/metrics` 聚合未完成队列、跨实例活跃/轮询失败 worker、DLQ 和告警，不返回任务载荷或异常正文。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。真实 PostgreSQL 16 多实例门禁已编码，远程 CI 通过与正式生产升级仍是发布收口项目。
+当前工作区已验证数据库原子幂等入队、所有可领取状态的最大重试限制、显式重放重置、概念级状态串行锁、525 条事件游标分页重放、跨用户/跨概念隔离和严格 API 输入边界。应用生命周期在 PostgreSQL 上会启动一个可配置 worker；一轮最多处理配置批量，但每条任务使用独立 session，在自己的事务内认领、投影并提交，避免多实例跨概念锁交叉，关闭数据库前优雅停止。全局 worker 直接以 PostgreSQL `FOR UPDATE SKIP LOCKED` 认领任务，使并发实例能跳过忙行并继续分配其他用户工作；认领后按用户排序取得 transaction advisory lock。用户范围 API/replay 先取得其用户 advisory lock，再领取行；其行锁冲突同样使用 `SKIP LOCKED` 跳过。SQLite/桌面端因仍保留请求内事件级消费而明确停用常驻 worker，避免无行锁数据库出现双消费者。`OUTBOX_WORKER_ID` 是可配置的逻辑前缀，每个运行时都会持久化独立的心跳 ID；受保护的 `/internal/outbox/metrics` 聚合未完成队列、跨实例活跃/轮询失败 worker、DLQ 和告警，不返回任务载荷或异常正文。`/health` 只返回不含主机标识和异常正文的本实例累计统计，并保留最近一次持久投影失败时间；SQLite 会标记 `sqlite_single_consumer`。真实 PostgreSQL 16 多实例门禁已在 GitHub CI 通过；正式生产升级仍是独立发布收口项目。
 
 学习者模型 API 位于 `/api/learner-model`：概念状态及解释、分页证据历史、人工修正/撤销、单概念或批量重算、按用户/概念/时间范围重放，以及用户隔离的 outbox 处理入口均已提供。前端 `/mastery` 页面展示掌握度、置信度、遗忘风险、可靠度、模型版本、计算依据和证据历史，并区分直接、间接、人工和 legacy 来源。
 
@@ -266,7 +284,7 @@ user_concept_state
 
 | 技术 | 定位 | 当前结论 |
 | --- | --- | --- |
-| Qdrant | `ContextStore` 的混合检索 Spike 候选 | 需完成 Windows 打包、无 embedding 降级、用户隔离、删除/迁移、质量和成本验收；未采纳前继续使用现有基线 |
+| Qdrant | 资料 dense+sparse+RRF 对照实验 | 真实 Qdrant Local 已验证隔离、删除、重建和 sparse fallback；原生 RRF Recall@5 `0.95` 低于现有 hybrid 的 `0.9833`，轻量词项重排仅追平。**No-go**：不进入生产依赖。 |
 | Neo4j | `GraphStore` Spike 候选 | 只在多跳查询/图谱编辑需求证明 SQL 不足后评估；不自动增加桌面常驻服务 |
 | Graphiti | `TemporalMemoryGraph` Spike 候选 | 只投影筛选后的状态变化；SQL 仍是记忆事实、审核和删除的来源 |
 | LangGraph | `AgentRuntime` Spike 候选 | 必须通过持久化、SSE、确认式写入、恢复/取消、隔离、回放、降级和桌面分发验收 |
@@ -305,7 +323,7 @@ Docker 场景使用根目录 `docker-compose.yml`。Windows 本地体验可使�
 
 ### 8.2 数据库迁移
 
-PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260816_09`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
+PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260822_10`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
 
 ### 8.3 验证命令
 
@@ -313,6 +331,11 @@ PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链�
 # 后端
 cd backend
 python -m pytest -q
+python evaluate_retrieval.py --backend hybrid --min-recall-at-5 0.75 --summary-only
+
+# 可选 Qdrant 复验，不属于生产依赖
+pip install -r requirements-spike.txt
+python evaluate_retrieval.py --backend all --include-qdrant --summary-only
 
 # 前端
 cd frontend
@@ -335,15 +358,15 @@ CI 还会在独立 PostgreSQL 16 服务库上依次执行 `python run_migrations
 
 | 优先级 | 事项 | 原因 |
 | --- | --- | --- |
-| P0 | 正式 PostgreSQL 发布升级 | PostgreSQL 16 自动门禁已实现，待远程 CI 形成通过证据；正式库仍需在发布窗口升级到 `20260816_09`，并完成快照、生产数据/Vault/记忆声明 schema 核对与回滚准备。 |
-| P0 | 真实关键路径 E2E | Chromium 门禁已覆盖 Agent 草案取消无副作用与确认执行，待 CI 实跑；仍需真实后端集成和 Windows Electron 启动/安装包 E2E。 |
+| P0 | 正式 PostgreSQL 发布升级 | PostgreSQL 16 空库迁移与多 worker 门禁已在 GitHub CI 通过；正式库仍需在发布窗口升级到 `20260822_10`，并完成快照、生产数据/Vault/记忆/检索投影 schema 核对与回滚准备。 |
+| P0 | 真实关键路径 E2E | Chromium 草案取消/确认门禁与 Windows smoke 已在 GitHub CI 通过；仍需真实后端集成和 Windows Electron 启动/安装包 E2E。 |
 | P0 | 多用户越权审计与回归测试 | 产品存在多领域详情、写入和文件访问接口，必须持续验证资源归属。 |
 | P0 | 统一 Prompt Injection 防护 | RAG、笔记、搜索和工具返回均会进入模型上下文。 |
 | P2 | RAG 状态前端回归 | 该能力已在 v1.2.0 主体落地，后续随检索迁移继续验证降级状态、最近错误和提示一致性。 |
 | P1 | 拆分超大模块 | `learning`、`analytics`、Agent/Coach 相关实现的复杂度持续上升。 |
-| P1 | 检索碎片化与 ContextStore 迁移 | 聊天笔记已完成首条接口迁移；资料 RAG、记忆、独立检索投影、混合召回、质量集及完整 `ingest/forget` 生命周期仍待统一。 |
+| P1 | 检索真实数据与笔记投影 | `RetrievalRouter`、资料 SQL/Chroma 投影、混合召回、更新/删除/重建及合成质量集已完成；后续扩大真实问题样本，并按需要补笔记独立 manifest。 |
 | P1 | 学习者模型数据边界收口 | 后端状态/证据 API、人工修正、批量重算、用户隔离、前端证据下钻和离线校准基线已实现；真实 holdout 数据不足，推荐排序待补。 |
-| P1 | 事件投影与数据生命周期 | `projection_outbox`、同事务写入、事件级在线消费、幂等消费、重试/崩溃恢复、525 条分页重放、范围隔离、删除级联、常驻 worker、DLQ、跨实例聚合指标和告警已验证；PostgreSQL 16 多实例门禁已实现待 CI，ContextStore/图谱/记忆投影及正式发布验收待补。 |
+| P1 | 事件投影与数据生命周期 | outbox 幂等、重试、分页回放、隔离、DLQ、常驻 worker、聚合指标和 PostgreSQL 16 CI 已通过；资料投影具备版本、删除墓碑和重建，图谱/记忆派生删除和正式发布验收待补。 |
 | P1 | 时态记忆语义 | `MemoryDeclaration` 已覆盖来源、有效时间、审核和替代历史；仍需验证冲突/纠错/删除闭环、筛选 episode 和 Graphiti 候选适配。 |
 | P1 | Obsidian 同步一致性 | 稳定 Vault/文件身份、冲突候选、路径与文件安全保护、扫描失败保护和用户提示已完成；真实多 Vault 冲突/删除、并发幂等、watchdog 与写回仍待验收。 |
 | P1 | 联想与 Coach 反馈闭环 | 显式联想已接入 Coach，并记录 shown/accepted/completed；仍需积累真实样本、验证行为变化归因和保守阈值。 |
@@ -353,15 +376,15 @@ CI 还会在独立 PostgreSQL 16 服务库上依次执行 `python run_migrations
 | P1 | 离线冲突处理 UI | 现有同步队列可重试，但服务端与本地并发修改的用户决策仍需完善。 |
 | P2 | LLM 成本与数据生命周期 | 后台任务和概念抽取需要每用户预算、超时/熔断、日志脱敏、保留期限和删除级联。 |
 
-## 10. 演进方向与当前状态（2026-08-19 复核）
+## 10. 演进方向与当前状态（2026-08-22 复核）
 
 以下目标由 [2026-08-03 学习智能底座决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md) 定义。状态以代码和验收证据为准；“部分完成”不等于完成标准已满足。
 
 | 方向 | 摘要 | 决策 | 阶段 |
 | --- | --- | --- | --- |
-| 规范数据与投影 | 关系型核心保留；补学习证据、用户概念状态、记忆声明与 outbox | 新 ADR §2/§4 | 🔶 学习证据/用户概念状态、outbox/API 与人工/自动 SQL 记忆声明已验证；PostgreSQL 16 多实例门禁已实现待 CI，其他通用投影和正式发布验收待补 |
+| 规范数据与投影 | 关系型核心保留；补学习证据、概念状态、记忆声明、outbox 与检索投影 | 新 ADR §2/§4 | 🔶 学习证据、outbox、记忆声明、资料 SQL chunk 清单与 PostgreSQL 16 多实例 CI 已验证；图谱/记忆派生闭环和正式发布待补 |
 | 复习调度 | `py-fsrs` 替换手写 SM-2 风格调度 | 保留 | ✅ FSRS 优先 + SM-2 降级；版本化迁移、数据保留回归、离线 DDL 和一次性 PostgreSQL 16 演练完成 |
-| 检索底座 | `ContextStore` 统一检索；Qdrant 为 Spike 候选 | 新 ADR §3/§5 | 🔶 OpenViking 已否决；聊天笔记已完成 ContextStore 接口迁移，当前是关键词 SQL 基线；资料 RAG 仍使用 Chroma，独立投影与完整生命周期未完成 |
+| 检索底座 | `RetrievalRouter` 统一检索；资料 SQL/Chroma 投影与受控选型 | 08-22 检索 ADR | ✅ 资料/笔记/概念/记忆/学习状态已统一；资料具备 ingest/refresh/forget/retry/rebuild、质量门禁和 Qdrant no-go，生产保留 Chroma + SQL keyword + RRF |
 | 概念图谱 | 可审查的关系、证据和人工修正；Neo4j 为条件 Spike | 新 ADR §3/§5 | 🔶 图谱/联想计算有；关系质量、人工编辑、学习者状态和下钻未完成 |
 | 时态记忆 | SQL 记忆声明 + Graphiti 条件投影 | 新 ADR §3/§5 | 🔶 人工/自动 `MemoryDeclaration` 已保留来源、有效时间、审核与替代历史；冲突语义、筛选 episode 和 Graphiti 适配未开始 |
 | 学习者模型 | 多源证据、状态、遗忘风险与下一步推荐 | 新 ADR §3 | 🔶 后端、outbox、批量重放、API、前端展示和校准基线已验证；真实数据校准、推荐排序和生产监控待补 |

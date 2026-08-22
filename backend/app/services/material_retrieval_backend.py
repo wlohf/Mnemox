@@ -8,6 +8,7 @@ only this adapter knows how to read its existing Chroma collection.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -21,6 +22,7 @@ from app.ai.rag_service import RAGService, get_rag_service, load_rag_settings
 from app.config import settings
 from app.models.chat import ChatProject, ChatProjectMaterial
 from app.models.material import Material
+from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 
 
 @dataclass(frozen=True)
@@ -151,6 +153,8 @@ class ChromaMaterialRetrievalBackend:
         top_k: int = 8,
     ) -> List[MaterialChunkHit]:
         if not query.strip() or top_k <= 0:
+            return []
+        if not settings.RAG_ENABLED:
             return []
 
         await self.rag.initialize()
@@ -302,11 +306,45 @@ class KeywordMaterialRetrievalBackend:
             )
         )
         materials = list(result.scalars().all())
+        manifests_result = await self.db.execute(
+            select(RetrievalProjectionChunk, RetrievalProjection.content_hash)
+            .join(
+                RetrievalProjection,
+                RetrievalProjection.id == RetrievalProjectionChunk.projection_id,
+            )
+            .where(
+                RetrievalProjectionChunk.user_id == scope.user_id,
+                RetrievalProjectionChunk.source_type == "material",
+                RetrievalProjectionChunk.source_id.in_(material_ids),
+                RetrievalProjection.user_id == scope.user_id,
+                RetrievalProjection.source_id == RetrievalProjectionChunk.source_id,
+                RetrievalProjection.source_version == RetrievalProjectionChunk.source_version,
+                RetrievalProjection.status.in_(("indexing", "ready", "degraded", "failed")),
+                RetrievalProjection.last_operation != "forget",
+            )
+            .order_by(RetrievalProjectionChunk.source_id, RetrievalProjectionChunk.chunk_index)
+        )
+        persisted_chunks: dict[int, list[tuple[int, str, str | None]]] = defaultdict(list)
+        for chunk, projected_hash in manifests_result.all():
+            persisted_chunks[int(chunk.source_id)].append(
+                (int(chunk.chunk_index), str(chunk.text or ""), projected_hash)
+            )
 
         docs: List[tuple[Material, int, str, List[str]]] = []
         document_frequency: Counter[str] = Counter()
         for material in materials:
-            for chunk_index, chunk in enumerate(_chunk_material_text(material.content or "")):
+            source_hash = hashlib.sha256(
+                str(material.content or "").strip().encode("utf-8")
+            ).hexdigest()
+            stored = persisted_chunks.get(int(material.id), [])
+            if stored and any(item[2] != source_hash for item in stored):
+                stored = []
+            source_chunks = (
+                [(chunk_index, chunk) for chunk_index, chunk, _ in stored]
+                if stored
+                else list(enumerate(_chunk_material_text(material.content or "")))
+            )
+            for chunk_index, chunk in source_chunks:
                 tokens = _tokenize(chunk)
                 if not tokens:
                     continue

@@ -252,6 +252,34 @@ export interface RagRetrievalStatus {
   message?: string
 }
 
+export interface RetrievalProjectionSummary {
+  total: number
+  ready: number
+  pending: number
+  degraded: number
+  failed: number
+  deleting: number
+  deleted: number
+  sql_chunks: number
+  vector_chunks: number
+}
+
+export interface RetrievalProjectionStatus {
+  source_type: string
+  source_id: number
+  backend: string
+  status: 'pending' | 'indexing' | 'ready' | 'degraded' | 'failed' | 'deleting' | 'deleted'
+  operation: string
+  source_version: number
+  indexed_version?: number | null
+  chunk_count: number
+  vector_chunk_count: number
+  attempt_count: number
+  last_error?: string | null
+  embedding_model?: string | null
+  updated_at?: string | null
+}
+
 export interface RagSettings {
   api_key_masked: string
   base_url: string
@@ -266,6 +294,7 @@ export interface RagSettings {
   fallback_active?: boolean
   last_error?: string
   last_retrieval_status?: RagRetrievalStatus
+  projection_summary?: RetrievalProjectionSummary
 }
 
 export interface RagSettingsUpdate {
@@ -288,6 +317,7 @@ export interface RagSettingsUpdateResult {
   base_url: string
   model: string
   requires_reindex?: boolean
+  stale_projections?: number
   message?: string
   total_chunks?: number
 }
@@ -297,6 +327,7 @@ export interface RagReindexResult {
   materials_indexed: number
   materials_total?: number
   failed?: number
+  degraded?: number
   total_chunks: number
   message?: string
 }
@@ -317,4 +348,10 @@ export async function testRagEmbedding(): Promise<TestResult> {
 
 export async function reindexAllRagMaterials(): Promise<RagReindexResult> {
   return await apiFetch<RagReindexResult>('/api/rag/reindex-all', { method: 'POST' })
+}
+
+export async function retryRetrievalProjection(materialId: number): Promise<RetrievalProjectionStatus> {
+  return await apiFetch<RetrievalProjectionStatus>(`/api/rag/projections/${materialId}/retry`, {
+    method: 'POST',
+  })
 }

@@ -1354,6 +1354,21 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                 最近错误：{ragSettings.last_error}
               </div>
             )}
+            {ragSettings?.projection_summary && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                <Tag color="green">索引就绪 {ragSettings.projection_summary.ready}</Tag>
+                <Tag color="blue">SQL 片段 {ragSettings.projection_summary.sql_chunks}</Tag>
+                {ragSettings.projection_summary.pending > 0 && (
+                  <Tag color="processing">处理中 {ragSettings.projection_summary.pending}</Tag>
+                )}
+                {ragSettings.projection_summary.degraded > 0 && (
+                  <Tag color="orange">关键词降级 {ragSettings.projection_summary.degraded}</Tag>
+                )}
+                {ragSettings.projection_summary.failed > 0 && (
+                  <Tag color="red">待重试 {ragSettings.projection_summary.failed}</Tag>
+                )}
+              </div>
+            )}
                 </>
               ),
             }]}

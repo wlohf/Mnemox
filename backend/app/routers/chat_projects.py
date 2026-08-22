@@ -12,6 +12,7 @@ from app.ai.rag_service import get_rag_service
 from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
+from app.services.retrieval_projection_service import RetrievalProjectionService
 
 router = APIRouter()
 
@@ -37,8 +38,6 @@ async def _ensure_user_materials(db: AsyncSession, material_ids: List[int], user
 
 
 async def _reindex_material_for_projects(db: AsyncSession, material_id: int, user_id: int) -> None:
-    if not settings.RAG_ENABLED:
-        return
     result = await db.execute(
         select(Material).where(Material.id == material_id, Material.user_id == user_id)
     )
@@ -54,12 +53,9 @@ async def _reindex_material_for_projects(db: AsyncSession, material_id: int, use
     )
     project_ids = [row[0] for row in assoc_result.all()]
 
-    rag = get_rag_service()
-    await rag.index_material(
-        material_id=material.id,
-        title=material.title,
-        content=material.content,
-        file_type=material.file_type,
+    await RetrievalProjectionService(db, rag=get_rag_service()).ingest(
+        material,
+        operation="refresh",
         project_ids=project_ids,
         user_id=user_id,
     )

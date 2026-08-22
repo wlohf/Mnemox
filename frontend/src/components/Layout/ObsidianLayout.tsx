@@ -54,6 +54,7 @@ import {
   DoubleRightOutlined,
   SendOutlined,
   EditOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
@@ -110,8 +111,11 @@ import {
   getAllProviders,
   getStoredWebSearchMode,
   getStoredWebSearchProviderName,
+  retryRetrievalProjection,
   type AIProvider,
   type AIProvidersUpdatedDetail,
+  type RetrievalProjectionStatus,
+  type RetrievalProjectionSummary,
 } from '../../services/aiSettingsApi'
 import { getConversationPath, parseConversationRouteId } from '../../services/conversationRoute'
 import { getProviderModels, getSelectableChatProviders } from './chatModelOptions'
@@ -150,6 +154,7 @@ interface Material {
   content?: string
   file_path?: string
   project_ids?: number[]
+  retrieval_projection?: RetrievalProjectionStatus | null
 }
 
 interface ProjectSearchResult {
@@ -303,7 +308,9 @@ export function ObsidianLayout() {
     fallback_active?: boolean
     last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
     message?: string
+    projection_summary?: RetrievalProjectionSummary
   } | null>(null)
+  const [retryingProjectionId, setRetryingProjectionId] = useState<number | null>(null)
 
   // 资料预览状态
   const [previewVisible, setPreviewVisible] = useState(false)
@@ -475,6 +482,7 @@ export function ObsidianLayout() {
         file_type: m.file_type,
         file_path: m.file_path,
         project_ids: m.project_ids || [],
+        retrieval_projection: m.retrieval_projection || null,
       }))
       setMaterials(mapped.reverse())
     } catch {
@@ -1905,7 +1913,7 @@ export function ObsidianLayout() {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('title', file.name)
-    formData.append('sync_to_anythingllm', syncToRAG ? 'true' : 'false')
+    formData.append('sync_to_rag', syncToRAG ? 'true' : 'false')
 
     try {
       const response = await apiFetch('/api/materials/upload', {
@@ -1924,6 +1932,7 @@ export function ObsidianLayout() {
           file_type: fileExt,
           file_path: data.file_path,
           project_ids: data.project_ids || [],
+          retrieval_projection: data.retrieval_projection || null,
         }
         if (activeProjectId) {
           try {
@@ -2410,6 +2419,12 @@ export function ObsidianLayout() {
                               RAG: {ragStatus.rag_online ? '在线' : 'Fallback'}
                             </Tag>
                             {ragStatus.rag_online && <Tag color="blue">{ragStatus.total_chunks} chunks</Tag>}
+                            {Boolean(ragStatus.projection_summary?.failed) && (
+                              <Tag color="red">{ragStatus.projection_summary?.failed} 份待重试</Tag>
+                            )}
+                            {Boolean(ragStatus.projection_summary?.degraded) && (
+                              <Tag color="orange">{ragStatus.projection_summary?.degraded} 份关键词降级</Tag>
+                            )}
                           </div>
                         )}
                         <Upload.Dragger
@@ -2482,6 +2497,37 @@ export function ObsidianLayout() {
                                 title="预览"
                                 style={{ color: 'var(--primary-600)' }}
                               />,
+                              ...(item.retrieval_projection?.status === 'failed' || item.retrieval_projection?.status === 'degraded'
+                                ? [<Button
+                                  key="retry-projection"
+                                  type="text"
+                                  size="small"
+                                  icon={<ReloadOutlined />}
+                                  loading={retryingProjectionId === item.id}
+                                  onClick={async (event) => {
+                                    event.stopPropagation()
+                                    setRetryingProjectionId(item.id)
+                                    try {
+                                      const projection = await retryRetrievalProjection(item.id)
+                                      setMaterials((previous) => previous.map((material) => (
+                                        material.id === item.id
+                                          ? { ...material, retrieval_projection: projection }
+                                          : material
+                                      )))
+                                      if (projection.status === 'ready') {
+                                        message.success('资料索引已恢复')
+                                      } else {
+                                        message.warning(projection.last_error || '资料继续使用关键词检索')
+                                      }
+                                    } catch (error) {
+                                      message.error(getApiErrorMessage(error, '资料索引重试失败'))
+                                    } finally {
+                                      setRetryingProjectionId(null)
+                                    }
+                                  }}
+                                  title="重试索引"
+                                />]
+                                : []),
                               <Button
                                 type="text"
                                 size="small"
@@ -2549,6 +2595,28 @@ export function ObsidianLayout() {
                                     <span style={{ fontSize: 10, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                                       {item.uploadTime} · {item.file_type?.toUpperCase() || 'FILE'}
                                     </span>
+                                    {item.retrieval_projection && (
+                                      <Tooltip title={item.retrieval_projection.last_error || `已保存 ${item.retrieval_projection.chunk_count} 个 SQL 片段`}>
+                                        <Tag
+                                          color={
+                                            item.retrieval_projection.status === 'ready'
+                                              ? 'green'
+                                              : item.retrieval_projection.status === 'failed'
+                                                ? 'red'
+                                                : 'orange'
+                                          }
+                                          style={{ width: 'fit-content', fontSize: 10, lineHeight: '16px' }}
+                                        >
+                                          {item.retrieval_projection.status === 'ready'
+                                            ? `已索引 ${item.retrieval_projection.vector_chunk_count}`
+                                            : item.retrieval_projection.status === 'failed'
+                                              ? '索引失败，可重试'
+                                              : item.retrieval_projection.status === 'indexing'
+                                                ? '索引处理中'
+                                                : '关键词检索'}
+                                        </Tag>
+                                      </Tooltip>
+                                    )}
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                       {projectNames.length > 0 ? (
                                         projectNames.map((name) => (

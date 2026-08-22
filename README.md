@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。统一开发基线已整合 v1.3.0 之后的 Phase 1 学习者模型与事件投影切片，以及聊天笔记 ContextStore、Coach 联想归因、Vault 同步安全边界和可审计 SQL 记忆声明：同事务 outbox、幂等/重试/崩溃恢复、超过 500 条事件的分页重放、学习者模型 API、前端证据下钻和离线校准基线均有验证证据。该开发基线不等于发布了新的安装包；生产发布仍需单独完成版本号、完整回归和真实 PostgreSQL 多实例验收。
+当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、可审计 SQL 记忆声明和 `RetrievalRouter`：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、失败重试、按用户重建和离线质量门禁。真实 Qdrant 实验未证明足够替换收益，因此生产继续采用 Chroma + SQL keyword + RRF。PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；正式数据库升级、真实 Electron 安装验收和新版发布仍需单独完成。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -27,6 +27,7 @@
 - 当前项目进度：`/docs/progress.md`
 - 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
 - 笔记、上下文与记忆边界（2026-08-13，三层逻辑存储 / 三阶段检索）：`/docs/superpowers/specs/2026-08-13-note-context-memory-architecture.md`
+- 检索生命周期与质量决策（2026-08-22，资料投影 / 质量门禁 / Qdrant no-go）：`/docs/superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md`
 - 历史架构决策（2026-07-26，部分仍有效）：`/docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md`
 - 功能更新记录：`/docs/updates/README.md`
 - 日常功能新增、优化和修复，统一记录到 `docs/updates/` 下的周期文档中，默认按周拆分，避免长期堆积在单一说明文件里。
@@ -53,7 +54,7 @@
 |---|---|
 | AI 不了解用户 | 用户画像系统：从行为数据自动计算专注度、坚持度、最佳学习时段 |
 | AI 对话无记忆 | 双层记忆：Episodic 记忆（对话摘要）+ Semantic 记忆（长期事实提炼）|
-| 学习资料利用率低 | RAG 管道：资料自动向量化，AI 回答时自动检索相关内容 |
+| 学习资料利用率低 | RetrievalRouter：资料自动分块，Chroma + SQL keyword 混合召回，更新/删除可恢复且引用可追溯 |
 | 无法追踪学习行为 | 事件追踪系统：记录每一次番茄钟、答题、复习的行为数据 |
 | AI 配置容易出错 | AI Provider 设置：场景路由、RAG Embedding、自定义中转、联网搜索、token 上限和可读错误提示 |
 | 最新信息不稳定 | Tavily 优先搜索 + DuckDuckGo / Bing 最终兜底；没有搜索 Key 也能保留基础联网能力 |
@@ -67,9 +68,11 @@ flowchart TB
     Desktop["Electron Windows 壳"] --> UI["React + TypeScript 学习工作台"]
     UI -->|REST / SSE| API["FastAPI 领域 API"]
     API --> Domain["学习 / 对话 / Agent / Coach"]
-    Domain --> SQL[("SQLite / PostgreSQL\n规范数据、事件、证据、声明与 outbox")]
-    Domain --> Notes["ContextStore\n聊天笔记：关键词 SQL 基线"]
-    Domain --> Materials["资料 RAG\nLlamaIndex + ChromaDB / 关键词降级"]
+    Domain --> SQL[("SQLite / PostgreSQL\n规范数据、事件、证据与版本化投影")]
+    Domain --> Router["RetrievalRouter\n资料 / 笔记 / 概念 / 记忆 / 学习状态"]
+    Router --> Notes["ContextStore\n笔记 SQL 关键词检索"]
+    Router --> Materials["资料投影\nChroma + SQL keyword + RRF"]
+    SQL --> Materials
     Domain --> AI["多模型路由与联网搜索"]
     SQL --> Learner["LearnerModel / FSRS\n可重算状态与复习调度"]
 ```
@@ -125,16 +128,16 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
 - 聊天输入区支持模型覆盖默认路由；开启联网搜索后，可选择 Tavily、供应商 hosted search、专用搜索总结或本地兜底搜索
 - 自动模式会在配置 Tavily Key 时优先使用 Tavily；没有 Key 或搜索链路失败时，DuckDuckGo / Bing 会作为最终兜底
-- 当前用户的聊天笔记检索只经过 `ContextStore` 边界，返回来源与检索模式；关键词 SQL 是当前可观测基线，不等于完整混合检索已经完成
+- `RetrievalRouter` 统一融合当前用户的资料、笔记、概念、记忆和学习状态；笔记通过 `ContextStore` 保留来源、检索模式和 SQL 关键词降级
 - 聊天中的自然语言写入会先生成可编辑草稿，再由用户确认写入笔记、目标任务或当天计划
 
 ### 5. RAG 知识库
 - 支持 PDF / Word / Markdown / TXT 格式资料上传
 - LlamaIndex 自动解析 + 章节结构化
-- ChromaDB 向量存储，AI 回答自动检索相关章节
+- ChromaDB 向量 + SQL 分块关键词 + RRF 融合，AI 回答自动检索相关章节
 - 意图识别：对话中自动判断是否需要检索资料库
 - **容错降级**：embedding 服务不可用时，资料创建、问答和分析不会 500；资料搜索自动回退到关键词检索
-- 资料 RAG 仍与聊天笔记 ContextStore 单流并存；统一投影、版本更新/删除残留和离线质量集仍是 Phase 1 待办
+- 资料支持版本化投影、更新替换、删除墓碑、失败重试、按用户重建和离线检索质量门禁；Qdrant 已完成实验但不进入生产依赖
 
 ### 6. 多 AI 提供商支持
 - OpenAI（GPT-4o / GPT-4）
@@ -224,7 +227,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 | 数据库 ORM | SQLAlchemy 2.0（异步） |
 | 数据库 | SQLite（本地）/ PostgreSQL（生产）|
 | AI 编排 | 自研 Multi-LLM Router |
-| RAG 框架 | LlamaIndex + ChromaDB |
+| RAG 框架 | RetrievalRouter + LlamaIndex + ChromaDB + SQL keyword / RRF |
 | 向量嵌入 | OpenAI text-embedding-3-small |
 | 文件解析 | PyPDF2 + python-docx |
 | 容器化 | Docker + Docker Compose |
@@ -662,12 +665,12 @@ Mnemox/
 2026-07-26 起，项目方向已固化为「把学习科学变成默认行为」：以行为转化为北极星（建议执行率、中断恢复时长、复习按时率、每周有效学习时段数），按五条轨道推进。2026-08-03 重新核查后，阶段状态以 [路线图](docs/roadmap.md) 和 [进度文档](docs/progress.md) 为准，目标架构与选型边界见 [学习智能底座决策](docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。
 
 - [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
-- [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化和 API 冒烟已完成；真实浏览器/桌面 E2E、草案确认执行和卫生收口待补
-- [ ] **Phase 1 · 四层底座 MVP 持续收口**：学习者模型、projection outbox、前端证据下钻、离线校准、PostgreSQL worker/监控、聊天笔记 ContextStore 单流、Vault 安全边界、Coach 联想归因和 SQL 记忆声明已接入；独立检索投影、质量集、候选 Spike、真实数据校准与正式多实例验收待补
+- [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化、PostgreSQL 16、Chromium 草案确认与 Windows smoke 已通过；真实 Windows Electron 启动/安装 E2E 仍待补
+- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、质量集和 Qdrant no-go、学习者模型、outbox、Vault 安全、Coach 归因和 SQL 记忆声明已接入；下一模块为概念图谱自动抽取、人工编辑和先修缺口
 - [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
-当前执行顺序：先积累至少 50 个 holdout case 并运行离线回放；聊天笔记 ContextStore 单流已完成接口收敛，下一步补可重建检索投影、版本更新/删除残留、质量集和其余领域迁移。Outbox 的失败队列监控和跨实例聚合指标已完成；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；`Concept.mastery` 只在兼容周期结束后移除，Phase 2 必须等待 Phase 1 的投影、删除和重放边界验收完成。
+当前执行顺序：概念图谱闭环 → 学习者状态与可解释推荐 → SQL 时态记忆冲突/纠错 → Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
 
 默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 

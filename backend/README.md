@@ -32,7 +32,20 @@ OPENAI_API_KEY=your_api_key_here
 python run_migrations.py
 ```
 
-SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260816_09`，SQLite lightweight migration 已覆盖同一组 Vault/记忆声明增量；正式 PostgreSQL 仍须先快照，并在发布窗口执行当前 head 升级、schema 核对和多实例 Outbox 验收。
+SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260822_10`，SQLite lightweight migration 已覆盖 Vault、记忆声明及资料检索投影；正式 PostgreSQL 仍须先快照，并在发布窗口执行当前 head 升级、schema 核对和多实例 Outbox 验收。
+
+### 资料检索质量验收
+
+```bash
+python evaluate_retrieval.py --backend hybrid --min-recall-at-5 0.75 --summary-only
+```
+
+如需复现真实 Qdrant Local 对照，可额外安装可选实验依赖；它不会进入生产依赖或常规启动链路：
+
+```bash
+pip install -r requirements-spike.txt
+python evaluate_retrieval.py --backend all --include-qdrant --summary-only
+```
 
 ### 4. 启动服务
 
