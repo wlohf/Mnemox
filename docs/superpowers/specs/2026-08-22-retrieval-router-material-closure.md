@@ -32,6 +32,7 @@ Chat / Coach / Agent / AgentKernel
 6. **分层加载。** L0 返回标题，L1 返回片段或状态摘要，L2 才加载完整内容。
 7. **关键词 backend 的定位。** 当前 BM25 风格实现是无额外依赖的 reference/fallback；大规模资料库稳定后可原位替换为 Qdrant sparse 或 PostgreSQL FTS，不改 Router 调用方。
 8. **统一展示分数语义。** Chroma 相似度、BM25 和 RRF 的原始分数不可直接横向解释。Router 在 material 边界按当前候选集最大值归一化到 `[0,1]`，供主聊天表达相对相关度；原始分数保留在 `raw_backend_score`，并通过 `backend_scores`、`backend_ranks` 保留可调试证据。
+9. **保留空查询兼容行为。** Agent 的搜索工具允许不提供 query。空查询不再被 Router 直接拦截：note、memory、concept 和 learner state 按各自默认顺序返回近期或高风险项；material 通过 ContextStore 的 SQL 路径返回最近资料摘要，不触发无意义的 embedding/BM25 查询。
 
 ## 主聊天行为
 
@@ -68,6 +69,7 @@ RetrievalRouter(db).search(
 - material scope、chunk 来源和 backend provenance 可追踪；
 - 跨来源 RRF 不把 Chroma/keyword 重复当成两个顶层来源；
 - material 的展示分数为 `[0,1]` 相对分数，同时保留原始 backend/RRF 分数；
+- 空查询仍能返回近期上下文，且 material 不调用语义 backend；
 - 单来源异常时其余来源仍可用；
 - 主聊天的大资料路径实际经过 RetrievalRouter；
 - Agent API 类型包含概念和学习状态检索；
