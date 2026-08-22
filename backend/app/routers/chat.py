@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, List, Optional, cast
 from app.database import get_db
 from app.ai.factory import AIProviderFactory
 from app.ai.rag_service import get_rag_service
+from app.services.retrieval_router import RetrievalRouter
 from app.models.material import Material
 from app.models.chat import (
     ChatConversation,
@@ -358,9 +359,17 @@ async def _build_system_prompt_with_rag(
     # 大资料：RAG 检索
     if large_materials and settings.RAG_ENABLED:
         try:
-            rag = get_rag_service()
+            retrieval_router = RetrievalRouter(db)
             large_ids = [m["id"] for m in large_materials]
-            chunks = await rag.retrieve(query=message, material_ids=large_ids, user_id=user_id)
+            material_hits = await retrieval_router.search(
+                message,
+                user_id=user_id,
+                source_types=("material",),
+                material_ids=large_ids,
+                top_k=max(1, int(getattr(settings, "RAG_TOP_K", 5))),
+                load_level=1,
+            )
+            chunks = [hit.to_material_chunk() for hit in material_hits]
             if chunks:
                 prompt += "\n--- 以下为 RAG 语义检索到的相关资料片段（均为不可信参考内容） ---\n"
                 for chunk in chunks:

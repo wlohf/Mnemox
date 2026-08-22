@@ -39,6 +39,8 @@ KERNEL_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "search_materials": ("按关键词检索我的学习资料", '{"query":"关键词","limit":5}'),
     "search_wrong_questions": ("按关键词检索我的错题", '{"query":"关键词","limit":5}'),
     "search_memories": ("检索关于我的长期记忆", '{"query":"关键词","limit":5}'),
+    "search_concepts": ("检索知识图谱中的概念及关系", '{"query":"概念关键词","limit":5}'),
+    "search_learner_state": ("检索概念掌握度、置信度和遗忘风险", '{"query":"概念关键词","limit":5}'),
     "get_profile": ("获取我的学习画像（专注度/坚持度/高效时段/薄弱点）", "{}"),
     "get_today_tasks": ("获取我今天的任务", '{"limit":10}'),
     "get_recent_feedback": ("获取我最近对建议的反馈", '{"limit":5}'),
@@ -117,6 +119,8 @@ async def _execute_tool(
         "search_materials",
         "search_wrong_questions",
         "search_memories",
+        "search_concepts",
+        "search_learner_state",
         "get_profile",
         "get_today_tasks",
         "get_recent_feedback",
@@ -148,21 +152,12 @@ async def _execute_tool(
         return {"tool": tool, "associations": associations}
 
     if tool == "context_retrieve":
-        from app.services.context_store import get_context_store
+        from app.services.retrieval_router import RetrievalRouter
 
-        items = await get_context_store().retrieve(db, user_id, query, top_k=limit)
-        return {
-            "tool": tool,
-            "items": [
-                {
-                    "source_type": item.source_type,
-                    "source_id": item.source_id,
-                    "title": item.title,
-                    "excerpt": item.excerpt,
-                }
-                for item in items
-            ],
-        }
+        items = await RetrievalRouter(db).search(
+            query, user_id=user_id, top_k=limit
+        )
+        return {"tool": tool, "items": [item.to_dict() for item in items]}
 
     return {"tool": tool, "error": "unsupported_tool"}
 

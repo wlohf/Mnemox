@@ -90,7 +90,18 @@ class AgentTaskTriggerRequest(BaseModel):
 
 
 class AgentToolCallRequest(BaseModel):
-    tool: Literal["search_notes", "search_materials", "search_wrong_questions", "search_memories", "get_profile", "get_agent_learning_profile", "get_today_tasks", "get_recent_feedback"]
+    tool: Literal[
+        "search_notes",
+        "search_materials",
+        "search_wrong_questions",
+        "search_memories",
+        "search_concepts",
+        "search_learner_state",
+        "get_profile",
+        "get_agent_learning_profile",
+        "get_today_tasks",
+        "get_recent_feedback",
+    ]
     query: str | None = None
     limit: int | None = 5
 

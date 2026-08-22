@@ -14,6 +14,7 @@ from app.models.memory import UserMemory
 from app.models.question import Question, WrongQuestion
 from app.models.user_profile import UserProfile
 from app.services.note_retriever import NoteRetriever
+from app.services.retrieval_router import RetrievalRouter
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
 
@@ -47,6 +48,10 @@ class ChatAgent(BaseAgent):
             return await self._search_wrong_questions(ctx, query, limit)
         if tool == "search_memories":
             return await self._search_memories(ctx, query, limit)
+        if tool == "search_concepts":
+            return await self._search_concepts(ctx, query, limit)
+        if tool == "search_learner_state":
+            return await self._search_learner_state(ctx, query, limit)
         if tool == "get_profile":
             return await self._get_profile(ctx)
         if tool == "get_agent_learning_profile":
@@ -57,31 +62,45 @@ class ChatAgent(BaseAgent):
             return await self._get_recent_feedback(ctx, limit)
         return {"tool": tool, "items": [], "error": "unsupported_tool"}
 
+    async def _router_search(
+        self,
+        ctx: AgentRunContext,
+        query: str,
+        limit: int,
+        *,
+        tool: str,
+        source_type: str,
+        route: str,
+    ) -> dict:
+        hits = await RetrievalRouter(ctx.db).search(
+            query,
+            user_id=ctx.user_id,
+            source_types=(source_type,),
+            top_k=limit,
+        )
+        items = []
+        for hit in hits:
+            item = hit.to_dict()
+            item.update(
+                {
+                    "id": hit.source_id,
+                    "title": hit.title,
+                    "content_preview": hit.excerpt[:240],
+                    "route": route,
+                }
+            )
+            items.append(item)
+        return {"tool": tool, "query": query, "items": items}
+
     async def _search_notes(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
-        notes = await NoteRetriever.retrieve_notes(ctx.db, ctx.user_id, query, limit=limit)
-        return {"tool": "search_notes", "query": query, "items": [
-            {
-                "id": note["id"],
-                "title": note["title"],
-                "content_preview": note.get("excerpt", ""),
-                "note_type": note.get("note_type"),
-                "score": note.get("score"),
-                "reason": note.get("reason"),
-                "route": note.get("route", "/notes"),
-            }
-            for note in notes
-        ]}
+        return await self._router_search(
+            ctx, query, limit, tool="search_notes", source_type="note", route="/notes"
+        )
 
     async def _search_materials(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
-        stmt = select(Material).where(Material.user_id == ctx.user_id)
-        if query:
-            like = f"%{query}%"
-            stmt = stmt.where(or_(Material.title.ilike(like), Material.content.ilike(like)))
-        result = await ctx.db.execute(stmt.order_by(Material.updated_at.desc(), Material.id.desc()).limit(limit))
-        return {"tool": "search_materials", "query": query, "items": [
-            {"id": material.id, "title": material.title, "content_preview": (material.content or "")[:240], "route": "/materials"}
-            for material in result.scalars().all()
-        ]}
+        return await self._router_search(
+            ctx, query, limit, tool="search_materials", source_type="material", route="/materials"
+        )
 
     async def _search_wrong_questions(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
         stmt = select(WrongQuestion).options(selectinload(WrongQuestion.question).selectinload(Question.chapter)).where(WrongQuestion.user_id == ctx.user_id)
@@ -96,19 +115,24 @@ class ChatAgent(BaseAgent):
         return {"tool": "search_wrong_questions", "query": query, "items": items}
 
     async def _search_memories(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
-        stmt = select(UserMemory).where(
-            UserMemory.user_id == ctx.user_id,
-            UserMemory.status == "active",
-            UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+        return await self._router_search(
+            ctx, query, limit, tool="search_memories", source_type="memory", route="/agent"
         )
-        if query:
-            like = f"%{query}%"
-            stmt = stmt.where(or_(UserMemory.memory_key.ilike(like), UserMemory.memory_value.ilike(like), UserMemory.category.ilike(like)))
-        result = await ctx.db.execute(stmt.order_by(UserMemory.last_seen_at.desc(), UserMemory.id.desc()).limit(limit))
-        return {"tool": "search_memories", "query": query, "items": [
-            {"id": item.id, "key": item.memory_key, "category": item.category, "value_preview": (item.memory_value or "")[:240], "confidence": item.confidence, "locked": bool(item.is_locked)}
-            for item in result.scalars().all()
-        ]}
+
+    async def _search_concepts(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
+        return await self._router_search(
+            ctx, query, limit, tool="search_concepts", source_type="concept", route="/knowledge-graph"
+        )
+
+    async def _search_learner_state(self, ctx: AgentRunContext, query: str, limit: int) -> dict:
+        return await self._router_search(
+            ctx,
+            query,
+            limit,
+            tool="search_learner_state",
+            source_type="learner_state",
+            route="/agent",
+        )
 
     async def _get_profile(self, ctx: AgentRunContext) -> dict:
         result = await ctx.db.execute(select(UserProfile).where(UserProfile.user_id == ctx.user_id))
