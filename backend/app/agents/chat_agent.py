@@ -89,6 +89,17 @@ class ChatAgent(BaseAgent):
                     "route": route,
                 }
             )
+            if source_type == "memory":
+                item.update(
+                    {
+                        "memory_key": hit.title,
+                        "memory_value": hit.excerpt,
+                        "category": hit.metadata.get("category"),
+                        "confidence": hit.metadata.get("confidence"),
+                        "is_locked": hit.metadata.get("locked"),
+                        "review_status": hit.metadata.get("review_status"),
+                    }
+                )
             items.append(item)
         return {"tool": tool, "query": query, "items": items}
 

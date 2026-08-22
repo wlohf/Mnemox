@@ -68,12 +68,15 @@ async def search_note_context(
     if not str(query or "").strip():
         return []
     try:
-        items = await RetrievalRouter(db).search(
+        response = await RetrievalRouter(db).search_with_diagnostics(
             query,
             user_id=user_id,
             top_k=max(1, min(int(limit or 3), 12)),
             source_types=("note",),
         )
+        if "note" in response.diagnostics.degraded_sources:
+            raise RuntimeError("note retrieval failed")
+        items = response.hits
     except Exception:
         logger.warning(
             "event=contextstore.retrieve status=failure source_types=note",

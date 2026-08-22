@@ -80,7 +80,7 @@ class RetrievalRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scope.material_id_min, 5)
         self.assertEqual(scope.material_id_max, 9)
         self.assertEqual(scope.project_id, 11)
-        self.assertGreaterEqual(requested_k, 4)
+        self.assertEqual(requested_k, 4)
 
     async def test_cross_source_rrf_treats_material_as_one_source(self):
         router = RetrievalRouter(

@@ -211,7 +211,12 @@ class RetrievalRouter:
         if unknown:
             raise ValueError(f"Unsupported retrieval source(s): {', '.join(unknown)}")
         limit = max(1, min(int(top_k or 8), 50))
-        source_limit = max(limit, min(int(per_source_k or limit * 3), 80))
+        if per_source_k is not None:
+            source_limit = max(limit, min(int(per_source_k), 80))
+        elif len(requested) == 1:
+            source_limit = limit
+        else:
+            source_limit = max(limit, min(limit * 3, 80))
         if not requested:
             diagnostics = RetrievalDiagnostics(requested, (), {}, {}, "none")
             return RetrievalResponse([], diagnostics)
