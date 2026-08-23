@@ -173,7 +173,7 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 2. 统一 Prompt Injection 防护层，为资料、笔记、搜索和工具结果建立明确的不可信上下文边界。
 3. 收口 RAG 状态的产品语义：资料侧栏和设置入口已展示在线/关键词回退/最近错误；还需让聊天等入口保持同一状态含义，并用浏览器 E2E 验证降级提示。
 4. 保留 API 冒烟，同时补真实浏览器/桌面 E2E，覆盖 Agent 草案确认与执行。
-5. PostgreSQL 16 空库迁移与多 worker 验收、Chromium 草案确认和 Windows smoke 已通过 GitHub CI；当前数据库 head 为 `20260822_11`，覆盖 Vault、记忆声明、资料检索投影、概念来源审核及学习状态计数。正式生产库仍须在发布窗口先做快照，再执行升级、schema、数据和多实例运行核对。
+5. 此前 PostgreSQL 16 空库迁移与多 worker 验收、Chromium 草案确认和 Windows smoke 已通过 GitHub CI；当前数据库 head 为 `20260823_12`，新增时态记忆事实身份、历史回填、冲突关系和当前事实唯一约束。本次迁移仍须重新通过远程 PostgreSQL 门禁；正式生产库须在发布窗口先做快照，再执行升级、schema、数据和多实例运行核对。
 6. 仓库卫生：清理明确过期的 `release/` 资产，规范提交分支和未提交文件状态。
 
 ### P1：四层学习智能底座（Phase 1）
@@ -182,12 +182,12 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 2. 学习者模型：以 `learner_evidence` 和 `user_concept_state` 替代 `Concept.mastery` 的混合语义；先完成可解释的直接/间接证据聚合、人工修正和一次复习到状态更新的闭环。
 3. 检索底座统一：`RetrievalRouter` 已收敛资料、笔记、记忆、概念和学习状态；资料 SQL/Chroma 投影完成版本、删除、重建与质量门禁。真实 Qdrant Local 未证明明显优势，保留 Chroma + SQL keyword + RRF，并持续补真实语料。
 4. 概念图谱：完成真实 PostgreSQL 演练、自动上传闭环、人工改名/合并/删除、关系来源与抽取质量评测；只有多跳查询或图谱编辑的价值成立后再评估 Neo4j。
-5. 时态记忆：补全来源、有效时间、失效、冲突、用户审核和删除闭环；以筛选后的状态变化 episode 评估 Graphiti，不能将原始聊天全量写入。
+5. 时态记忆：SQL 已覆盖来源、事实键、有效时间、当前事实唯一性、冲突审核、人工纠错、自动失效和派生删除；只有 SQL 出现真实能力缺口时才以筛选后的状态变化 episode 评估 Graphiti，不能将原始聊天全量写入。
 6. Obsidian vault：先收口拉取式同步的稳定 ID、冲突/删除/并发语义；watchdog 作为后续增强，不与 MVP 混标。
 7. 联想引擎：接入 Coach 呈现、shown/feedback/采纳事件和保守阈值调参。
 8. 概念级体验：完成概念地图、先修缺口、资料小节下钻与学习建议理由展示。
 
-当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、`RetrievalRouter`、资料 SQL chunk 投影、向量更新/删除/重建、离线质量门禁、可审核概念抽取、人工身份治理、先修缺口及解释型学习推荐均已有实现与验证；Vault 安全边界、Coach 联想归因和人工/自动 SQL 记忆声明也已进入开发基线。PostgreSQL 16 多实例、Chromium 和 Windows smoke 已通过远程 CI。下一模块为 SQL 时态记忆冲突、替代、失效与纠错；真实学习校准样本、Coach 教学反馈、正式生产升级和真实 Electron E2E 继续后置，Phase 2 不提前展开。
+当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、`RetrievalRouter`、资料投影生命周期、离线质量门禁、可审核概念、先修缺口、解释型学习推荐，以及时态记忆冲突/替代/失效/纠错/派生删除均已有实现与验证；Vault 安全边界和 Coach 联想归因也已进入开发基线。此前 PostgreSQL 16 多实例、Chromium 和 Windows smoke 已通过远程 CI，新增迁移需重新验收。下一模块为 Coach 教学行为反馈闭环；真实学习校准样本、正式生产升级和真实 Electron E2E 继续后置，Phase 2 不提前展开。
 
 ### P2：Agent 升级（Phase 2，垂直切片）
 

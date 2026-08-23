@@ -1,5 +1,5 @@
 """AI 记忆模型：会话摘要 + 长期记忆"""
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -74,6 +74,21 @@ class MemoryDeclaration(Base):
             "review_status",
             "observed_at",
         ),
+        Index(
+            "ix_memory_declarations_user_fact_review_valid",
+            "user_id",
+            "fact_key",
+            "review_status",
+            "valid_to",
+        ),
+        Index(
+            "uq_memory_declarations_user_fact_current",
+            "user_id",
+            "fact_key",
+            unique=True,
+            sqlite_where=text("review_status = 'confirmed' AND valid_to IS NULL AND fact_key != ''"),
+            postgresql_where=text("review_status = 'confirmed' AND valid_to IS NULL AND fact_key != ''"),
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -93,6 +108,12 @@ class MemoryDeclaration(Base):
     )
     subject = Column(String(160), nullable=False, comment="声明主体")
     predicate = Column(String(80), nullable=False, comment="声明谓词或记忆类别")
+    fact_key = Column(
+        String(100),
+        nullable=False,
+        default="",
+        comment="同一用户下用于识别和比较同一事实的规范记忆键",
+    )
     value = Column(Text, nullable=False, comment="声明值")
     valid_from = Column(DateTime, nullable=False, comment="该声明生效时间")
     valid_to = Column(DateTime, nullable=True, comment="被后续声明替代的时间")
@@ -103,7 +124,7 @@ class MemoryDeclaration(Base):
         nullable=False,
         default="confirmed",
         index=True,
-        comment="审核状态: confirmed/superseded/ignored",
+        comment="审核状态: staged/confirmed/superseded/ignored/inaccurate/expired",
     )
     source_event_id = Column(Integer, nullable=True, comment="关联学习事件ID")
     source_type = Column(String(50), nullable=False, default="manual", comment="来源类型")
@@ -116,5 +137,16 @@ class MemoryDeclaration(Base):
         ForeignKey("memory_declarations.id", ondelete="SET NULL"),
         nullable=True,
         comment="被本声明替代的上一条声明",
+    )
+    conflicts_with_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+        comment="待审核声明与之冲突的当前已确认声明",
+    )
+    resolution_reason = Column(
+        String(255),
+        nullable=True,
+        comment="用户纠错、替代、拒绝或自动失效的原因",
     )
     created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="创建时间")

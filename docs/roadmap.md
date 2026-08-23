@@ -3,7 +3,7 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-22
+> 最近核查：2026-08-23
 > 上游决策：[2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)
 
 本文件是"接下来做什么、按什么顺序做"的唯一权威来源。需求范围见 [需求基线](requirements.md)，实现约定见 [技术基线](technical.md)，执行状态见 [进度文档](progress.md)。每个阶段收口时更新本文件与进度文档。
@@ -24,11 +24,11 @@
 
 ## 1. 轨道总览
 
-| 轨道 | 主题 | 前置 | 状态（2026-08-22 复核） |
+| 轨道 | 主题 | 前置 | 状态（2026-08-23 复核） |
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认、PostgreSQL 16 与 Windows smoke 已通过 GitHub CI；真实 Windows Electron E2E 待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/编辑/来源、先修缺口与可解释学习推荐已完成；下一完整模块为 SQL 时态记忆冲突、替代、失效与纠错） |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐与 SQL 时态记忆冲突/审核/失效/纠错已完成；下一完整模块为 Coach 教学行为反馈闭环） |
 | Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 AgentKernel 原型实现中；运行时 Spike、调度、自学习归因、知识巩固与写回未开始 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
@@ -61,19 +61,19 @@
 
 | # | 事项 | 完成标准 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明、`projection_outbox` 与检索投影；定义稳定 ID、版本、删除和重建语义 | 🔶 学习证据、计数、记忆声明、outbox、资料投影与概念别名/来源/审计已具备版本化 SQL 迁移；时态记忆冲突与派生失效仍待闭环 |
+| 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明、`projection_outbox` 与检索投影；定义稳定 ID、版本、删除和重建语义 | ✅ 学习证据、计数、记忆事实身份/唯一约束/冲突关系、outbox、资料投影与概念别名/来源/审计均具备版本化 SQL 迁移、用户隔离和派生删除语义 |
 | 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 outbox 幂等、DLQ、分页回放、跨实例心跳与 PostgreSQL 16 多 worker CI 已通过；资料投影已补 `ingest/refresh/forget/rebuild/retry`、配置失效和失败删除墓碑；正式生产升级待发布窗口 |
 | 3 | 统一检索与资料生命周期 | `RetrievalRouter` 收敛资料/笔记/记忆/概念/学习状态；资料投影具备版本、删除、重建、关键词降级、用户隔离和离线质量门禁 | ✅ 主链完成：主聊天、ChatAgent、AgentKernel 与资料搜索使用统一 Router；SQL chunk + Chroma 投影、资料更新、删除恢复、前端状态及 16-case 质量集已接入 |
 | 4 | Qdrant 检索 Spike | 对同一资料集比较 dense+sparse/BM25+rerank 与现有基线；通过 Windows 打包、无 embedding 降级、删除/重建、延迟和成本门槛后再决定是否采纳 | ✅ 已完成受控 go/no-go：Qdrant Local 真机对比未证明明显质量优势，轻量词项重排只追平 Recall@5；保留 Chroma，Qdrant 不进入运行时依赖 |
 | 5 | 概念图谱 MVP 与 GraphStore Spike | 三表、上传抽取、错题回填、人工改名/合并/删除、来源和质量集完成；只有 SQL 不足时才评估 Neo4j，Spike 不通过不影响 SQL 图 | ✅ SQL 主链已完成：资料自动候选/别名/先修关系、审核、来源版本、更新/删除清理、改名/合并/拆分/删除、错题回填、跨用户/环路拦截和先修缺口均有专项回归；SQL 能满足当前规模，Neo4j 不引入 |
-| 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | 🔶 SQL 声明基础已完成：人工和自动来源均保留来源、版本、审核、替代和删除语义；Graphiti Spike 未开始 |
+| 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | ✅ SQL 产品主链完成：事实键、部分唯一约束、历史重复回填、跨来源冲突、审核前旧事实保留、确认替代、拒绝/纠错、自动失效、全入口过滤、派生画像删除和前端对照审核均有回归；当前 SQL 满足需求，Graphiti 不引入运行时 |
 | 7 | 学习者模型 | 直接证据主导、间接信号只校准风险/置信度；一次练习或复习可更新概念状态，前端展示证据、模型版本和人工修正 | ✅ 产品主链已完成：强弱证据、练习/正确/提示计数、错题与 FSRS 回填、先修/目标/风险/错误解释型排序及前端原因下钻；真实 holdout 校准继续保持 `collect_more_data`，不冒充已完成 |
 | 8 | Obsidian、联想与体验 | 拉取式同步稳定 ID/冲突/删除；联想接入 Coach 的 shown/feedback/采纳事件；概念地图、先修缺口和建议理由可下钻 | 🔶 Vault 安全、联想 Coach 归因、概念详情、先修缺口、来源证据和建议理由均已接入；真实 Vault 冲突/删除与 Coach 完整教学反馈仍待专项验收 |
 
 当前执行检查点（不得跳步）：
 
-1. **下一完整模块：SQL 时态记忆闭环**。完成同一事实的冲突检测、替代、生效/失效、用户纠错、待确认信息及删除后的派生清理；SQL 仍是唯一规范事实来源。
-2. 随后完成 Coach 教学行为的观察、策略、低阻力行动、草案确认及 shown/accepted/rejected/started/completed/abandoned 反馈归因，再评估 AgentRuntime。
+1. **下一完整模块：Coach 教学行为闭环**。完成观察、策略、低阻力行动、草案确认及 shown/accepted/rejected/started/completed/abandoned 反馈归因；SQL 时态记忆主链已收口。
+2. 随后再评估 AgentRuntime；Graphiti 只在 SQL 时态查询与已筛选 episode 出现真实能力缺口时启动受控 Spike。
 3. 检索生产基线固定为 `RetrievalRouter → Chroma + SQL keyword + RRF`；继续扩大真实问题与资料样本，不因小型合成评测就采用 Qdrant。
 4. 真实学习证据达到至少 50 个 holdout case 后再运行学习者模型离线校准；门槛不足时保持 `collect_more_data`，不阻塞当前功能地基开发。
 5. Obsidian 真实 Vault 冲突 / 删除、正式 PostgreSQL 升级和真实 Windows Electron 启动 / 安装 E2E 属于后续专项验收，不与已通过的 CI smoke 混淆。
@@ -81,6 +81,7 @@
 
 检索生命周期、质量集、实测数据和 Qdrant go/no-go 详见 [2026-08-22 检索生命周期与质量决策](superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md)。
 概念审核、来源生命周期、身份迁移、可解释排序及 SQL 图谱选型详见 [2026-08-22 概念图谱与学习推荐决策](superpowers/specs/2026-08-22-concept-graph-learning-recommendations-adr.md)。
+时态事实身份、唯一约束、冲突审核、自动失效、派生删除和 Graphiti 暂缓详见 [2026-08-23 SQL 时态记忆生命周期决策](superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md)。
 
 阶段验收：规范数据可重放并重建全部投影；至少一个真实业务流完成 `ContextStore` 迁移；候选检索/图/时态记忆技术有可复现的 go/no-go 证据；上传资料后概念关系可人工修正；一次练习/复习能更新 `user_concept_state` 并展示理由；联想有 Coach 的 shown/accepted/completed 基线；删除和用户隔离有回归测试。拉取式同步达到上述标准即可，不把 watchdog 误标为已完成。
 

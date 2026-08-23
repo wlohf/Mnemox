@@ -471,6 +471,7 @@ async def _run_lightweight_migrations(conn):
                 memory_id INTEGER NOT NULL,
                 subject VARCHAR(160) NOT NULL,
                 predicate VARCHAR(80) NOT NULL,
+                fact_key VARCHAR(100) NOT NULL DEFAULT '',
                 value TEXT NOT NULL,
                 valid_from DATETIME NOT NULL,
                 valid_to DATETIME NULL,
@@ -484,12 +485,61 @@ async def _run_lightweight_migrations(conn):
                 created_by VARCHAR(30) NOT NULL DEFAULT 'user',
                 model_version VARCHAR(80) NULL,
                 supersedes_id INTEGER NULL,
+                conflicts_with_id INTEGER NULL,
+                resolution_reason VARCHAR(255) NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(memory_id) REFERENCES user_memories(id) ON DELETE CASCADE,
                 FOREIGN KEY(supersedes_id) REFERENCES memory_declarations(id) ON DELETE SET NULL
             )
             """
+        ))
+        declaration_columns = {
+            row[1]
+            for row in await conn.execute(sqlalchemy.text("PRAGMA table_info(memory_declarations)"))
+        }
+        for column, column_type in (
+            ("fact_key", "VARCHAR(100) NOT NULL DEFAULT ''"),
+            ("conflicts_with_id", "INTEGER"),
+            ("resolution_reason", "VARCHAR(255)"),
+        ):
+            if column not in declaration_columns:
+                await conn.execute(
+                    sqlalchemy.text(f"ALTER TABLE memory_declarations ADD COLUMN {column} {column_type}")
+                )
+        await conn.execute(sqlalchemy.text(
+            "UPDATE memory_declarations SET fact_key = "
+            "COALESCE((SELECT user_memories.memory_key FROM user_memories "
+            "WHERE user_memories.id = memory_declarations.memory_id "
+            "AND user_memories.user_id = memory_declarations.user_id), '') "
+            "WHERE fact_key = ''"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "WITH ranked_facts AS ("
+            "SELECT memory_declarations.id, ROW_NUMBER() OVER ("
+            "PARTITION BY memory_declarations.user_id, memory_declarations.fact_key "
+            "ORDER BY COALESCE(user_memories.is_locked, 0) DESC, "
+            "memory_declarations.observed_at DESC, memory_declarations.id DESC"
+            ") AS duplicate_rank FROM memory_declarations "
+            "LEFT JOIN user_memories ON user_memories.id = memory_declarations.memory_id "
+            "AND user_memories.user_id = memory_declarations.user_id "
+            "WHERE memory_declarations.review_status = 'confirmed' "
+            "AND memory_declarations.valid_to IS NULL AND memory_declarations.fact_key != ''"
+            ") UPDATE memory_declarations SET review_status = 'superseded', "
+            "valid_to = CURRENT_TIMESTAMP, resolution_reason = 'migration_reconciled_duplicate_fact' "
+            "WHERE id IN (SELECT id FROM ranked_facts WHERE duplicate_rank > 1)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "UPDATE user_memories SET status = 'superseded', review_status = 'superseded' "
+            "WHERE EXISTS (SELECT 1 FROM memory_declarations "
+            "WHERE memory_declarations.memory_id = user_memories.id "
+            "AND memory_declarations.user_id = user_memories.user_id "
+            "AND memory_declarations.resolution_reason = 'migration_reconciled_duplicate_fact') "
+            "AND NOT EXISTS (SELECT 1 FROM memory_declarations "
+            "WHERE memory_declarations.memory_id = user_memories.id "
+            "AND memory_declarations.user_id = user_memories.user_id "
+            "AND memory_declarations.review_status = 'confirmed' "
+            "AND memory_declarations.valid_to IS NULL)"
         ))
         await conn.execute(sqlalchemy.text(
             "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_id "
@@ -510,6 +560,19 @@ async def _run_lightweight_migrations(conn):
         await conn.execute(sqlalchemy.text(
             "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_review_observed "
             "ON memory_declarations(user_id, review_status, observed_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_conflicts_with_id "
+            "ON memory_declarations(conflicts_with_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_memory_declarations_user_fact_review_valid "
+            "ON memory_declarations(user_id, fact_key, review_status, valid_to)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_declarations_user_fact_current "
+            "ON memory_declarations(user_id, fact_key) "
+            "WHERE review_status = 'confirmed' AND valid_to IS NULL AND fact_key != ''"
         ))
     except Exception as exc:
         raise RuntimeError("SQLite memory declaration migration failed") from exc

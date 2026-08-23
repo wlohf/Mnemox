@@ -6,6 +6,7 @@ return explicit source indicators, and wrap retrieved text as untrusted context.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -144,6 +145,7 @@ async def retrieve_coach_context(
                 UserMemory.user_id == user_id,
                 UserMemory.status == "active",
                 UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
                 or_(*memory_filters),
             )
             .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc(), UserMemory.id.desc())

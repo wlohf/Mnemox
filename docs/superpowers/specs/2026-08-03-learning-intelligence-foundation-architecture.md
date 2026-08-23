@@ -130,15 +130,15 @@ SQL 继续是概念图的规范来源。`GraphStore` 是为更复杂路径查询
 
 ### 3.3 时态记忆：用户变化层
 
-时态记忆记录的是“在什么时间、依据什么证据，用户处于什么状态”，而不是未经校验的聊天摘要。`UserMemory` 继续承载当前产品投影；2026-08-17 新增的 `MemoryDeclaration` 已为人工和自动记忆保留来源、证据、有效时间、审核与替代历史，但冲突/纠错/删除闭环和筛选 episode 仍需继续验收。
+时态记忆记录的是“在什么时间、依据什么证据，用户处于什么状态”，而不是未经校验的聊天摘要。`UserMemory` 继续承载当前产品投影；`MemoryDeclaration` 已为人工和自动记忆保留稳定事实键、来源、证据、有效时间、审核、冲突与替代历史。2026-08-23 的 SQL 生命周期闭环新增当前事实部分唯一约束、跨来源冲突审核、用户纠错、到期失效、全入口过滤与派生画像删除；Graphiti 及筛选 episode 投影仍保持条件候选。
 
 一条记忆声明至少具有：
 
 ```text
-subject / predicate / value
+subject / predicate / fact_key / value
 valid_from / valid_to / observed_at
 confidence / review_status / source_event_id / evidence
-created_by / model_version / supersedes
+created_by / model_version / supersedes / conflicts_with / resolution_reason
 ```
 
 适合进入时态记忆的内容包括：学习目标改变、长期偏好、被确认的困惑模式、重要里程碑、阶段性学习主题和用户主动纠正。原始对话全文、每一次提问、每一条学习事件都先留在 SQL 事件账本；只有经过规则或审核筛选的**状态变化 episode**才写入 Graphiti 候选投影。

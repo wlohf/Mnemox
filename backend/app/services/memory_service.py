@@ -6,12 +6,12 @@ import re
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage, ChatConversation
 from app.models.memory import ConversationSummary, UserMemory
-from app.services.memory_declaration_service import record_automatic_memory_declaration
+from app.services.memory_declaration_service import expire_memory_facts, record_automatic_memory_declaration
 from app.utils.prompt_safety import wrap_untrusted_context
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
@@ -167,6 +167,7 @@ async def build_memory_prompt_fragment(
     user_id: int = 1,
 ) -> str:
     """构建可注入 system prompt 的长期记忆片段。"""
+    await expire_memory_facts(db, user_id=user_id)
     # 顺带触发记忆衰减（低频，不阻塞）
     try:
         await decay_old_memories(db, user_id=user_id)
@@ -176,6 +177,7 @@ async def build_memory_prompt_fragment(
         UserMemory.status == "active",
         UserMemory.user_id == user_id,
         UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+        or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
     ).order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc()).limit(50)
     result = await db.execute(query)
     rows = result.scalars().all()
@@ -275,12 +277,14 @@ async def get_relevant_memories(
     user_id: int = 1,
 ) -> List[dict]:
     """Return topic-scored memories for frontend display / SSE indicators."""
+    await expire_memory_facts(db, user_id=user_id)
     result = await db.execute(
         select(UserMemory)
         .where(
             UserMemory.status == "active",
             UserMemory.user_id == user_id,
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
         .limit(50)
@@ -429,6 +433,7 @@ async def upsert_user_memories_from_turn(
     user_id: int = 1,
 ) -> None:
     """从本轮对话提炼长期记忆：优先 LLM，失败回退启发式。"""
+    await expire_memory_facts(db, user_id=user_id)
     facts = await _extract_facts_with_llm(user_message, assistant_reply, db, user_id=user_id)
     if not facts:
         facts = _heuristic_extract_facts(user_message)
@@ -446,6 +451,8 @@ async def upsert_user_memories_from_turn(
                 UserMemory.memory_key == key,
                 UserMemory.user_id == user_id,
                 UserMemory.is_locked == 1,
+                UserMemory.status == "active",
+                UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
             )
             .order_by(UserMemory.id.desc())
             .limit(1)
@@ -521,6 +528,7 @@ async def upsert_user_memories_from_turn(
 
 
 async def list_memories(db: AsyncSession, user_id: int = 1) -> List[dict]:
+    await expire_memory_facts(db, user_id=user_id)
     result = await db.execute(
         select(UserMemory)
         .where(UserMemory.user_id == user_id)
@@ -749,6 +757,7 @@ async def _upsert_reflection_memories(
     user_id: int = 1,
 ) -> None:
     """Store memory candidates from reflection, deduplicating by memory_key."""
+    await expire_memory_facts(db, user_id=user_id)
     first_material_id = material_ids[0] if material_ids else None
 
     for item in memories:
@@ -778,6 +787,8 @@ async def _upsert_reflection_memories(
                 UserMemory.memory_key == key,
                 UserMemory.user_id == user_id,
                 UserMemory.is_locked == 1,
+                UserMemory.status == "active",
+                UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
             )
             .order_by(UserMemory.id.desc())
             .limit(1)

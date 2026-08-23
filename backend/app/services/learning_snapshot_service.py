@@ -5,7 +5,7 @@ import json
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachNudge
@@ -283,6 +283,7 @@ async def _collect_memory_state(db: AsyncSession, user_id: int, include_memories
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
     )
     memories: list[dict[str, Any]] = []

@@ -164,6 +164,7 @@ async def _agent_feedback_scores(db: AsyncSession, user_id: int, goal_ids: list[
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
             UserMemory.category == "agent_feedback",
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.id.desc())

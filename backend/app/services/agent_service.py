@@ -16,7 +16,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentExecutionLog
@@ -509,6 +509,7 @@ async def _collect_memory_state(db: AsyncSession, user_id: int) -> dict[str, Any
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
     )
     return {"memories": memories, "active_memory_count": int(count_result.scalar() or 0)}
@@ -581,6 +582,7 @@ async def _collect_agent_personalization(db: AsyncSession, user_id: int, context
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
             UserMemory.category == "agent_feedback",
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
@@ -874,6 +876,7 @@ async def _get_agent_learning_profile(db: AsyncSession, user_id: int) -> dict[st
             UserMemory.memory_key == "agent_learning_profile",
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
     )
     row = result.scalar_one_or_none()

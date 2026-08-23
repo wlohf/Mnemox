@@ -224,7 +224,13 @@ class KeywordContextStore:
             return str(note.title or ""), str(note.content or "")
         if source_type == "memory":
             result = await db.execute(
-                select(UserMemory).where(UserMemory.id == source_id, UserMemory.user_id == user_id)
+                select(UserMemory).where(
+                    UserMemory.id == source_id,
+                    UserMemory.user_id == user_id,
+                    UserMemory.status == "active",
+                    UserMemory.review_status == "confirmed",
+                    or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+                )
             )
             memory = result.scalar_one_or_none()
             if memory is None:
@@ -321,6 +327,8 @@ class KeywordContextStore:
         stmt = select(UserMemory).where(
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
+            UserMemory.review_status == "confirmed",
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
         if keyword:
             like = f"%{keyword}%"

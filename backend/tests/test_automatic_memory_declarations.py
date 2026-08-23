@@ -191,7 +191,7 @@ class AutomaticMemoryDeclarationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessionmaker() as session:
             await confirm_memory_candidate(session, user_id, int(candidate.id), lock=False)
             await ignore_memory_candidate(session, user_id, int(ignored_candidate.id))
-            await upsert_agent_memory(
+            replacement = await upsert_agent_memory(
                 session,
                 user_id,
                 memory_key="event_signal",
@@ -213,6 +213,14 @@ class AutomaticMemoryDeclarationTests(unittest.IsolatedAsyncioTestCase):
                     .order_by(MemoryDeclaration.id)
                 )
             ).scalars().all()
+            replacement_row = (
+                await session.execute(
+                    select(MemoryDeclaration).where(
+                        MemoryDeclaration.user_id == user_id,
+                        MemoryDeclaration.memory_id == replacement.id,
+                    )
+                )
+            ).scalar_one()
             ignored_row = (
                 await session.execute(
                     select(MemoryDeclaration).where(
@@ -222,11 +230,13 @@ class AutomaticMemoryDeclarationTests(unittest.IsolatedAsyncioTestCase):
                 )
             ).scalar_one()
 
-        self.assertEqual(candidate_rows[0].review_status, "superseded")
+        self.assertEqual(len(candidate_rows), 1)
+        self.assertEqual(candidate_rows[0].review_status, "confirmed")
         self.assertEqual(candidate_rows[0].source_event_id, 42)
-        self.assertIsNotNone(candidate_rows[0].valid_to)
-        self.assertEqual(candidate_rows[1].review_status, STAGED)
-        self.assertEqual(candidate_rows[1].supersedes_id, candidate_rows[0].id)
+        self.assertIsNone(candidate_rows[0].valid_to)
+        self.assertNotEqual(replacement.id, candidate.id)
+        self.assertEqual(replacement_row.review_status, STAGED)
+        self.assertEqual(replacement_row.conflicts_with_id, candidate_rows[0].id)
         self.assertEqual(ignored_row.review_status, "ignored")
         self.assertIsNotNone(ignored_row.valid_to)
 

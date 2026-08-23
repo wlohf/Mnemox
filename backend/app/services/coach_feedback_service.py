@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachNudge
@@ -165,6 +165,7 @@ async def list_recent_coach_feedback(db: AsyncSession, user_id: int, limit: int 
             UserMemory.category == "coach_feedback",
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
         .limit(max(1, min(int(limit or 30), 100)))

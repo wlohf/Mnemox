@@ -4,10 +4,14 @@ import { Layout, Card, Button, List, Space, Tag, Modal, Input, InputNumber, mess
 import { ArrowLeftOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
+  correctMemory,
   deleteMemory,
+  listMemoryConflicts,
   listMemoryDeclarations,
   listMemories,
+  reviewMemoryCandidate,
   updateMemory,
+  type MemoryConflict,
   type MemoryDeclaration,
   type MemoryItem,
 } from '../services/memoryApi'
@@ -20,6 +24,8 @@ const declarationStatus = (status: string) => {
     case 'staged': return { label: '待你确认', color: 'gold' }
     case 'ignored': return { label: '已忽略', color: 'default' }
     case 'inaccurate': return { label: '已标记不准确', color: 'red' }
+    case 'expired': return { label: '已自动失效', color: 'orange' }
+    case 'superseded': return { label: '已被新事实替代', color: 'default' }
     default: return { label: '已被修订', color: 'default' }
   }
 }
@@ -38,14 +44,19 @@ export function MemoryPage() {
   const [val, setVal] = useState('')
   const [cat, setCat] = useState('preference')
   const [conf, setConf] = useState<number>(0.7)
+  const [expiry, setExpiry] = useState('')
+  const [correctionReason, setCorrectionReason] = useState('')
+  const [conflicts, setConflicts] = useState<MemoryConflict[]>([])
+  const [reviewingId, setReviewingId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [declarationMemory, setDeclarationMemory] = useState<MemoryItem | null>(null)
   const [declarations, setDeclarations] = useState<MemoryDeclaration[]>([])
   const [declarationsLoading, setDeclarationsLoading] = useState(false)
 
   const load = async () => {
-    const data = await listMemories()
-    setItems(data)
+    const [nextItems, nextConflicts] = await Promise.all([listMemories(), listMemoryConflicts()])
+    setItems(nextItems)
+    setConflicts(nextConflicts)
   }
 
   useEffect(() => {
@@ -57,20 +68,33 @@ export function MemoryPage() {
     setVal(m.memory_value)
     setCat(m.category)
     setConf(Number(m.confidence || 0.7))
+    setExpiry(m.expires_at ? dayjs(m.expires_at).format('YYYY-MM-DDTHH:mm') : '')
+    setCorrectionReason('')
   }
 
   const saveEdit = async () => {
     if (!editing) return
+    const nextExpiry = expiry ? dayjs(expiry).format('YYYY-MM-DDTHH:mm:ss') : null
+    const currentExpiry = editing.expires_at ? dayjs(editing.expires_at).format('YYYY-MM-DDTHH:mm:ss') : null
     const semanticChanged = editing.memory_value !== val
       || editing.category !== cat
       || Number(editing.confidence || 0.7) !== conf
-    const updated = await updateMemory(editing.id, {
-      memory_value: val,
-      category: cat,
-      confidence: conf,
-      status: editing.status,
-      is_locked: editing.is_locked,
-    })
+      || nextExpiry !== currentExpiry
+    const updated = semanticChanged
+      ? await correctMemory(editing.id, {
+        memory_value: val,
+        category: cat,
+        confidence: conf,
+        expires_at: nextExpiry,
+        reason: correctionReason.trim() || '用户在记忆管理页面修正事实或有效期',
+      })
+      : await updateMemory(editing.id, {
+        memory_value: val,
+        category: cat,
+        confidence: conf,
+        status: editing.status,
+        is_locked: editing.is_locked,
+      })
     if (!updated) {
       message.error('更新记忆失败')
       return
@@ -106,6 +130,24 @@ export function MemoryPage() {
         await load()
       },
     })
+  }
+
+  const reviewCandidate = async (
+    memoryId: number,
+    decision: 'confirm' | 'ignore' | 'inaccurate',
+  ) => {
+    setReviewingId(memoryId)
+    try {
+      const reviewed = await reviewMemoryCandidate(memoryId, decision, decision === 'confirm')
+      if (!reviewed) {
+        message.error('处理记忆候选失败，可能已过期或被其他操作更新')
+        return
+      }
+      message.success(decision === 'confirm' ? '新事实已生效，旧事实已保留在历史中' : '已保留原事实并关闭候选')
+      await load()
+    } finally {
+      setReviewingId(null)
+    }
   }
 
   const quickToggleLock = async (m: MemoryItem) => {
@@ -206,6 +248,44 @@ export function MemoryPage() {
       </Header>
       <Content style={{ padding: 16 }}>
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          {conflicts.length > 0 && (
+            <Card
+              size="small"
+              title={<Space><span>需要你确认的事实冲突</span><Tag color="gold">{conflicts.length} 条</Tag></Space>}
+              style={{ marginBottom: 16 }}
+            >
+              <List
+                dataSource={conflicts}
+                renderItem={(conflict) => (
+                  <List.Item
+                    actions={[
+                      <Button
+                        key="accept"
+                        type="primary"
+                        loading={reviewingId === conflict.candidate_memory_id}
+                        onClick={() => void reviewCandidate(conflict.candidate_memory_id, 'confirm')}
+                      >采用新事实</Button>,
+                      <Button
+                        key="reject"
+                        disabled={reviewingId === conflict.candidate_memory_id}
+                        onClick={() => void reviewCandidate(conflict.candidate_memory_id, 'inaccurate')}
+                      >保留原事实</Button>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={<Space><Tag color="blue">{conflict.fact_key}</Tag><span>同一事实出现不同说法</span></Space>}
+                      description={
+                        <div>
+                          <div><Tag color="green">当前有效</Tag>{conflict.current.value}</div>
+                          <div style={{ marginTop: 6 }}><Tag color="gold">待你确认</Tag>{conflict.candidate.value}</div>
+                        </div>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </Card>
+          )}
           <Card size="small" title="长期记忆条目">
             <List
               dataSource={items}
@@ -215,6 +295,10 @@ export function MemoryPage() {
                   onClick={() => toggleSelect(m.id)}
                   style={{ cursor: 'pointer' }}
                   actions={[
+                    ...(m.review_status === 'staged' ? [
+                      <Button key="confirm" size="small" type="primary" loading={reviewingId === m.id} onClick={() => void reviewCandidate(m.id, 'confirm')}>确认</Button>,
+                      <Button key="reject" size="small" disabled={reviewingId === m.id} onClick={() => void reviewCandidate(m.id, 'inaccurate')}>不准确</Button>,
+                    ] : []),
                     <Button key="l" size="small" onClick={() => quickToggleLock(m)}>
                       {(m.is_locked || 0) === 1 ? '解锁' : '锁定'}
                     </Button>,
@@ -227,7 +311,7 @@ export function MemoryPage() {
                   ]}
                 >
                   <List.Item.Meta
-                    title={<Space><Checkbox checked={selectedIds.has(m.id)} onChange={() => toggleSelect(m.id)} onClick={(e) => e.stopPropagation()} /><Tag>{m.category}</Tag><span>{m.memory_key}</span>{(m.is_locked || 0) === 1 && <Tag color="gold">锁定</Tag>}{(m.status || 'active') === 'ignored' && <Tag>已忽略</Tag>}</Space>}
+                    title={<Space wrap><Checkbox checked={selectedIds.has(m.id)} onChange={() => toggleSelect(m.id)} onClick={(e) => e.stopPropagation()} /><Tag>{m.category}</Tag><span>{m.memory_key}</span>{(m.is_locked || 0) === 1 && <Tag color="gold">锁定</Tag>}{m.review_status === 'staged' && <Tag color="gold">待确认</Tag>}{m.conflicts_with_id && <Tag color="volcano">与当前事实冲突</Tag>}{m.status === 'superseded' && <Tag>已替代</Tag>}{m.status === 'expired' && <Tag color="orange">已过期</Tag>}{(m.status || 'active') === 'ignored' && <Tag>已忽略</Tag>}</Space>}
                     description={
                       <div>
                         <div>{m.memory_value}</div>
@@ -236,6 +320,7 @@ export function MemoryPage() {
                           {m.source_conversation_id ? ` · 来源对话 #${m.source_conversation_id}` : ''}
                           {m.source_type ? ` · 来源 ${m.source_type}` : ''}
                           {m.review_status ? ` · 审核 ${m.review_status}` : ''}
+                          {m.expires_at ? ` · 有效至 ${dayjs(m.expires_at).format('YYYY-MM-DD HH:mm')}` : ''}
                         </div>
                       </div>
                     }
@@ -266,6 +351,14 @@ export function MemoryPage() {
           <div style={{ marginBottom: 4 }}>置信度 (0-1)</div>
           <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} value={conf} onChange={(v) => setConf(Number(v ?? 0.7))} />
         </div>
+        <div style={{ marginTop: 10 }}>
+          <div style={{ marginBottom: 4 }}>有效截止时间，留空表示长期有效</div>
+          <Input type="datetime-local" value={expiry} onChange={(event) => setExpiry(event.target.value)} />
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <div style={{ marginBottom: 4 }}>修正原因，可选</div>
+          <Input.TextArea value={correctionReason} maxLength={255} rows={2} onChange={(event) => setCorrectionReason(event.target.value)} />
+        </div>
       </Modal>
 
       <Modal
@@ -295,6 +388,7 @@ export function MemoryPage() {
                     <Space wrap>
                       <Tag color={status.color}>{status.label}</Tag>
                       <Tag>{declaration.predicate}</Tag>
+                      {declaration.conflicts_with_id && <Tag color="volcano">存在事实冲突</Tag>}
                       <span>由 {declarationCreator(declaration.created_by)} 记录</span>
                     </Space>
                   }
@@ -305,6 +399,8 @@ export function MemoryPage() {
                         记录时间 {declaration.observed_at ? dayjs(declaration.observed_at).format('YYYY-MM-DD HH:mm') : '-'}
                         {` · ${availability}`}
                         {declaration.source_type ? ` · 来源 ${declaration.source_type}` : ''}
+                        {declaration.resolution_reason ? ` · 处理原因 ${declaration.resolution_reason}` : ''}
+                        {declaration.supersedes_id ? ` · 替代声明 #${declaration.supersedes_id}` : ''}
                       </div>
                     </div>
                   }

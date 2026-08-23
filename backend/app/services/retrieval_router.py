@@ -27,6 +27,7 @@ from app.services.material_retrieval_backend import (
     MaterialSearchScope,
     create_material_retrieval_backend,
 )
+from app.services.memory_declaration_service import expire_memory_facts
 
 ROUTER_SOURCE_TYPES = ("material", "note", "memory", "concept", "learner_state")
 CONFIRMED_REVIEW_STATUS = "confirmed"
@@ -360,12 +361,14 @@ class RetrievalRouter:
         return [_context_item_to_hit(item) for item in items if item.source_type == source_type]
 
     async def _search_memories(self, query: str, user_id: int, limit: int) -> list[RetrievalHit]:
+        now = datetime.now()
+        await expire_memory_facts(self.db, user_id=user_id, observed_at=now)
         terms = _query_terms(query)
         stmt = select(UserMemory).where(
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.utcnow()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > now),
         )
         if terms:
             clauses = []
@@ -635,12 +638,14 @@ class RetrievalRouter:
                 self.db, user_id, "note", int(hit.source_id), L2
             )
         if hit.source_type == "memory":
+            await expire_memory_facts(self.db, user_id=user_id)
             result = await self.db.execute(
                 select(UserMemory).where(
                     UserMemory.id == int(hit.source_id),
                     UserMemory.user_id == user_id,
                     UserMemory.status == "active",
                     UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+                    or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
                 )
             )
             memory = result.scalar_one_or_none()

@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260822_11"
+CURRENT_HEAD_REVISION = "20260823_12"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -222,6 +222,7 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "memory_id",
             "subject",
             "predicate",
+            "fact_key",
             "value",
             "valid_from",
             "valid_to",
@@ -231,12 +232,17 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "source_type",
             "created_by",
             "supersedes_id",
+            "conflicts_with_id",
+            "resolution_reason",
         }.issubset(
             {column["name"] for column in inspector.get_columns("memory_declarations")}
         )
         assert {
             "ix_memory_declarations_user_memory_observed",
             "ix_memory_declarations_user_review_observed",
+            "ix_memory_declarations_user_fact_review_valid",
+            "ix_memory_declarations_conflicts_with_id",
+            "uq_memory_declarations_user_fact_current",
         }.issubset(
             {index["name"] for index in inspector.get_indexes("memory_declarations")}
         )
@@ -468,6 +474,9 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "FOREIGN KEY(user_id) REFERENCES users" in ddl
     assert "FOREIGN KEY(memory_id) REFERENCES user_memories" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_memory_observed" in ddl
+    assert "ALTER TABLE memory_declarations ADD COLUMN fact_key" in ddl
+    assert "CREATE INDEX ix_memory_declarations_user_fact_review_valid" in ddl
+    assert "CREATE UNIQUE INDEX uq_memory_declarations_user_fact_current" in ddl
 
 
 def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
@@ -707,6 +716,7 @@ def test_sqlite_lightweight_migration_adds_memory_declaration_audit_table(tmp_pa
         "memory_id",
         "subject",
         "predicate",
+        "fact_key",
         "value",
         "valid_from",
         "valid_to",
@@ -716,11 +726,81 @@ def test_sqlite_lightweight_migration_adds_memory_declaration_audit_table(tmp_pa
         "source_type",
         "created_by",
         "supersedes_id",
+        "conflicts_with_id",
+        "resolution_reason",
     }.issubset(columns)
     assert {
         "ix_memory_declarations_user_memory_observed",
         "ix_memory_declarations_user_review_observed",
+        "ix_memory_declarations_user_fact_review_valid",
+        "ix_memory_declarations_conflicts_with_id",
+        "uq_memory_declarations_user_fact_current",
     }.issubset(indexes)
+
+
+def test_temporal_memory_migration_backfills_existing_fact_identity(tmp_path: Path):
+    database_path = tmp_path / "legacy-temporal-memory.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260822_11")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, email, hashed_password) "
+                    "VALUES (1, 'memory-migration', 'memory-migration@example.test', 'hash')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO user_memories "
+                    "(id, user_id, memory_key, memory_value, category, status, review_status, is_locked) "
+                    "VALUES "
+                    "(7, 1, 'current_learning_goal', '用户锁定的学习目标', 'goal', 'active', 'confirmed', 1), "
+                    "(8, 1, 'current_learning_goal', '较新的自动冲突目标', 'goal', 'active', 'confirmed', 0)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO memory_declarations "
+                    "(id, user_id, memory_id, subject, predicate, value, valid_from, observed_at, confidence, "
+                    "review_status, source_type, created_by) VALUES "
+                    "(9, 1, 7, 'user:1', 'goal', '用户锁定的学习目标', "
+                    "'2026-08-22 10:00:00', '2026-08-22 10:00:00', 0.9, "
+                    "'confirmed', 'manual', 'user'), "
+                    "(10, 1, 8, 'user:1', 'goal', '较新的自动冲突目标', "
+                    "'2026-08-22 11:00:00', '2026-08-22 11:00:00', 0.9, "
+                    "'confirmed', 'learning_event', 'agent')"
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            fact = connection.execute(
+                text(
+                    "SELECT fact_key, conflicts_with_id, resolution_reason "
+                    "FROM memory_declarations WHERE id = 9"
+                )
+            ).one()
+            duplicate = connection.execute(
+                text(
+                    "SELECT fact_key, review_status, resolution_reason "
+                    "FROM memory_declarations WHERE id = 10"
+                )
+            ).one()
+            duplicate_projection_status = connection.execute(
+                text("SELECT status FROM user_memories WHERE id = 8")
+            ).scalar_one()
+        assert tuple(fact) == ("current_learning_goal", None, None)
+        assert tuple(duplicate) == (
+            "current_learning_goal",
+            "superseded",
+            "migration_reconciled_duplicate_fact",
+        )
+        assert duplicate_projection_status == "superseded"
+    finally:
+        engine.dispose()
 
 
 def test_sqlite_lightweight_migration_adds_rebuildable_retrieval_manifests(tmp_path: Path):

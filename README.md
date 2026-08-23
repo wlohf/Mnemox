@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、可审计 SQL 记忆声明、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取；待确认关系不会直接影响学习建议。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant 与 Neo4j 均不进入当前运行时依赖。PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；正式数据库升级、真实 Electron 安装验收和新版发布仍需单独完成。
+当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、SQL 时态记忆闭环、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取。记忆以稳定事实键识别冲突，待确认候选不会覆盖当前事实，用户可审核、纠错、设置有效期并追溯替代历史；过期或删除会同步清理派生画像。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant、Neo4j 与 Graphiti 均不进入当前运行时依赖。此前 PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；新增迁移仍须通过本轮远程门禁，正式数据库升级、真实 Electron 安装验收和新版发布需单独完成。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -28,6 +28,7 @@
 - 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
 - 笔记、上下文与记忆边界（2026-08-13，三层逻辑存储 / 三阶段检索）：`/docs/superpowers/specs/2026-08-13-note-context-memory-architecture.md`
 - 检索生命周期与质量决策（2026-08-22，资料投影 / 质量门禁 / Qdrant no-go）：`/docs/superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md`
+- SQL 时态记忆生命周期决策（2026-08-23，事实冲突 / 用户审核 / 自动失效 / 纠错删除）：`/docs/superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md`
 - 历史架构决策（2026-07-26，部分仍有效）：`/docs/superpowers/specs/2026-07-26-knowledge-layer-context-substrate-agent-architecture.md`
 - 功能更新记录：`/docs/updates/README.md`
 - 日常功能新增、优化和修复，统一记录到 `docs/updates/` 下的周期文档中，默认按周拆分，避免长期堆积在单一说明文件里。
@@ -119,6 +120,8 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **Episodic 记忆**：对话摘要，带时间衰减（久远记忆权重降低）
 - **Semantic 记忆**：从对话中提炼长期事实（学习偏好、目标、薄弱点）
 - **可审计声明**：人工与自动记忆保留来源、有效时间、审核状态、规则/模型版本和修订关系；自动证据不复制聊天全文
+- **事实冲突与审核**：相同事实键同时只能有一条已确认声明；自动矛盾候选必须经过用户确认，原事实在确认前保持生效
+- **纠错与生命周期**：用户修订保留原因与完整替代链；到期事实自动退出聊天、Coach、Agent 和画像，删除同步清理派生内容
 - **画像上下文注入**：每次对话携带用户历史画像数据
 
 ### 4. AI 对话工作区
@@ -668,11 +671,11 @@ Mnemox/
 
 - [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
 - [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化、PostgreSQL 16、Chromium 草案确认与 Windows smoke 已通过；真实 Windows Electron 启动/安装 E2E 仍待补
-- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、SQL 概念图谱、人工审核编辑、先修缺口、强弱证据融合与可解释推荐已经接入；下一模块为 SQL 时态记忆冲突、替代、失效与纠错闭环
+- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、SQL 概念图谱、人工审核编辑、先修缺口、可解释推荐与 SQL 时态记忆冲突/替代/失效/纠错已经接入；下一模块为 Coach 教学行为反馈闭环
 - [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
-当前执行顺序：SQL 时态记忆冲突/纠错 → Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布；概念图谱与可解释推荐主链已收口。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
+当前执行顺序：Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布；概念图谱、可解释推荐和 SQL 时态记忆主链已收口。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
 
 默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 

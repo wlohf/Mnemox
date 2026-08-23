@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
@@ -176,6 +176,7 @@ class ChatAgent(BaseAgent):
                 UserMemory.memory_key == "agent_learning_profile",
                 UserMemory.status == "active",
                 UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
             )
         )
         item = result.scalar_one_or_none()
@@ -194,6 +195,7 @@ class ChatAgent(BaseAgent):
                 UserMemory.user_id == ctx.user_id,
                 UserMemory.status == "active",
                 UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
                 UserMemory.category == "agent_feedback",
             )
             .order_by(UserMemory.last_seen_at.desc(), UserMemory.id.desc())

@@ -7,7 +7,14 @@ vi.mock('antd', () => ({
   },
 }))
 
-import { listMemoryDeclarations, listMemories } from './memoryApi'
+import {
+  correctMemory,
+  expireMemories,
+  listMemoryConflicts,
+  listMemoryDeclarations,
+  listMemories,
+  reviewMemoryCandidate,
+} from './memoryApi'
 
 describe('memoryApi metadata fields', () => {
   beforeEach(() => {
@@ -59,6 +66,7 @@ describe('memoryApi metadata fields', () => {
           memory_id: 1,
           subject: 'user:1',
           predicate: 'style',
+          fact_key: 'preferred_style',
           value: '先给结论',
           valid_from: '2026-08-16T10:00:00',
           valid_to: null,
@@ -72,6 +80,8 @@ describe('memoryApi metadata fields', () => {
           created_by: 'user',
           model_version: 'manual-memory-declaration-v1',
           supersedes_id: null,
+          conflicts_with_id: null,
+          resolution_reason: null,
           created_at: '2026-08-16T10:00:00',
         },
       ]), {
@@ -92,5 +102,85 @@ describe('memoryApi metadata fields', () => {
       review_status: 'confirmed',
       created_by: 'user',
     })
+  })
+
+  it('loads staged conflicts with the currently effective fact', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([{
+      fact_key: 'learning_goal',
+      current_memory_id: 2,
+      candidate_memory_id: 5,
+      current: { id: 3, value: '先学习检索' },
+      candidate: { id: 8, value: '先学习工具调用', conflicts_with_id: 3 },
+    }]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const conflicts = await listMemoryConflicts()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/memory/conflicts', expect.any(Object))
+    expect(conflicts[0]).toMatchObject({ fact_key: 'learning_goal', candidate_memory_id: 5 })
+  })
+
+  it('submits auditable corrections with validity and reason', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 7, review_status: 'confirmed' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await correctMemory(7, {
+      memory_value: '先做真实项目',
+      reason: '旧偏好不准确',
+      expires_at: '2026-09-01T18:00:00',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/memory/memories/7/correct',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          memory_value: '先做真实项目',
+          reason: '旧偏好不准确',
+          expires_at: '2026-09-01T18:00:00',
+        }),
+      }),
+    )
+  })
+
+  it('confirms or rejects conflict candidates through the existing review gate', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 9 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await reviewMemoryCandidate(9, 'confirm', true)
+    await reviewMemoryCandidate(9, 'inaccurate')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/agent/memory/candidates/9/confirm',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ lock: true }) }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/agent/memory/candidates/9/ignore',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'inaccurate' }) }),
+    )
+  })
+
+  it('runs user-scoped expiration maintenance', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ expired_count: 1, memory_ids: [4] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await expireMemories()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/memory/expire', expect.objectContaining({ method: 'POST' }))
+    expect(result).toEqual({ expired_count: 1, memory_ids: [4] })
   })
 })

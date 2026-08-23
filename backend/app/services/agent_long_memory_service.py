@@ -10,11 +10,12 @@ import re
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import UserMemory
 from app.services.memory_declaration_service import (
+    expire_memory_facts,
     record_automatic_memory_declaration,
     sync_memory_declaration_review_status,
 )
@@ -188,6 +189,7 @@ async def upsert_agent_memory(
     clean_type = memory_type if memory_type in {"semantic", "episodic", "profile"} else "semantic"
 
     now = _now()
+    await expire_memory_facts(db, user_id=user_id, observed_at=now)
     # Source-specific idempotency is useful for agent-generated entries, but
     # it must never bypass a direct user correction that has the same semantic
     # key. Check locked user memories by key before narrowing to a source
@@ -199,6 +201,9 @@ async def upsert_agent_memory(
                 UserMemory.user_id == user_id,
                 UserMemory.memory_key == clean_key,
                 UserMemory.is_locked == 1,
+                UserMemory.status == "active",
+                UserMemory.review_status == CONFIRMED,
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > now),
             )
             .order_by(UserMemory.id.desc())
             .limit(1)
@@ -218,6 +223,32 @@ async def upsert_agent_memory(
 
     result = await db.execute(select(UserMemory).where(*conditions).order_by(UserMemory.id.desc()).limit(1))
     row = result.scalar_one_or_none()
+    confirmed_result = await db.execute(
+        select(UserMemory)
+        .where(
+            UserMemory.user_id == user_id,
+            UserMemory.memory_key == clean_key,
+            UserMemory.status == "active",
+            UserMemory.review_status == CONFIRMED,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > now),
+        )
+        .order_by(UserMemory.is_locked.desc(), UserMemory.id.desc())
+        .limit(1)
+    )
+    confirmed_row = confirmed_result.scalar_one_or_none()
+    if confirmed_row and confirmed_row.id != getattr(row, "id", None):
+        if _compact_text(confirmed_row.memory_value, 2000) == clean_value:
+            confirmed_row.last_seen_at = now
+            return confirmed_row
+        clean_review = STAGED
+        clean_status = "staged"
+    elif confirmed_row and row and confirmed_row.id == row.id and clean_review == STAGED:
+        if _compact_text(confirmed_row.memory_value, 2000) == clean_value:
+            confirmed_row.last_seen_at = now
+            return confirmed_row
+        # A tentative replacement must never mutate the currently effective
+        # projection. Keep the old fact active until the user reviews it.
+        row = None
     evidence_value = _json_dumps(evidence or [])
 
     if row:
@@ -281,6 +312,7 @@ async def list_agent_memories(
     include_ignored: bool = False,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    await expire_memory_facts(db, user_id=user_id)
     query = select(UserMemory).where(UserMemory.user_id == user_id)
     if review_status:
         query = query.where(UserMemory.review_status == review_status)
@@ -326,10 +358,12 @@ async def _get_staged_candidate(db: AsyncSession, user_id: int, memory_id: int) 
 
 
 async def confirm_memory_candidate(db: AsyncSession, user_id: int, memory_id: int, *, lock: bool = False) -> dict[str, Any]:
+    await expire_memory_facts(db, user_id=user_id)
     row = await _get_staged_candidate(db, user_id, memory_id)
+    reviewed_at = _now()
     row.review_status = CONFIRMED
     row.status = "active"
-    row.last_seen_at = _now()
+    row.last_seen_at = reviewed_at
     if lock:
         row.is_locked = 1
     await db.flush()
@@ -338,6 +372,7 @@ async def confirm_memory_candidate(db: AsyncSession, user_id: int, memory_id: in
         user_id=user_id,
         memory_id=memory_id,
         review_status=CONFIRMED,
+        reviewed_at=reviewed_at,
     )
     await db.refresh(row)
     return memory_to_dict(row)
@@ -350,16 +385,20 @@ async def ignore_memory_candidate(
     *,
     reason: str = IGNORED,
 ) -> dict[str, Any]:
+    await expire_memory_facts(db, user_id=user_id)
     row = await _get_staged_candidate(db, user_id, memory_id)
+    reviewed_at = _now()
     row.review_status = INACCURATE if reason == INACCURATE else IGNORED
     row.status = "ignored"
-    row.last_seen_at = _now()
+    row.last_seen_at = reviewed_at
     await db.flush()
     await sync_memory_declaration_review_status(
         db,
         user_id=user_id,
         memory_id=memory_id,
         review_status=row.review_status,
+        reviewed_at=reviewed_at,
+        resolution_reason=reason,
     )
     await db.refresh(row)
     return memory_to_dict(row)
@@ -375,6 +414,7 @@ async def set_memory_lock(db: AsyncSession, user_id: int, memory_id: int, locked
 
 
 async def get_core_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
+    await expire_memory_facts(db, user_id=user_id)
     result = await db.execute(
         select(UserMemory)
         .where(
@@ -398,12 +438,14 @@ async def get_core_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
 async def rebuild_core_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
     """Build a compact, sanitized profile from confirmed active memories."""
 
+    await expire_memory_facts(db, user_id=user_id)
     result = await db.execute(
         select(UserMemory)
         .where(
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED,
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > _now()),
             UserMemory.memory_key != CORE_PROFILE_KEY,
             UserMemory.category != "system",
         )
