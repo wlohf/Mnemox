@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、SQL 时态记忆闭环、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取。记忆以稳定事实键识别冲突，待确认候选不会覆盖当前事实，用户可审核、纠错、设置有效期并追溯替代历史；过期或删除会同步清理派生画像。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant、Neo4j 与 Graphiti 均不进入当前运行时依赖。此前 PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；新增迁移仍须通过本轮远程门禁，正式数据库升级、真实 Electron 安装验收和新版发布需单独完成。
+当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、SQL 时态记忆闭环、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取。记忆以稳定事实键识别冲突，待确认候选不会覆盖当前事实，用户可审核、纠错、设置有效期并追溯替代历史；过期或删除会同步清理派生画像。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant、Neo4j 与 Graphiti 均不进入当前运行时依赖。时态记忆模块及新增迁移已在 [PR #11](https://github.com/wlohf/Mnemox/pull/11) 通过 PostgreSQL 16、Chromium、Windows smoke 和其他 GitHub CI 门禁；正式数据库升级、真实 Electron 安装验收和新版发布需单独完成。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)

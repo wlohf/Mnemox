@@ -15,6 +15,6 @@
 
 - SQLite/PostgreSQL 保持唯一规范来源；Graphiti 仍是有真实能力缺口后才考虑的条件 Spike，不加入运行时依赖。
 - 自动候选不得直接覆盖用户确认事实；所有替代决策继续复用现有人工审核 API。
-- 本轮不会创建新版本 tag、Release 或桌面安装包；新增 PostgreSQL 迁移须随提交重新通过远程 CI。
+- 本轮不会创建新版本 tag、Release 或桌面安装包；新增 PostgreSQL 迁移已在 [PR #11 的 GitHub Actions run 32633212169](https://github.com/wlohf/Mnemox/actions/runs/32633212169) 通过真实 PostgreSQL 16 及其余远程门禁。
 
 详细契约见 [SQL 时态记忆生命周期 ADR](../../superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md)。下一主线切换为 Coach 教学行为反馈闭环。

@@ -60,4 +60,4 @@ Alembic revision `20260823_12` 与 SQLite lightweight migration 均从已有 `Us
 
 专项回归必须覆盖跨来源冲突、同来源待审核更新、用户确认替代、拒绝保留旧值、人工纠错原因、有效期结束、聊天/Agent/Coach 过期过滤、派生画像清理、删除引用处理、跨用户隔离，以及 SQLite/Alembic 历史回填和当前事实部分唯一索引。
 
-本模块不创建新版 tag、GitHub Release 或安装资产。PostgreSQL 16、浏览器与 Windows 远程门禁需对本次提交重新运行；正式生产升级和真实 Electron 安装仍属于后续发布验收。
+本模块不创建新版 tag、GitHub Release 或安装资产。[PR #11 的 GitHub Actions run 32633212169](https://github.com/wlohf/Mnemox/actions/runs/32633212169) 已通过 PostgreSQL 16 迁移、多 worker、浏览器、Windows、后端、前端和仓库完整性验收；正式生产升级和真实 Electron 安装仍属于后续发布验收。

@@ -34,11 +34,11 @@ Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach �
 | 数据库 | SQLite lightweight migration 与 Alembic 当前 head 为 `20260823_12`；旧记忆声明自动回填事实身份，并优先保留用户锁定的历史事实。 |
 | 前端 | 资料侧栏展示检索投影状态；`/mastery` 展示概念与学习建议；`/memory` 展示事实冲突对照、候选审核、有效期、纠错原因和跨投影历史。 |
 | 本地回归 | 后端 `411 passed, 8 skipped, 53 subtests passed`；前端 `25 files / 82 tests passed`；桌面端 `21 passed`；SQLite/Alembic 迁移、生产构建、类型检查、lint 和检索质量门禁通过。 |
-| 已通过 CI | PR #8、PR #9 与 PR #10 已通过此前提交的 Backend、Frontend、PostgreSQL 16、多 worker、Chromium、Windows smoke 和 Repository integrity；本轮新增迁移仍须重新运行对应远程门禁。 |
+| 已通过 CI | PR #8、PR #9、PR #10 与 [PR #11](https://github.com/wlohf/Mnemox/pull/11) 均已通过 Backend、Frontend、PostgreSQL 16、多 worker、Chromium、Windows smoke 和 Repository integrity；新增时态记忆迁移已完成真实 PostgreSQL 16 验收。 |
 
 ## 3. 已通过的远程验收
 
-PR #8 于 2026-08-22 07:32 UTC 合入 `main@5da524c`，对应 [GitHub Actions run 32559668354](https://github.com/wlohf/Mnemox/actions/runs/32559668354)。随后 PR #9 合入 `main@2a54349`，对应 [GitHub Actions run 32564219532](https://github.com/wlohf/Mnemox/actions/runs/32564219532)。两次远程验收中的六个任务均成功：
+PR #8 于 2026-08-22 07:32 UTC 合入 `main@5da524c`，对应 [GitHub Actions run 32559668354](https://github.com/wlohf/Mnemox/actions/runs/32559668354)。随后 PR #9 合入 `main@2a54349`，对应 [GitHub Actions run 32564219532](https://github.com/wlohf/Mnemox/actions/runs/32564219532)。SQL 时态记忆 [PR #11](https://github.com/wlohf/Mnemox/pull/11) 对新增 `20260823_12` 迁移再次执行并通过全部门禁，对应 [GitHub Actions run 32633212169](https://github.com/wlohf/Mnemox/actions/runs/32633212169)。每次远程验收中的六个任务均成功：
 
 1. Frontend / Node 20。
 2. Repository integrity。
