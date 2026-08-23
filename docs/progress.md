@@ -5,15 +5,15 @@
 > 更新日期：2026-08-22
 >
 > 当前发布版本：v1.3.0
-> 当前阶段：Phase 1；统一检索、资料投影生命周期、质量门禁与 Qdrant 选型已完成，下一模块为概念图谱自动抽取、人工编辑与先修缺口闭环。
+> 当前阶段：Phase 1；统一检索、资料投影生命周期、可审核概念图谱和可解释学习推荐主链已完成，下一模块为 SQL 时态记忆冲突、替代、失效与纠错闭环。
 
 需求范围见 [需求基线](requirements.md)，工程实现见 [技术基线](technical.md)，执行顺序以 [路线图](roadmap.md) 为唯一权威来源。
 
 ## 1. 当前阶段
 
-Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach 原型，以及 Phase 1 的学习证据、用户概念状态、同事务 projection outbox、Vault 安全同步和 SQL 记忆声明。2026-08-22 合入的 [PR #8](https://github.com/wlohf/Mnemox/pull/8) 将资料、笔记、记忆、概念和学习者状态收敛到 `RetrievalRouter`，并接入主聊天、ChatAgent 和 AgentKernel。
+Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach 原型，以及 Phase 1 的学习证据、用户概念状态、同事务 projection outbox、Vault 安全同步和 SQL 记忆声明。2026-08-22 合入的 [PR #8](https://github.com/wlohf/Mnemox/pull/8) 将资料、笔记、记忆、概念和学习者状态收敛到 `RetrievalRouter`；随后 [PR #9](https://github.com/wlohf/Mnemox/pull/9) 将资料投影生命周期、质量门禁及 Qdrant no-go 合入 `main@2a54349`。
 
-本轮继续完成资料检索的完整投影生命周期：规范资料和 SQL chunk 清单先持久化，Chroma 向量随后生成；资料更新替换旧版本，删除保留可恢复墓碑，embedding 不可用时降级为 SQL 关键词检索，失败可重试，按用户可重建或清除。16 条离线问题组成可重复运行的质量集；真实 Qdrant Local dense+sparse+RRF 受控实验没有证明足够迁移收益，生产实现继续使用 Chroma + SQL keyword + RRF。
+当前进一步完成概念图谱和学习推荐闭环：资料正文自动生成待审核概念、括号别名、先修关系与版本化来源；更新/删除同步清理旧图谱证据，人工可确认、改名、合并、拆分或删除。错题创建和复习自动回填概念与直接学习证据；学习建议按已确认先修、FSRS 到期、活跃目标、错误频率、遗忘风险与重复疲劳解释排序。Qdrant 和 Neo4j 均不作为当前运行时依赖。
 
 当前开发基线仍不是新版安装包。正式 PostgreSQL 升级、真实 Windows Electron 启动/安装 E2E、真实 Vault 冲突/删除和版本发布继续单独验收。
 
@@ -26,14 +26,16 @@ Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach �
 | 检索生命周期 | `retrieval_projections` 与 `retrieval_projection_chunks` 记录来源版本、配置指纹、状态、错误和分块；支持 ingest、refresh、forget、retry、rebuild 和用户隔离。 |
 | 检索质量 | 16-case 固定质量集覆盖 Recall@5/10、MRR、NDCG、延迟、跨用户泄漏、删除残留、空查询和无 embedding 降级；hybrid Recall@5 为 `0.9833`。 |
 | Qdrant 决策 | 真实 Qdrant Local 比较 dense+sparse+RRF、轻量词项重排和 sparse-only fallback；未满足明显优势门槛，不加入运行时依赖。 |
-| 数据库 | SQLite lightweight migration 与 Alembic 当前 head 为 `20260822_10`；SQL 和原始文件始终是规范来源，向量只是可重建投影。 |
-| 前端 | 资料侧栏展示单条资料投影状态、错误和重试操作；AI 设置展示 ready、degraded、failed 等用户范围统计。 |
-| 本地回归 | 全后端 `387 passed, 8 skipped, 53 subtests passed`；新增资料 API 冒烟/隔离专项 `12 passed`；前端 `24 files / 74 tests passed`，桌面端 `21 passed`，前端构建和 lint 通过。 |
-| 已通过 CI | PR #8 的 Backend、Frontend、PostgreSQL 16、多 worker 验收、Chromium、Windows smoke 和 Repository integrity 均已通过；Windows smoke 不等于真实 Electron 安装 E2E。 |
+| 概念图谱 | SQL 概念、别名、五类关系、来源摘录、审核和操作审计已接入；支持资料更新/删除清理、人工身份治理、错题回填、先修缺口和跨用户/环路拦截。 |
+| 学习推荐 | 强弱证据分别约束掌握与风险；状态保存答题/正确/提示计数，并结合 FSRS、目标、错误和已确认先修生成只读、逐项可解释的下一步建议。 |
+| 数据库 | SQLite lightweight migration 与 Alembic 当前 head 为 `20260822_11`；SQL 和原始文件始终是规范来源，向量或未来图存储只是可重建投影。 |
+| 前端 | 资料侧栏展示检索投影状态；`/mastery` 展示待确认概念、别名、来源、人工合并/审核、先修缺口及学习建议理由。 |
+| 本地回归 | 全后端 `398 passed, 8 skipped, 53 subtests passed`；迁移专项 `15 passed`；前端 `24 files / 76 tests passed`，桌面端 `21 passed`；前端构建、lint、空库迁移和 `alembic check` 均通过。 |
+| 已通过 CI | PR #8 与 PR #9 的 Backend、Frontend、PostgreSQL 16、多 worker 验收、Chromium、Windows smoke 和 Repository integrity 均已通过；Windows smoke 不等于真实 Electron 安装 E2E。 |
 
 ## 3. 已通过的远程验收
 
-PR #8 于 2026-08-22 07:32 UTC 合入 `main@5da524c`。对应 [GitHub Actions run 32559668354](https://github.com/wlohf/Mnemox/actions/runs/32559668354) 中六个任务全部成功：
+PR #8 于 2026-08-22 07:32 UTC 合入 `main@5da524c`，对应 [GitHub Actions run 32559668354](https://github.com/wlohf/Mnemox/actions/runs/32559668354)。随后 PR #9 合入 `main@2a54349`，对应 [GitHub Actions run 32564219532](https://github.com/wlohf/Mnemox/actions/runs/32564219532)。两次远程验收中的六个任务均成功：
 
 1. Frontend / Node 20。
 2. Repository integrity。
@@ -76,15 +78,14 @@ python evaluate_retrieval.py --backend all --include-qdrant --summary-only
 - 2026-08-13 完成 Phase 1 主线整合与 outbox 运维收口；聚焦后端回归为 `61 passed`，前端为 `22 files / 67 tests passed`。
 - 2026-08-19 通过 PR #5 收敛 ContextStore、Coach 归因、Vault 安全和 SQL 记忆声明；当时 head `20260816_09` 仅为历史记录，不是当前数据库版本。
 - 2026-08-22 PR #8 交付统一 `RetrievalRouter`，并完成 PostgreSQL 16、Chromium 和 Windows smoke 的真实远程 CI 验收。
-- 本轮新增 SQL 检索投影、更新/删除/重建生命周期、状态 UI、离线质量门禁与 Qdrant no-go；尚未单独创建新版 tag、安装包或 GitHub Release。
+- 2026-08-22 PR #9 完成 SQL 检索投影、更新/删除/重建生命周期、状态 UI、离线质量门禁与 Qdrant no-go。
+- 当前增量完成可审核 SQL 概念图谱、来源生命周期、身份治理、先修缺口、错题/FSRS 证据回填及解释型推荐；尚未单独创建新版 tag、安装包或 GitHub Release。
 
 ## 6. 下一阶段执行顺序
 
-1. **概念图谱完整闭环**：资料候选概念与关系自动抽取、来源证据、人工确认、别名/改名/合并/拆分/删除、引用迁移和先修缺口下钻；SQL 是规范图来源。
-2. **学习者状态与推荐决策**：统一强弱证据、计算遗忘风险与先修阻塞，生成可解释排序和推荐理由；真实 holdout 样本不足时保持 `collect_more_data`。
-3. **SQL 时态记忆闭环**：处理冲突、替代、失效、人工纠错和派生删除，然后再判断 Graphiti Spike 是否必要。
-4. **Coach 教学行为闭环**：按状态选择教学动作，保留草案确认，并记录 shown、accepted、rejected、started、completed、abandoned 与后续效果。
-5. **AgentRuntime 纵向切片**：只在前述 Phase 1 数据、删除、回放和反馈边界稳定后，比较原生 AgentKernel 与 LangGraph。
-6. **生产验收与版本发布**：完成正式 PostgreSQL 升级、真实 Windows Electron 启动/安装/升级 E2E、真实 Vault 冲突与删除、备份回滚、版本号、tag、Release 和安装包。
+1. **SQL 时态记忆闭环**：处理冲突、替代、失效、人工纠错、待确认信息及派生删除，然后再判断 Graphiti Spike 是否必要。
+2. **Coach 教学行为闭环**：按状态选择教学动作，保留草案确认，并记录 shown、accepted、rejected、started、completed、abandoned 与后续效果。
+3. **AgentRuntime 纵向切片**：只在前述 Phase 1 数据、删除、回放和反馈边界稳定后，比较原生 AgentKernel 与 LangGraph。
+4. **生产验收与版本发布**：完成正式 PostgreSQL 升级、真实 Windows Electron 启动/安装/升级 E2E、真实 Vault 冲突与删除、备份回滚、版本号、tag、Release 和安装包。
 
 当前不进入多 Agent、语音、MCP 或其他生态扩展。

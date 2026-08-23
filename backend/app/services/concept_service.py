@@ -14,17 +14,18 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.concept import Concept, ConceptEdge, ConceptLink
+from app.models.concept import Concept, ConceptAlias, ConceptEdge, ConceptLink, ConceptSourceEvidence
 from app.models.learner_model import UserConceptState
-from app.models.material import Chapter
+from app.models.material import Chapter, Material
 from app.models.question import WrongQuestion
 from app.services.learner_model_service import ensure_concept_state
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
 
-EDGE_TYPES = {"prerequisite_of", "related_to"}
+EDGE_TYPES = {"prerequisite_of", "part_of", "related_to", "example_of", "contradicts"}
 LINK_TYPES = {"covers", "explains", "tests", "drills"}
+REVIEW_STATUSES = {"pending", "confirmed", "rejected"}
 MAX_CONCEPTS_PER_CHAPTER = 15
 MAX_NAME_LENGTH = 60
 
@@ -53,6 +54,7 @@ async def upsert_concept(
     *,
     description: str | None = None,
     source: str = "extract",
+    review_status: str = "confirmed",
 ) -> Concept | None:
     """按归一化名去重创建概念；名字为空返回 None。"""
     display = re.sub(r"\s+", " ", str(name or "")).strip()[:MAX_NAME_LENGTH]
@@ -64,6 +66,16 @@ async def upsert_concept(
         select(Concept).where(Concept.user_id == user_id, Concept.name_normalized == normalized)
     )
     existing = result.scalar_one_or_none()
+    if existing is None:
+        existing = await db.scalar(
+            select(Concept)
+            .join(ConceptAlias, ConceptAlias.concept_id == Concept.id)
+            .where(
+                Concept.user_id == user_id,
+                ConceptAlias.user_id == user_id,
+                ConceptAlias.alias_normalized == normalized,
+            )
+        )
     if existing:
         if description and not existing.description:
             existing.description = description[:500]
@@ -75,6 +87,7 @@ async def upsert_concept(
         name_normalized=normalized,
         description=(description or "")[:500] or None,
         source=source,
+        review_status=(review_status if review_status in REVIEW_STATUSES else "pending"),
     )
     db.add(concept)
     await db.flush()
@@ -91,16 +104,49 @@ async def add_edge(
     *,
     confidence: float = 0.6,
     source: str = "extract",
+    review_status: str = "confirmed",
 ) -> bool:
     """添加概念关系边；重复或非法边返回 False。"""
-    if edge_type not in EDGE_TYPES or from_concept_id == to_concept_id:
+    clean_type = "prerequisite_of" if edge_type == "prerequisite" else edge_type
+    if clean_type not in EDGE_TYPES or from_concept_id == to_concept_id:
         return False
+    owned_ids = set((
+        await db.execute(
+            select(Concept.id).where(
+                Concept.user_id == user_id,
+                Concept.id.in_([int(from_concept_id), int(to_concept_id)]),
+            )
+        )
+    ).scalars().all())
+    if owned_ids != {int(from_concept_id), int(to_concept_id)}:
+        return False
+
+    if clean_type == "prerequisite_of":
+        # Reject cycles before materializing the edge. The graph is intentionally
+        # SQL-native, bounded by each user's concepts, and never crosses tenants.
+        frontier = {int(to_concept_id)}
+        visited: set[int] = set()
+        while frontier:
+            if int(from_concept_id) in frontier:
+                return False
+            visited.update(frontier)
+            descendants = (
+                await db.execute(
+                    select(ConceptEdge.to_concept_id).where(
+                        ConceptEdge.user_id == user_id,
+                        ConceptEdge.edge_type == "prerequisite_of",
+                        ConceptEdge.review_status != "rejected",
+                        ConceptEdge.from_concept_id.in_(frontier),
+                    )
+                )
+            ).scalars().all()
+            frontier = {int(value) for value in descendants if int(value) not in visited}
     result = await db.execute(
         select(ConceptEdge.id).where(
             ConceptEdge.user_id == user_id,
             ConceptEdge.from_concept_id == from_concept_id,
             ConceptEdge.to_concept_id == to_concept_id,
-            ConceptEdge.edge_type == edge_type,
+            ConceptEdge.edge_type == clean_type,
         )
     )
     if result.scalar_one_or_none() is not None:
@@ -110,9 +156,10 @@ async def add_edge(
             user_id=user_id,
             from_concept_id=from_concept_id,
             to_concept_id=to_concept_id,
-            edge_type=edge_type,
+            edge_type=clean_type,
             confidence=max(0.0, min(1.0, float(confidence))),
             source=source,
+            review_status=(review_status if review_status in REVIEW_STATUSES else "pending"),
         )
     )
     await db.flush()
@@ -130,6 +177,18 @@ async def link_concept(
 ) -> bool:
     """把既有实体挂接到概念；重复挂接返回 False。"""
     if link_type not in LINK_TYPES:
+        return False
+    if await db.scalar(select(Concept.id).where(Concept.id == concept_id, Concept.user_id == user_id)) is None:
+        return False
+    if target_type == "material" and await db.scalar(
+        select(Material.id).where(Material.id == target_id, Material.user_id == user_id)
+    ) is None:
+        return False
+    if target_type == "chapter" and await db.scalar(
+        select(Chapter.id)
+        .join(Material, Material.id == Chapter.material_id)
+        .where(Chapter.id == target_id, Material.user_id == user_id)
+    ) is None:
         return False
     result = await db.execute(
         select(ConceptLink.id).where(
@@ -165,6 +224,11 @@ async def ingest_structure_concepts(
     按章节标题匹配已入库的 Chapter 行，key_points 逐个 upsert 为概念并建立
     chapter COVERS concept 挂接。返回新建/挂接的概念数。
     """
+    owned_material = await db.scalar(
+        select(Material.id).where(Material.id == material_id, Material.user_id == user_id)
+    )
+    if owned_material is None:
+        return 0
     chapter_result = await db.execute(select(Chapter).where(Chapter.material_id == material_id))
     chapters_by_title = {str(c.title or "").strip(): c for c in chapter_result.scalars().all()}
     ingested = 0
@@ -181,6 +245,15 @@ async def ingest_structure_concepts(
                 continue
             if chapter is not None:
                 await link_concept(db, user_id, concept.id, "chapter", int(chapter.id), link_type="covers")
+                await record_concept_source_evidence(
+                    db,
+                    user_id,
+                    int(concept.id),
+                    source_type="material",
+                    source_id=int(material_id),
+                    excerpt=f"{chapter.title}：{str(point)[:180]}",
+                    review_status="confirmed",
+                )
             ingested += 1
     return ingested
 
@@ -191,7 +264,8 @@ def build_chapter_extraction_prompt(chapter_title: str, chapter_content: str) ->
         "你是学习概念抽取器。请从章节内容中提取知识点及其关系。"
         "只输出 JSON 对象，不要解释：\n"
         '{"concepts":[{"name":"概念名","description":"一句话简述"}],'
-        '"edges":[{"from":"概念A","to":"概念B","type":"prerequisite_of|related_to"}]}\n'
+        '"edges":[{"from":"概念A","to":"概念B",'
+        '"type":"prerequisite_of|part_of|related_to|example_of|contradicts"}]}\n'
         f"要求：concepts 最多 {MAX_CONCEPTS_PER_CHAPTER} 个；"
         "prerequisite_of 表示 from 是 to 的先修知识；关系不确定时宁缺毋滥。\n"
         + wrap_untrusted_context(
@@ -247,6 +321,15 @@ async def extract_chapter_concepts_llm(
             continue
         name_to_id[normalize_concept_name(concept.name)] = concept.id
         await link_concept(db, user_id, concept.id, "chapter", int(chapter.id), link_type="covers")
+        await record_concept_source_evidence(
+            db,
+            user_id,
+            int(concept.id),
+            source_type="material",
+            source_id=int(chapter.material_id),
+            excerpt=(str(chapter.content or chapter.title or "")[:280]),
+            review_status="confirmed",
+        )
         created_concepts += 1
 
     created_edges = 0
@@ -319,6 +402,7 @@ async def list_concepts(db: AsyncSession, user_id: int, *, limit: int = 100) -> 
             "mastery_source": mastery_source,
             "mastery_model_version": mastery_model_version,
             "source": concept.source,
+            "review_status": concept.review_status,
             "link_count": int(count or 0),
         })
     return concepts
@@ -360,6 +444,7 @@ async def get_concept_neighborhood(
                     "to": edge.to_concept_id,
                     "type": edge.edge_type,
                     "confidence": float(edge.confidence or 0.0),
+                    "review_status": edge.review_status,
                 }
             )
             for node_id in (edge.from_concept_id, edge.to_concept_id):
@@ -390,6 +475,7 @@ async def get_concept_neighborhood(
                 "mastery_source": mastery_source,
                 "mastery_model_version": mastery_model_version,
                 "is_center": concept.id == center.id,
+                "review_status": concept.review_status,
             }
         )
 
@@ -409,3 +495,58 @@ async def get_concept_neighborhood(
     # 去重边（两跳时同一条边可能被访问两次）
     unique_edges = list({(e["from"], e["to"], e["type"]): e for e in edges_out}.values())
     return {"center_id": center.id, "nodes": nodes, "edges": unique_edges, "links": links}
+
+
+async def record_concept_source_evidence(
+    db: AsyncSession,
+    user_id: int,
+    concept_id: int,
+    *,
+    source_type: str,
+    source_id: int,
+    excerpt: str,
+    edge_id: int | None = None,
+    source_version: int = 1,
+    confidence: float = 0.8,
+    review_status: str = "pending",
+) -> ConceptSourceEvidence:
+    """Persist one idempotent, user-owned source excerpt."""
+    if await db.scalar(select(Concept.id).where(Concept.id == concept_id, Concept.user_id == user_id)) is None:
+        raise LookupError("概念不存在")
+    if edge_id is not None and await db.scalar(
+        select(ConceptEdge.id).where(ConceptEdge.id == edge_id, ConceptEdge.user_id == user_id)
+    ) is None:
+        raise LookupError("概念关系不存在")
+    clean_excerpt = str(excerpt or "").strip()[:1000]
+    if not clean_excerpt:
+        raise ValueError("来源证据不能为空")
+    predicates = [
+        ConceptSourceEvidence.user_id == int(user_id),
+        ConceptSourceEvidence.concept_id == int(concept_id),
+        ConceptSourceEvidence.source_type == str(source_type)[:30],
+        ConceptSourceEvidence.source_id == int(source_id),
+        ConceptSourceEvidence.source_version == max(1, int(source_version)),
+        ConceptSourceEvidence.excerpt == clean_excerpt,
+    ]
+    predicates.append(
+        ConceptSourceEvidence.edge_id.is_(None)
+        if edge_id is None
+        else ConceptSourceEvidence.edge_id == int(edge_id)
+    )
+    existing = await db.scalar(select(ConceptSourceEvidence).where(*predicates))
+    if existing is not None:
+        return existing
+    row = ConceptSourceEvidence(
+        user_id=int(user_id),
+        concept_id=int(concept_id),
+        edge_id=(int(edge_id) if edge_id is not None else None),
+        source_type=str(source_type)[:30],
+        source_id=int(source_id),
+        source_version=max(1, int(source_version)),
+        excerpt=clean_excerpt,
+        confidence=max(0.0, min(1.0, float(confidence))),
+        review_status=(review_status if review_status in REVIEW_STATUSES else "pending"),
+    )
+    db.add(row)
+    await db.flush()
+    return row

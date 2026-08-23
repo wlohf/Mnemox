@@ -14,6 +14,7 @@ from app.utils.paths import from_repo_relative
 from app.utils.file_extract import extract_text
 from app.utils.prompt_safety import wrap_untrusted_context
 from app.services.retrieval_projection_service import RetrievalProjectionService
+from app.services.concept_graph_service import forget_material_concepts, sync_material_concepts
 
 
 class MaterialService:
@@ -87,6 +88,16 @@ class MaterialService:
         except Exception as e:
             logger.warning("同步到 RAG 知识库失败: %s", e)
 
+        graph_material_id = int(material.id)
+        try:
+            graph = await sync_material_concepts(self.db, int(user_id), material)
+            await self.db.commit()
+            logger.info("资料 id=%s 概念抽取状态: %s", graph_material_id, graph.get("status"))
+        except Exception as exc:
+            await self.db.rollback()
+            await self.db.refresh(material)
+            logger.warning("资料概念抽取降级 id=%s: %s", graph_material_id, exc)
+
         return material
 
     async def update_material(
@@ -112,6 +123,13 @@ class MaterialService:
         await self.db.commit()
         await self.db.refresh(material)
         await self.projections.refresh(material, user_id=int(user_id))
+        try:
+            await sync_material_concepts(self.db, int(user_id), material)
+            await self.db.commit()
+        except Exception as exc:
+            await self.db.rollback()
+            await self.db.refresh(material)
+            logger.warning("资料概念更新降级 id=%s: %s", material_id, exc)
         return material
 
     async def get_material(self, material_id: int) -> Optional[Material]:
@@ -148,6 +166,9 @@ class MaterialService:
         if file_path_value:
             abs_file_path = from_repo_relative(str(file_path_value))
 
+        await forget_material_concepts(
+            self.db, material_user_id, material_id, remove_chapter_links=True,
+        )
         await self.projections.prepare_forget(material_user_id, material_id)
         await self.db.delete(material)
         await self.db.commit()

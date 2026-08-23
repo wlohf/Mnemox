@@ -18,8 +18,11 @@ from app.models.user import User
 from app.services.learner_model_service import (
     apply_manual_override,
     get_concept_state,
+    record_evidence,
     recompute_concept_state,
 )
+from app.services.learning_event_service import record_learning_event
+from app.services.learning_recommendation_service import list_learning_recommendations
 from app.services.projection_outbox_service import (
     list_dead_letter_tasks,
     process_outbox,
@@ -49,6 +52,22 @@ class ReplayRequest(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     reset_processed: bool = True
+
+
+class LearnerEvidenceRequest(BaseModel):
+    evidence_type: Literal[
+        "answer", "recall", "explanation", "application", "hint_count",
+        "review_result", "study_duration", "study_frequency", "repeated_question",
+        "interruption", "recovery",
+    ]
+    score: float = Field(ge=0, le=1)
+    reliability: float = Field(default=0.85, ge=0, le=1)
+    dimension: str | None = Field(default=None, max_length=40)
+    source_type: str = Field(default="practice", min_length=1, max_length=40)
+    source_id: str | None = Field(default=None, max_length=160)
+    dedupe_key: str | None = Field(default=None, max_length=160)
+    observed_at: datetime | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchRecomputeRequest(BaseModel):
@@ -95,6 +114,16 @@ async def concept_state(
         return await get_concept_state(db, int(current_user.id), concept_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/recommendations")
+async def learning_recommendations(
+    limit: int = Query(10, ge=1, le=50),
+    as_of: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    return await list_learning_recommendations(db, int(current_user.id), limit=limit, as_of=as_of)
 
 
 @router.get("/concepts/{concept_id}/evidence")
@@ -160,6 +189,45 @@ async def concept_evidence(
         "offset": offset,
         "limit": limit,
     }
+
+
+@router.post("/concepts/{concept_id}/evidence")
+async def add_concept_evidence(
+    concept_id: int,
+    body: LearnerEvidenceRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    user_id = int(current_user.id)
+    await _ensure_owned(db, user_id, concept_id)
+    event_mapping = {
+        "answer": "practice.answer",
+        "recall": "practice.recall",
+        "explanation": "practice.explanation",
+        "application": "practice.application",
+        "hint_count": "practice.hint",
+        "review_result": "practice.review_result",
+        "study_duration": "study.duration",
+        "study_frequency": "study.frequency",
+        "repeated_question": "study.repeated_question",
+        "interruption": "study.interruption",
+        "recovery": "study.recovery",
+    }
+    payload = dict(body.payload)
+    payload.update({"concept_id": concept_id, "score": body.score})
+    event = await record_learning_event(
+        db, user_id, event_mapping[body.evidence_type], source=body.source_type,
+        payload=payload, dedupe_key=body.dedupe_key, occurred_at=body.observed_at,
+    )
+    try:
+        return await record_evidence(
+            db, user_id, concept_id, body.evidence_type, score=body.score,
+            reliability=body.reliability, source_event_id=int(event["id"]),
+            source_type=body.source_type, source_id=body.source_id, dimension=body.dimension,
+            observed_at=body.observed_at, payload=payload,
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404 if isinstance(exc, LookupError) else 422, detail=str(exc)) from exc
 
 
 @router.post("/concepts/{concept_id}/override")

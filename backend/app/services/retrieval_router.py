@@ -17,7 +17,7 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.concept import Concept, ConceptEdge
+from app.models.concept import Concept, ConceptAlias, ConceptEdge
 from app.models.learner_model import UserConceptState
 from app.models.material import Material
 from app.models.memory import UserMemory
@@ -414,21 +414,44 @@ class RetrievalRouter:
 
     async def _search_concepts(self, query: str, user_id: int, limit: int) -> list[RetrievalHit]:
         terms = _query_terms(query)
-        stmt = select(Concept).where(Concept.user_id == user_id)
+        stmt = (
+            select(Concept)
+            .outerjoin(
+                ConceptAlias,
+                (ConceptAlias.concept_id == Concept.id) & (ConceptAlias.user_id == user_id),
+            )
+            .where(Concept.user_id == user_id, Concept.review_status == "confirmed")
+        )
         if terms:
             clauses = []
             for term in terms[:12]:
                 like = f"%{term}%"
-                clauses.extend([Concept.name.ilike(like), Concept.description.ilike(like)])
+                clauses.extend([
+                    Concept.name.ilike(like), Concept.description.ilike(like), ConceptAlias.alias.ilike(like),
+                ])
             stmt = stmt.where(or_(*clauses))
         result = await self.db.execute(
-            stmt.order_by(Concept.updated_at.desc(), Concept.id.desc()).limit(max(limit * 5, 30))
+            stmt.distinct().order_by(Concept.updated_at.desc(), Concept.id.desc()).limit(max(limit * 5, 30))
         )
         concepts = list(result.scalars().all())
+        concept_ids = [int(concept.id) for concept in concepts]
+        alias_rows = (
+            await self.db.execute(
+                select(ConceptAlias).where(
+                    ConceptAlias.user_id == user_id, ConceptAlias.concept_id.in_(concept_ids or {-1}),
+                )
+            )
+        ).scalars().all()
+        aliases_by_concept: dict[int, list[str]] = defaultdict(list)
+        for alias in alias_rows:
+            aliases_by_concept[int(alias.concept_id)].append(str(alias.alias or ""))
         ranked = sorted(
             concepts,
             key=lambda concept: (
-                -_text_score(query, str(concept.name or ""), str(concept.description or "")),
+                -_text_score(
+                    query, str(concept.name or ""), str(concept.description or ""),
+                    " ".join(aliases_by_concept.get(int(concept.id), [])),
+                ),
                 -int(concept.id),
             ),
         )[:limit]
@@ -439,6 +462,7 @@ class RetrievalRouter:
         edge_result = await self.db.execute(
             select(ConceptEdge).where(
                 ConceptEdge.user_id == user_id,
+                ConceptEdge.review_status == "confirmed",
                 or_(
                     ConceptEdge.from_concept_id.in_(selected_ids),
                     ConceptEdge.to_concept_id.in_(selected_ids),
@@ -450,7 +474,10 @@ class RetrievalRouter:
             int(edge.to_concept_id) for edge in edges
         }
         neighbor_result = await self.db.execute(
-            select(Concept).where(Concept.user_id == user_id, Concept.id.in_(neighbor_ids or {-1}))
+            select(Concept).where(
+                Concept.user_id == user_id, Concept.review_status == "confirmed",
+                Concept.id.in_(neighbor_ids or {-1}),
+            )
         )
         names = {int(item.id): str(item.name or "") for item in neighbor_result.scalars().all()}
         edges_by_concept: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -476,10 +503,14 @@ class RetrievalRouter:
                 source_id=int(concept.id),
                 title=str(concept.name or ""),
                 excerpt=str(concept.description or "")[:400],
-                score=_text_score(query, str(concept.name or ""), str(concept.description or "")),
+                score=_text_score(
+                    query, str(concept.name or ""), str(concept.description or ""),
+                    " ".join(aliases_by_concept.get(int(concept.id), [])),
+                ),
                 metadata={
                     "source": f"concept:{concept.id}",
                     "concept_source": concept.source,
+                    "aliases": aliases_by_concept.get(int(concept.id), []),
                     "edges": edges_by_concept.get(int(concept.id), [])[:12],
                     "retrieval_backend": "concept_graph_sql",
                 },
@@ -494,17 +525,26 @@ class RetrievalRouter:
         stmt = (
             select(UserConceptState, Concept)
             .join(Concept, Concept.id == UserConceptState.concept_id)
-            .where(UserConceptState.user_id == user_id, Concept.user_id == user_id)
+            .outerjoin(
+                ConceptAlias,
+                (ConceptAlias.concept_id == Concept.id) & (ConceptAlias.user_id == user_id),
+            )
+            .where(
+                UserConceptState.user_id == user_id, Concept.user_id == user_id,
+                Concept.review_status == "confirmed",
+            )
         )
         if terms:
             clauses = []
             for term in terms[:12]:
                 like = f"%{term}%"
-                clauses.extend([Concept.name.ilike(like), Concept.description.ilike(like)])
+                clauses.extend([
+                    Concept.name.ilike(like), Concept.description.ilike(like), ConceptAlias.alias.ilike(like),
+                ])
             stmt = stmt.where(or_(*clauses))
         result = await self.db.execute(stmt.limit(max(limit * 5, 30)))
         hits: list[RetrievalHit] = []
-        for state, concept in result.all():
+        for state, concept in result.unique().all():
             text_score = _text_score(query, str(concept.name or ""), str(concept.description or ""))
             state_priority = float(state.forgetting_risk or 0.0) + (
                 100.0 - float(state.mastery_estimate or 0.0)
@@ -607,7 +647,10 @@ class RetrievalRouter:
             return str(memory.memory_value or "") if memory else ""
         if hit.source_type == "concept":
             result = await self.db.execute(
-                select(Concept).where(Concept.id == int(hit.source_id), Concept.user_id == user_id)
+                select(Concept).where(
+                    Concept.id == int(hit.source_id), Concept.user_id == user_id,
+                    Concept.review_status == "confirmed",
+                )
             )
             concept = result.scalar_one_or_none()
             if not concept:
