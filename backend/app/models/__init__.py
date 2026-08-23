@@ -21,7 +21,14 @@ from app.models.anki import AnkiCard  # noqa: F401
 from app.models.agent import AgentJob, AgentExecutionLog  # noqa: F401
 from app.models.coach import CoachEvent, CoachNudge, CoachPreference, CoachSkillStats, CoachWorkflow  # noqa: F401
 from app.models.note_quote import NoteQuoteUsage  # noqa: F401
-from app.models.concept import Concept, ConceptEdge, ConceptLink  # noqa: F401
+from app.models.concept import (  # noqa: F401
+    Concept,
+    ConceptAlias,
+    ConceptAuditEvent,
+    ConceptEdge,
+    ConceptLink,
+    ConceptSourceEvidence,
+)
 from app.models.prompt_template import PromptTemplate  # noqa: F401
 from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk  # noqa: F401
 from app.models.learner_model import (  # noqa: F401

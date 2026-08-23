@@ -10,10 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.material import Material, Chapter
+from app.models.concept import ConceptLink, ConceptSourceEvidence
 from app.models.question import Question, WrongQuestion, ReviewSchedule
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.event_tracker import EventTracker
+from app.services.concept_service import link_concept, record_concept_source_evidence, upsert_concept
+from app.services.learner_model_service import record_evidence, record_review_result_evidence
+from app.services.review_scheduler import apply_review
 from app.models.learning_event import EventType
 
 router = APIRouter()
@@ -93,6 +97,7 @@ def _to_item(wq: WrongQuestion) -> dict:
         "mastery_status": wq.mastery_status,
         "review_count": wq.review_count,
         "knowledge_point": wq.knowledge_point,
+        "concept_id": wq.concept_id,
         "recall_difficulty": wq.recall_difficulty,
         "mastery_score": wq.mastery_score,
         "next_review_at": wq.next_review_at.isoformat() if wq.next_review_at else None,
@@ -219,6 +224,25 @@ async def create_wrong_question(
     db.add(wrong)
     await db.flush()
 
+    if body.knowledge_point and body.knowledge_point.strip():
+        concept = await upsert_concept(
+            db, int(current_user.id), body.knowledge_point,
+            source="wrong_question", review_status="confirmed",
+        )
+        if concept is not None:
+            wrong.concept_id = int(concept.id)
+            await link_concept(
+                db, int(current_user.id), int(concept.id), "wrong_question", int(wrong.id), link_type="tests",
+            )
+            await link_concept(
+                db, int(current_user.id), int(concept.id), "chapter", int(chapter_id), link_type="tests",
+            )
+            await record_concept_source_evidence(
+                db, int(current_user.id), int(concept.id), source_type="wrong_question",
+                source_id=int(wrong.id), excerpt=body.content[:280], confidence=1.0,
+                review_status="confirmed",
+            )
+
     # Auto-create ReviewSchedule for this wrong question (due immediately)
     try:
         review = ReviewSchedule(
@@ -247,15 +271,23 @@ async def create_wrong_question(
     # 记录学习事件：新增错题
     try:
         tracker = EventTracker(db, user_id=current_user.id)
-        await tracker.track(
+        tracked_event = await tracker.track(
             event_type=EventType.QUESTION_WRONG,
             category="practice",
             event_data={
                 "wrong_question_id": wrong.id,
                 "question_type": body.question_type,
                 "chapter_id": chapter_id,
+                "concept_id": wrong.concept_id,
             },
         )
+        if wrong.concept_id is not None:
+            await record_evidence(
+                db, int(current_user.id), int(wrong.concept_id), "answer", score=0.0,
+                reliability=1.0, source_event_id=int(tracked_event.id),
+                source_type="wrong_question", source_id=int(wrong.id), dimension="recall",
+                observed_at=now, payload={"wrong_question_id": int(wrong.id), "error_type": "答题错误"},
+            )
     except Exception:
         pass  # 事件追踪不影响主流程
 
@@ -322,8 +354,8 @@ async def review_wrong_question(
     if not item:
         raise HTTPException(status_code=404, detail="错题不存在")
 
-    # 使用 SM-2 算法（与 review.py 统一）
-    from app.routers.review import _sm2_update, _calc_mastery_status
+    # Reuse the same FSRS-first scheduler as the review center.
+    from app.routers.review import _calc_mastery_status
 
     # 查找或创建关联的 ReviewSchedule
     review_result = await db.execute(
@@ -336,12 +368,22 @@ async def review_wrong_question(
     review_task = review_result.scalar_one_or_none()
 
     now = datetime.now()
-    current_interval = int(getattr(review_task, "interval_days", 1) or 1) if review_task else 1
-    current_reps = int(getattr(review_task, "repetitions", 0) or 0) if review_task else 0
-    current_ef = int(getattr(review_task, "ease_factor", 250) or 250) if review_task else 250
-
-    days, new_reps, new_ef = _sm2_update(current_interval, current_reps, current_ef, body.quality)
-    next_review_at = now + timedelta(days=days)
+    if review_task is None:
+        review_task = ReviewSchedule(
+            user_id=current_user.id,
+            item_type="question",
+            item_id=item.id,
+            scheduled_date=now,
+            interval_days=1,
+            ease_factor=250,
+            repetitions=0,
+            status="pending",
+        )
+        db.add(review_task)
+        await db.flush()
+    schedule = apply_review(review_task, body.quality, now, "scheduled_date")
+    days = int(schedule.interval_days)
+    next_review_at = schedule.due_at
 
     # 更新错题本
     item.review_count = (item.review_count or 0) + 1
@@ -359,28 +401,8 @@ async def review_wrong_question(
     )
 
     # 同步更新 ReviewSchedule（保持一致性）
-    if review_task:
-        review_task.repetitions = new_reps
-        review_task.last_quality = body.quality
-        review_task.interval_days = days
-        review_task.ease_factor = new_ef
-        review_task.completed_at = now
-        review_task.scheduled_date = next_review_at
-        review_task.status = "pending"
-    else:
-        # 不存在则创建
-        new_review = ReviewSchedule(
-            user_id=current_user.id,
-            item_type="question",
-            item_id=item.id,
-            scheduled_date=next_review_at,
-            interval_days=days,
-            ease_factor=new_ef,
-            repetitions=new_reps,
-            last_quality=body.quality,
-            status="pending",
-        )
-        db.add(new_review)
+    review_task.completed_at = now
+    review_task.status = "pending"
 
     await db.flush()
 
@@ -390,7 +412,7 @@ async def review_wrong_question(
         event_type = EventType.QUESTION_CORRECT if body.quality >= 4 else (
             EventType.QUESTION_ANSWERED if body.quality >= 2 else EventType.QUESTION_WRONG
         )
-        await tracker.track(
+        tracked_event = await tracker.track(
             event_type=event_type,
             category="review",
             event_data={
@@ -398,8 +420,15 @@ async def review_wrong_question(
                 "quality": body.quality,
                 "new_interval_days": days,
                 "mastery_status": item.mastery_status,
+                "concept_id": item.concept_id,
             },
         )
+        if item.concept_id is not None:
+            await record_review_result_evidence(
+                db, int(current_user.id), target_type="wrong_question", target_id=int(item.id),
+                quality=body.quality, source_event_id=int(tracked_event.id), observed_at=now,
+                next_review_at=next_review_at, concept_id=int(item.concept_id),
+            )
     except Exception:
         pass  # 事件追踪不影响主流程
 
@@ -434,6 +463,20 @@ async def delete_wrong_question(
             ReviewSchedule.item_type == "question",
             ReviewSchedule.item_id == item.id,
             ReviewSchedule.user_id == current_user.id,
+        )
+    )
+    await db.execute(
+        delete(ConceptSourceEvidence).where(
+            ConceptSourceEvidence.user_id == int(current_user.id),
+            ConceptSourceEvidence.source_type == "wrong_question",
+            ConceptSourceEvidence.source_id == int(item.id),
+        )
+    )
+    await db.execute(
+        delete(ConceptLink).where(
+            ConceptLink.user_id == int(current_user.id),
+            ConceptLink.target_type == "wrong_question",
+            ConceptLink.target_id == int(item.id),
         )
     )
 

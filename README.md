@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、可审计 SQL 记忆声明和 `RetrievalRouter`：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、失败重试、按用户重建和离线质量门禁。真实 Qdrant 实验未证明足够替换收益，因此生产继续采用 Chroma + SQL keyword + RRF。PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；正式数据库升级、真实 Electron 安装验收和新版发布仍需单独完成。
+当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、可审计 SQL 记忆声明、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取；待确认关系不会直接影响学习建议。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant 与 Neo4j 均不进入当前运行时依赖。PostgreSQL 16、Chromium 和 Windows smoke 已通过 GitHub CI；正式数据库升级、真实 Electron 安装验收和新版发布仍需单独完成。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -138,6 +138,8 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 意图识别：对话中自动判断是否需要检索资料库
 - **容错降级**：embedding 服务不可用时，资料创建、问答和分析不会 500；资料搜索自动回退到关键词检索
 - 资料支持版本化投影、更新替换、删除墓碑、失败重试、按用户重建和离线检索质量门禁；Qdrant 已完成实验但不进入生产依赖
+- 资料正文自动抽取待审核的概念、别名、来源摘录和先修关系；资料更新/删除同步清理过期图谱证据
+- `/mastery` 支持概念确认、改名、别名、合并、删除、先修缺口与来源下钻；学习建议解释到期复习、先修补缺、错误变式和活跃目标
 
 ### 6. 多 AI 提供商支持
 - OpenAI（GPT-4o / GPT-4）
@@ -666,11 +668,11 @@ Mnemox/
 
 - [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
 - [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化、PostgreSQL 16、Chromium 草案确认与 Windows smoke 已通过；真实 Windows Electron 启动/安装 E2E 仍待补
-- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、质量集和 Qdrant no-go、学习者模型、outbox、Vault 安全、Coach 归因和 SQL 记忆声明已接入；下一模块为概念图谱自动抽取、人工编辑和先修缺口
+- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、SQL 概念图谱、人工审核编辑、先修缺口、强弱证据融合与可解释推荐已经接入；下一模块为 SQL 时态记忆冲突、替代、失效与纠错闭环
 - [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
 - [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
 
-当前执行顺序：概念图谱闭环 → 学习者状态与可解释推荐 → SQL 时态记忆冲突/纠错 → Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
+当前执行顺序：SQL 时态记忆冲突/纠错 → Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布；概念图谱与可解释推荐主链已收口。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
 
 默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 

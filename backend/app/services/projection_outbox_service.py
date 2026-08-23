@@ -861,7 +861,18 @@ async def _project_event(
             )
     if row.concept_id is None:
         return 0
-    mapping = {"practice.answer": "answer", "practice.recall": "recall", "study.duration": "study_duration", "study.frequency": "study_frequency"}
+    mapping = {
+        "practice.answer": "answer",
+        "practice.recall": "recall",
+        "practice.explanation": "explanation",
+        "practice.application": "application",
+        "practice.hint": "hint_count",
+        "study.duration": "study_duration",
+        "study.frequency": "study_frequency",
+        "study.repeated_question": "repeated_question",
+        "study.interruption": "interruption",
+        "study.recovery": "recovery",
+    }
     evidence_type = mapping.get(event_type)
     if evidence_type is None:
         return 0
@@ -891,8 +902,14 @@ def _is_noop_learner_state_projection(
         "review_complete",
         "practice.answer",
         "practice.recall",
+        "practice.explanation",
+        "practice.application",
+        "practice.hint",
         "study.duration",
         "study.frequency",
+        "study.repeated_question",
+        "study.interruption",
+        "study.recovery",
     }
 
 

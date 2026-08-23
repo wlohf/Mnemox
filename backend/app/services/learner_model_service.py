@@ -113,6 +113,9 @@ def _state_to_dict(state: UserConceptState) -> dict[str, Any]:
         "mastery_estimate": round(float(state.mastery_estimate), 4),
         "confidence": round(float(state.confidence), 4),
         "forgetting_risk": round(float(state.forgetting_risk), 4),
+        "attempt_count": int(state.attempt_count or 0),
+        "correct_count": int(state.correct_count or 0),
+        "hint_count": int(state.hint_count or 0),
         "mastery_dimensions": state.mastery_dimensions or {},
         "common_error_type": state.common_error_type,
         "last_evidence_at": _to_iso(state.last_evidence_at),
@@ -289,6 +292,9 @@ async def get_concept_state(
         "mastery_estimate": legacy_mastery,
         "confidence": 0.0,
         "forgetting_risk": 1.0,
+        "attempt_count": 0,
+        "correct_count": 0,
+        "hint_count": 0,
         "mastery_dimensions": {},
         "common_error_type": None,
         "last_evidence_at": None,
@@ -471,6 +477,15 @@ async def recompute_concept_state(
     reviews = [item for item in direct if item.evidence_type == "review_result"]
     latest_review = reviews[-1] if reviews else None
     next_review_at = _parse_datetime((latest_review.payload or {}).get("next_review_at")) if latest_review else None
+    attempts = [
+        item for item in direct
+        if item.evidence_type in {"answer", "recall", "explanation", "application", "review_result"}
+    ]
+    correct_attempts = [item for item in attempts if float(item.score) >= 0.6]
+    hints = sum(
+        max(1, int((item.payload or {}).get("hint_count", 1) or 1))
+        for item in direct if item.evidence_type == "hint_count"
+    )
 
     active_override: dict[str, Any] | None = None
     if manual:
@@ -494,6 +509,9 @@ async def recompute_concept_state(
         "indirect_effects": indirect_effects,
         "indirect_mastery_delta": 0.0,
         "legacy_evidence_count": type_counts.get("legacy_mastery", 0),
+        "attempt_count": len(attempts),
+        "correct_count": len(correct_attempts),
+        "hint_count": hints,
         "manual_override_active": active_override is not None,
         "rule": "reliability_weighted_score_with_90_day_decay",
         "score_semantics": "higher_is_better; hint_count is inverted from dependence",
@@ -539,6 +557,9 @@ async def recompute_concept_state(
     state.mastery_estimate = _clamp(mastery, 0.0, 100.0)
     state.confidence = confidence
     state.forgetting_risk = forgetting_risk
+    state.attempt_count = len(attempts)
+    state.correct_count = len(correct_attempts)
+    state.hint_count = hints
     state.mastery_dimensions = mastery_dimensions
     state.common_error_type = common_error_type
     state.last_evidence_at = _naive_local(latest.observed_at) if latest else None

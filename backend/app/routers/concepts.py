@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,21 @@ from app.services.concept_service import (
     extract_chapter_concepts_llm,
     get_concept_neighborhood,
     list_concepts,
+    upsert_concept,
+)
+from app.services.concept_graph_service import (
+    add_concept_alias,
+    create_concept_relation,
+    delete_concept,
+    get_concept_detail,
+    get_prerequisite_gaps,
+    list_concept_audit,
+    merge_concepts,
+    rename_concept,
+    review_concept,
+    review_concept_relation,
+    split_concept,
+    sync_material_concepts,
 )
 from app.utils.ownership import get_owned_row
 
@@ -155,3 +170,216 @@ async def associate_text(
         "event": coach_result["event"] if coach_result else None,
         "nudge": coach_result["nudge"] if coach_result else None,
     }
+
+
+class ConceptCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class ConceptAliasRequest(BaseModel):
+    alias: str = Field(min_length=2, max_length=120)
+
+
+class ConceptMergeRequest(BaseModel):
+    source_concept_id: int = Field(gt=0)
+
+
+class ConceptSplitRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    alias_ids: list[int] = Field(default_factory=list, max_length=100)
+    source_evidence_ids: list[int] = Field(default_factory=list, max_length=100)
+    link_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+class ConceptReviewRequest(BaseModel):
+    review_status: str = Field(pattern="^(confirmed|rejected)$")
+
+
+class ConceptEdgeRequest(BaseModel):
+    from_concept_id: int = Field(gt=0)
+    to_concept_id: int = Field(gt=0)
+    edge_type: str = Field(min_length=2, max_length=30)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+
+def _graph_error(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=404 if isinstance(exc, LookupError) else 409, detail=str(exc))
+
+
+@router.post("")
+async def create_concept(
+    body: ConceptCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    concept = await upsert_concept(
+        db, int(current_user.id), body.name, description=body.description, source="manual", review_status="confirmed",
+    )
+    if concept is None:
+        raise HTTPException(status_code=422, detail="概念名称无效")
+    return await get_concept_detail(db, int(current_user.id), int(concept.id))
+
+
+@router.post("/edges")
+async def create_edge(
+    body: ConceptEdgeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await create_concept_relation(
+            db, int(current_user.id), body.from_concept_id, body.to_concept_id, body.edge_type,
+            confidence=body.confidence,
+        )
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/edges/{edge_id}/review")
+async def review_edge(
+    edge_id: int,
+    body: ConceptReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await review_concept_relation(db, int(current_user.id), edge_id, body.review_status)
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/materials/{material_id}/sync")
+async def sync_material_graph(
+    material_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    material = await get_owned_row(db, Material, material_id, int(current_user.id), not_found_detail="资料不存在")
+    return await sync_material_concepts(db, int(current_user.id), material)
+
+
+@router.get("/{concept_id}")
+async def concept_detail(
+    concept_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await get_concept_detail(db, int(current_user.id), concept_id)
+    except LookupError as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.get("/{concept_id}/prerequisite-gaps")
+async def prerequisite_gaps(
+    concept_id: int,
+    depth: int = Query(3, ge=1, le=5),
+    mastery_threshold: float = Query(70.0, ge=0, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return {
+            "concept_id": concept_id,
+            "gaps": await get_prerequisite_gaps(
+                db, int(current_user.id), concept_id, max_depth=depth, mastery_threshold=mastery_threshold,
+            ),
+        }
+    except LookupError as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.get("/{concept_id}/audit")
+async def concept_audit(
+    concept_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return {"items": await list_concept_audit(db, int(current_user.id), concept_id, limit=limit)}
+    except LookupError as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.patch("/{concept_id}")
+async def update_concept(
+    concept_id: int,
+    body: ConceptCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await rename_concept(
+            db, int(current_user.id), concept_id, name=body.name, description=body.description,
+        )
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/{concept_id}/aliases")
+async def create_alias(
+    concept_id: int,
+    body: ConceptAliasRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await add_concept_alias(db, int(current_user.id), concept_id, body.alias)
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/{concept_id}/review")
+async def review_concept_candidate(
+    concept_id: int,
+    body: ConceptReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await review_concept(db, int(current_user.id), concept_id, body.review_status)
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/{concept_id}/merge")
+async def merge_concept(
+    concept_id: int,
+    body: ConceptMergeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await merge_concepts(db, int(current_user.id), concept_id, body.source_concept_id)
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.post("/{concept_id}/split")
+async def split_concept_identity(
+    concept_id: int,
+    body: ConceptSplitRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await split_concept(
+            db, int(current_user.id), concept_id, name=body.name, alias_ids=body.alias_ids,
+            source_evidence_ids=body.source_evidence_ids, link_ids=body.link_ids,
+        )
+    except (LookupError, ValueError) as exc:
+        raise _graph_error(exc) from exc
+
+
+@router.delete("/{concept_id}")
+async def remove_concept(
+    concept_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return await delete_concept(db, int(current_user.id), concept_id)
+    except LookupError as exc:
+        raise _graph_error(exc) from exc

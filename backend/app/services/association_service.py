@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.concept import Concept, ConceptEdge, ConceptLink
+from app.models.concept import Concept, ConceptAlias, ConceptEdge, ConceptLink
 from app.models.learner_model import UserConceptState
 from app.models.note import Note
 from app.models.question import WrongQuestion
@@ -29,11 +29,26 @@ async def match_concepts_in_text(db: AsyncSession, user_id: int, text: str) -> l
     haystack = str(text or "").lower()
     if not haystack.strip():
         return []
-    result = await db.execute(select(Concept).where(Concept.user_id == user_id))
+    result = await db.execute(
+        select(Concept).where(Concept.user_id == user_id, Concept.review_status == "confirmed")
+    )
+    concepts = result.scalars().all()
+    concept_ids = [int(concept.id) for concept in concepts]
+    alias_rows = (
+        await db.execute(
+            select(ConceptAlias).where(
+                ConceptAlias.user_id == user_id, ConceptAlias.concept_id.in_(concept_ids or {-1}),
+            )
+        )
+    ).scalars().all()
+    aliases: dict[int, list[str]] = {}
+    for alias in alias_rows:
+        aliases.setdefault(int(alias.concept_id), []).append(str(alias.alias_normalized or ""))
     matched = []
-    for concept in result.scalars().all():
+    for concept in concepts:
         needle = str(concept.name_normalized or "")
-        if len(needle) >= _MIN_MATCH_NAME_LENGTH and needle in haystack:
+        alternatives = [needle, *aliases.get(int(concept.id), [])]
+        if any(len(value) >= _MIN_MATCH_NAME_LENGTH and value in haystack for value in alternatives):
             matched.append(concept)
     return matched
 
@@ -163,6 +178,7 @@ async def find_associations(
     edge_result = await db.execute(
         select(ConceptEdge).where(
             ConceptEdge.user_id == user_id,
+            ConceptEdge.review_status == "confirmed",
             (ConceptEdge.from_concept_id.in_(matched_ids))
             | (ConceptEdge.to_concept_id.in_(matched_ids)),
         )
@@ -184,7 +200,10 @@ async def find_associations(
     neighbor_names: dict[int, str] = {}
     if neighbor_ids:
         neighbor_result = await db.execute(
-            select(Concept).where(Concept.user_id == user_id, Concept.id.in_(neighbor_ids))
+            select(Concept).where(
+                Concept.user_id == user_id, Concept.review_status == "confirmed",
+                Concept.id.in_(neighbor_ids),
+            )
         )
         neighbor_names = {int(c.id): c.name for c in neighbor_result.scalars().all()}
 

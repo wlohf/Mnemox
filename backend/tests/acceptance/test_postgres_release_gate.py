@@ -32,7 +32,7 @@ from app.services.projection_outbox_worker import ProjectionOutboxWorker
 
 
 DATABASE_URL = os.environ.get("POSTGRES_ACCEPTANCE_DATABASE_URL", "").strip()
-EXPECTED_ALEMBIC_HEAD = "20260822_10"
+EXPECTED_ALEMBIC_HEAD = "20260822_11"
 POSTGRES_URL_CONFIGURED = DATABASE_URL.startswith("postgresql+asyncpg://")
 
 

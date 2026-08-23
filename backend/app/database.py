@@ -169,6 +169,11 @@ async def _run_lightweight_migrations(conn):
         ("review_schedule", "last_review_at", "DATETIME"),
         # 概念图谱（决策 D1/D2）：错题挂概念外键
         ("wrong_questions", "concept_id", "INTEGER"),
+        ("concepts", "review_status", "VARCHAR(20) NOT NULL DEFAULT 'confirmed'"),
+        ("concept_edges", "review_status", "VARCHAR(20) NOT NULL DEFAULT 'confirmed'"),
+        ("user_concept_state", "attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("user_concept_state", "correct_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("user_concept_state", "hint_count", "INTEGER NOT NULL DEFAULT 0"),
         # Obsidian 增量同步（决策 D6）：笔记外部来源路径
         ("notes", "source_path", "VARCHAR(500)"),
         # Obsidian Vault 一致性：稳定文件身份、缺失状态和冲突候选。
@@ -594,6 +599,95 @@ async def _run_lightweight_migrations(conn):
         ))
     except Exception as exc:
         raise RuntimeError("SQLite retrieval projection migration failed") from exc
+
+    # Concept identity and provenance remain canonical SQL data. These tables
+    # upgrade existing local databases without requiring Neo4j or an AI service.
+    try:
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS concept_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                concept_id INTEGER NOT NULL,
+                alias VARCHAR(120) NOT NULL,
+                alias_normalized VARCHAR(120) NOT NULL,
+                source VARCHAR(40) NOT NULL DEFAULT 'manual',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_concept_aliases_user_name UNIQUE (user_id, alias_normalized),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(concept_id) REFERENCES concepts(id) ON DELETE CASCADE
+            )
+            """
+        ))
+        for name, columns in (
+            ("ix_concept_aliases_user_id", "user_id"),
+            ("ix_concept_aliases_concept_id", "concept_id"),
+            ("ix_concept_aliases_user_concept", "user_id, concept_id"),
+        ):
+            await conn.execute(sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS {name} ON concept_aliases({columns})"))
+
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS concept_source_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                concept_id INTEGER NOT NULL,
+                edge_id INTEGER NULL,
+                source_type VARCHAR(30) NOT NULL DEFAULT 'material',
+                source_id INTEGER NOT NULL,
+                source_version INTEGER NOT NULL DEFAULT 1,
+                excerpt TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                review_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_concept_source_evidence_review_status
+                    CHECK (review_status IN ('pending', 'confirmed', 'rejected')),
+                CONSTRAINT ck_concept_source_evidence_confidence
+                    CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                CONSTRAINT ck_concept_source_evidence_source_version CHECK (source_version >= 1),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(concept_id) REFERENCES concepts(id) ON DELETE CASCADE,
+                FOREIGN KEY(edge_id) REFERENCES concept_edges(id) ON DELETE CASCADE
+            )
+            """
+        ))
+        for name, columns in (
+            ("ix_concept_source_evidence_user_id", "user_id"),
+            ("ix_concept_source_evidence_concept_id", "concept_id"),
+            ("ix_concept_source_evidence_edge_id", "edge_id"),
+            ("ix_concept_source_evidence_user_source", "user_id, source_type, source_id"),
+            ("ix_concept_source_evidence_user_concept", "user_id, concept_id, review_status"),
+        ):
+            await conn.execute(
+                sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS {name} ON concept_source_evidence({columns})")
+            )
+
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS concept_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                concept_id INTEGER NULL,
+                operation VARCHAR(40) NOT NULL,
+                actor VARCHAR(30) NOT NULL DEFAULT 'user',
+                payload JSON NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+            )
+            """
+        ))
+        for name, columns in (
+            ("ix_concept_audit_events_user_id", "user_id"),
+            ("ix_concept_audit_events_concept_id", "concept_id"),
+            ("ix_concept_audit_events_user_concept", "user_id, concept_id, created_at"),
+        ):
+            await conn.execute(
+                sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS {name} ON concept_audit_events({columns})")
+            )
+    except Exception as exc:
+        raise RuntimeError("SQLite concept graph provenance migration failed") from exc
 
 
 async def init_db():

@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260822_10"
+CURRENT_HEAD_REVISION = "20260822_11"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -149,6 +149,9 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "concepts",
             "concept_edges",
             "concept_links",
+            "concept_aliases",
+            "concept_source_evidence",
+            "concept_audit_events",
             "note_quote_usages",
             "prompt_templates",
             "learner_evidence",
@@ -193,6 +196,20 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         assert bool(note_indexes["uq_notes_source_identity"]["unique"])
         assert "ix_wrong_questions_concept_id" in {
             index["name"] for index in inspector.get_indexes("wrong_questions")
+        }
+        assert "review_status" in {column["name"] for column in inspector.get_columns("concepts")}
+        assert "review_status" in {column["name"] for column in inspector.get_columns("concept_edges")}
+        assert {"attempt_count", "correct_count", "hint_count"}.issubset(
+            {column["name"] for column in inspector.get_columns("user_concept_state")}
+        )
+        assert "ix_concept_aliases_user_concept" in {
+            index["name"] for index in inspector.get_indexes("concept_aliases")
+        }
+        assert "ix_concept_source_evidence_user_source" in {
+            index["name"] for index in inspector.get_indexes("concept_source_evidence")
+        }
+        assert "ix_concept_audit_events_user_concept" in {
+            index["name"] for index in inspector.get_indexes("concept_audit_events")
         }
         assert "uq_learning_events_user_type_dedupe" in {
             index["name"] for index in inspector.get_indexes("learning_events")
@@ -419,6 +436,11 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "CREATE TABLE concepts" in ddl
     assert "CREATE TABLE concept_edges" in ddl
     assert "CREATE TABLE concept_links" in ddl
+    assert "CREATE TABLE concept_aliases" in ddl
+    assert "CREATE TABLE concept_source_evidence" in ddl
+    assert "CREATE TABLE concept_audit_events" in ddl
+    assert "ALTER TABLE concepts ADD COLUMN review_status" in ddl
+    assert "ALTER TABLE user_concept_state ADD COLUMN attempt_count" in ddl
     assert "CREATE TABLE learner_evidence" in ddl
     assert "CREATE TABLE user_concept_state" in ddl
     assert "CREATE TABLE projection_outbox" in ddl
@@ -729,6 +751,38 @@ def test_sqlite_lightweight_migration_adds_rebuildable_retrieval_manifests(tmp_p
     assert {"source_id", "status", "source_version", "last_error", "deleted_at"}.issubset(columns)
     assert "ix_retrieval_projections_user_status" in indexes
     assert "ix_retrieval_projection_chunks_user_source" in chunk_indexes
+
+
+def test_sqlite_lightweight_migration_adds_reviewable_concept_provenance(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-concept-provenance.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260822_10")
+
+    async def _run() -> tuple[set[str], set[str], set[str], set[str]]:
+        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+        try:
+            async with async_engine.begin() as connection:
+                await _run_lightweight_migrations(connection)
+                await _run_lightweight_migrations(connection)
+                return await connection.run_sync(
+                    lambda sync_connection: (
+                        set(inspect(sync_connection).get_table_names()),
+                        {column["name"] for column in inspect(sync_connection).get_columns("concepts")},
+                        {column["name"] for column in inspect(sync_connection).get_columns("user_concept_state")},
+                        {
+                            index["name"]
+                            for index in inspect(sync_connection).get_indexes("concept_source_evidence")
+                        },
+                    )
+                )
+        finally:
+            await async_engine.dispose()
+
+    tables, concept_columns, state_columns, evidence_indexes = asyncio.run(_run())
+    assert {"concept_aliases", "concept_source_evidence", "concept_audit_events"}.issubset(tables)
+    assert "review_status" in concept_columns
+    assert {"attempt_count", "correct_count", "hint_count"}.issubset(state_columns)
+    assert "ix_concept_source_evidence_user_source" in evidence_indexes
 
 
 def test_sqlite_lightweight_migration_backfills_legacy_mastery_idempotently(tmp_path: Path):
