@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, Button, List, Space, message, Tag, Segmented, Radio, Input, Spin, Alert } from 'antd'
 import { CheckCircleOutlined, ArrowRightOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -30,6 +30,8 @@ type ReviewStep = 'list' | 'summary' | 'questions' | 'result'
 
 export function ReviewPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const coachAttemptId = searchParams.get('coach_attempt')?.trim() || null
   const [items, setItems] = useState<ReviewTaskItem[]>([])
   const [loading, setLoading] = useState(false)
   const [scope, setScope] = useState<'due' | 'all'>('due')
@@ -100,10 +102,11 @@ export function ReviewPage() {
     try {
       const result = await apiFetch<ReviewResult>(`/api/review/${selectedTask.task_id}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ answers }),
+        body: JSON.stringify({ answers, coach_action_attempt_id: coachAttemptId ?? null }),
       })
       setReviewResult(result)
       setCurrentStep('result')
+      if (coachAttemptId) navigate('/review', { replace: true })
       message.success('复习评估完成')
     } catch (error: any) {
       message.error(error.message || '提交答案失败')
@@ -112,12 +115,13 @@ export function ReviewPage() {
     }
   }
 
-  const resetReview = () => {
+  const resetReview = (clearCoachAttempt = false) => {
     setCurrentStep('list')
     setSelectedTask(null)
     setReviewContent(null)
     setUserAnswers({})
     setReviewResult(null)
+    if (clearCoachAttempt && coachAttemptId) navigate('/review', { replace: true })
     void load()
   }
 
@@ -155,6 +159,15 @@ export function ReviewPage() {
         rightExtra={<Tag color="blue">任务 {items.length}</Tag>}
       >
         <Card size="small" title={scope === 'due' ? '到期复习任务' : '全部复习任务'}>
+          {coachAttemptId && (
+            <Alert
+              type="info"
+              showIcon
+              message="这次复习来自 Coach 建议"
+              description="完成一项复习后，系统会自动关联真实复习事件并反馈给 Coach。"
+              style={{ marginBottom: 12 }}
+            />
+          )}
           <List
             loading={loading}
             dataSource={items}
@@ -285,9 +298,9 @@ export function ReviewPage() {
                     onClick={async () => {
                       setSubmitting(true)
                       try {
-                        await completeReviewTask(selectedTask.task_id, q)
+                        await completeReviewTask(selectedTask.task_id, q, coachAttemptId)
                         message.success('复习记录已保存')
-                        resetReview()
+                        resetReview(true)
                       } catch {
                         message.error('保存失败，请重试')
                       } finally {
@@ -395,7 +408,7 @@ export function ReviewPage() {
               </p>
             </Card>
 
-            <Button type="primary" size="large" block onClick={resetReview}>
+            <Button type="primary" size="large" block onClick={() => resetReview(true)}>
               返回复习列表
             </Button>
           </Space>

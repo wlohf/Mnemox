@@ -2,6 +2,10 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
+// Local development can point the UI at an independently started backend
+// without changing the repository default or touching another service on 8000.
+const apiProxyTarget = process.env.MNEMOX_API_PROXY_TARGET || 'http://localhost:8000'
+
 const vendorChunks: Record<string, string[]> = {
   'vendor-react': ['react', 'react-dom', 'react-router-dom'],
   'vendor-charts': ['echarts', 'echarts-for-react'],
@@ -121,11 +125,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/health': {
-        target: 'http://localhost:8000',
+        target: apiProxyTarget,
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:8000',
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },

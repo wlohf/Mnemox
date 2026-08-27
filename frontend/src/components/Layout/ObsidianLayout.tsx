@@ -59,7 +59,6 @@ import {
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
 import { useThemeStore } from '../../stores/themeStore'
-import * as pomodoroApi from '../../services/pomodoroApi'
 import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator, type NoteContextIndicator } from '../../services/chatApi'
 import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
@@ -79,6 +78,8 @@ import {
   getCoachPreferences,
   markCoachNudgeShown,
   recordCoachNudgeFeedback,
+  startCoachNudgeAction,
+  type CoachActionAttempt,
   type CoachFeedbackOutcome,
   type CoachChannel,
   type CoachNudge,
@@ -103,6 +104,7 @@ import {
 import { apiFetch, getApiErrorMessage, withAuthQuery } from '../../services/apiClient'
 import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
+import { SyncConflictModal } from '../SyncConflictModal'
 import { BackendLoadingOverlay } from './BackendLoadingOverlay'
 import { GlobalNavRail } from './GlobalNavRail'
 import { dismissOnboarding, getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
@@ -126,6 +128,17 @@ import {
   RIGHT_SIDEBAR_CARDS,
   saveRightSidebarLayoutPreference,
 } from './rightSidebarLayout'
+
+function routeWithCoachAttempt(route: string, attempt: CoachActionAttempt, nudgeId: string) {
+  const url = new URL(route, window.location.origin)
+  url.searchParams.set('coach_attempt', attempt.id)
+  url.searchParams.set('coach_nudge', nudgeId)
+  const minutes = Number(attempt.action_payload?.minutes)
+  if (Number.isFinite(minutes) && minutes > 0) {
+    url.searchParams.set('coach_minutes', String(minutes))
+  }
+  return `${url.pathname}${url.search}${url.hash}`
+}
 
 const { Sider, Content } = Layout
 const { TextArea } = Input
@@ -323,6 +336,7 @@ export function ObsidianLayout() {
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
   const [, setWeeklyPlans] = useState<DailyPlan[]>([])
   const [showSettings, setShowSettings] = useState(false)
+  const [syncConflictsOpen, setSyncConflictsOpen] = useState(false)
   const [motivationQuote, setMotivationQuote] = useState<MotivationQuote | null>(null)
   const [refreshOffset, setRefreshOffset] = useState(0)
   const [showMotivationModal, setShowMotivationModal] = useState(false)
@@ -1225,6 +1239,19 @@ export function ObsidianLayout() {
         reloadConversationsForCurrentView()
         // Refresh review count after chat (may have auto-created wrong questions)
         loadReviewOverview()
+        // The chat is another RAG entry point. Refresh the same per-user
+        // status shown in the material sidebar so a keyword fallback is never
+        // hidden after a seemingly normal answer.
+        void apiFetch<{
+          enabled: boolean
+          rag_online: boolean
+          total_chunks: number
+          embedding_enabled?: boolean
+          fallback_active?: boolean
+          last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
+          message?: string
+          projection_summary?: RetrievalProjectionSummary
+        }>('/api/rag/health').then(setRagStatus).catch(() => undefined)
       },
       (error) => {
         message.error(error)
@@ -1466,21 +1493,44 @@ export function ObsidianLayout() {
   useEffect(() => {
     const unsubscribe = onCoachNotificationRoute((payload) => {
       const route = String(payload?.route || '')
-      if (route.startsWith('/')) navigate(route)
+      if (!route.startsWith('/')) return
+      void startCoachNudgeAction(String(payload?.id || '')).then((started) => {
+        if (!started) {
+          navigate(route)
+          return
+        }
+        navigate(routeWithCoachAttempt(started.nudge.route || route, started.attempt, started.nudge.id))
+      })
     })
     return () => {
       if (unsubscribe) unsubscribe()
     }
   }, [navigate])
 
-  const handleCoachFeedback = useCallback(async (nudge: CoachNudge, outcome: CoachFeedbackOutcome) => {
+  const handleCoachFeedback = useCallback(async (
+    nudge: CoachNudge,
+    outcome: CoachFeedbackOutcome,
+    options: { silent?: boolean } = {},
+  ) => {
     const result = await recordCoachNudgeFeedback(nudge.id, { outcome })
-    if (!result) return
+    if (!result) return false
     notification.destroy(`coach-${nudge.id}`)
-    if (outcome === 'helpful' || outcome === 'accepted') {
+    if (!options.silent && (outcome === 'helpful' || outcome === 'accepted' || outcome === 'started')) {
       message.success('已记录 Coach 反馈')
     }
+    return true
   }, [])
+
+  const startCoachNudge = useCallback(async (nudge: CoachNudge) => {
+    const started = await startCoachNudgeAction(nudge.id)
+    if (!started) {
+      message.error('无法开始这条 Coach 建议，请稍后重试')
+      return
+    }
+    notification.destroy(`coach-${nudge.id}`)
+    const route = started.nudge.route || nudge.route || nudge.suggested_action?.route
+    if (route) navigate(routeWithCoachAttempt(route, started.attempt, nudge.id))
+  }, [navigate])
 
   const showCoachNudge = useCallback((nudge: CoachNudge | null) => {
     if (!nudge || shownCoachNudgeIdsRef.current.has(nudge.id)) return
@@ -1521,10 +1571,7 @@ export function ObsidianLayout() {
               <Button
                 size="small"
                 type="primary"
-                onClick={() => {
-                  void handleCoachFeedback(nudge, 'accepted')
-                  navigate(actionRoute)
-                }}
+                onClick={() => void startCoachNudge(nudge)}
               >
                 {actionLabel}
               </Button>
@@ -1820,22 +1867,21 @@ export function ObsidianLayout() {
     setShowStopReasonModal(true)
   }
 
-  const handleConfirmStopReason = async (reason: 'early_done' | 'interrupted' | 'distracted') => {
+  const handleConfirmStopReason = (reason: 'early_done' | 'interrupted' | 'distracted') => {
     const { currentBackendId, startedAt, pausedTotalMs } = usePomodoroStore.getState()
     const taskName = pomodoroConfig.taskName || currentTask || ''
-    if (currentBackendId) {
-      const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt - pausedTotalMs) : 0
-      const actualMinutes = Math.max(0.1, Math.round(elapsedMs / 1000 / 60 * 10) / 10)
-      await pomodoroApi.completePomodoro(currentBackendId, false, undefined, actualMinutes, reason)
-      if (reason === 'interrupted' || reason === 'distracted') {
-        void evaluateCoachForEvent(
-          reason === 'interrupted' ? 'pomodoro.interrupted' : 'pomodoro.distracted',
-          { pomodoro_id: currentBackendId, task_name: taskName, actual_minutes: actualMinutes, stop_reason: reason },
-          { source: 'pomodoro', severity: 'info', dedupeKey: `pomodoro-stop:${currentBackendId}:${reason}` },
-        )
-      }
+    const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt - pausedTotalMs) : 0
+    const actualMinutes = Math.max(0.1, Math.round(elapsedMs / 1000 / 60 * 10) / 10)
+    // Use the shared store path so a just-created Coach timer waits for its
+    // exact backend record instead of losing the action-attempt attribution.
+    completeTimer(undefined, { startBreak: false, completed: false, stopReason: reason })
+    if (currentBackendId && (reason === 'interrupted' || reason === 'distracted')) {
+      void evaluateCoachForEvent(
+        reason === 'interrupted' ? 'pomodoro.interrupted' : 'pomodoro.distracted',
+        { pomodoro_id: currentBackendId, task_name: taskName, actual_minutes: actualMinutes, stop_reason: reason },
+        { source: 'pomodoro', severity: 'info', dedupeKey: `pomodoro-stop:${currentBackendId}:${reason}` },
+      )
     }
-    resetTimer()
     setShowStopReasonModal(false)
     setSelectedStopReason(null)
     const msgs: Record<string, string> = {
@@ -2687,7 +2733,7 @@ export function ObsidianLayout() {
                     <small>账户、同步与设置</small>
                   </span>
                   <span className="mnemox-account-status">
-                    <SyncStatusIndicator />
+                    <SyncStatusIndicator onResolveConflicts={() => setSyncConflictsOpen(true)} />
                     <SettingOutlined />
                   </span>
                 </>
@@ -3044,6 +3090,34 @@ export function ObsidianLayout() {
                     />
                   )}
                 </div>
+                {ragStatus && (
+                  <div
+                    aria-live="polite"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      marginTop: 8,
+                      minWidth: 0,
+                      fontSize: 12,
+                      color: ragStatus.fallback_active || !ragStatus.embedding_enabled
+                        ? 'var(--warning, #a87332)'
+                        : 'var(--text-secondary)',
+                    }}
+                  >
+                    <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : 'orange'} style={{ margin: 0 }}>
+                      资料检索：{ragStatus.enabled && ragStatus.rag_online ? '语义 + 关键词' : '关键词保底'}
+                    </Tag>
+                    <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                      {ragStatus.last_retrieval_status?.message || (
+                        ragStatus.enabled && ragStatus.rag_online
+                          ? '回答会优先引用已选资料。'
+                          : '资料问答仍可用；语义检索恢复后会自动切回。'
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
               {isChatEmpty && (
                 <div className="mnemox-prompt-chips" aria-label="快捷提问">
@@ -4188,6 +4262,7 @@ export function ObsidianLayout() {
         onOpenMaterials={openOnboardingMaterials}
       />
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
+      <SyncConflictModal open={syncConflictsOpen} onClose={() => setSyncConflictsOpen(false)} />
       <ProjectSettingsModal
         open={projectSettingsOpen}
         projectId={editingProjectId}

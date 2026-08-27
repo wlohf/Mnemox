@@ -12,13 +12,15 @@ export type CoachEventType =
   | 'app.inactive_returned'
   | 'app.evaluate'
 
-export type CoachNudgeStatus = 'pending' | 'shown' | 'accepted' | 'snoozed' | 'dismissed' | 'completed' | 'expired'
+export type CoachNudgeStatus = 'pending' | 'shown' | 'accepted' | 'started' | 'snoozed' | 'dismissed' | 'completed' | 'abandoned' | 'expired'
 export type CoachChannel = 'chat_inline' | 'in_app_nudge' | 'agent_panel' | 'desktop_notification'
 
 export type CoachFeedbackOutcome =
   | 'helpful'
   | 'accepted'
+  | 'started'
   | 'completed'
+  | 'abandoned'
   | 'later'
   | 'snoozed'
   | 'dismissed'
@@ -27,6 +29,24 @@ export type CoachFeedbackOutcome =
   | 'too_easy'
   | 'irrelevant'
   | 'not_my_style'
+
+export type CoachActionAttemptStatus = 'started' | 'completed' | 'abandoned' | 'expired'
+
+export interface CoachActionAttempt {
+  id: string
+  nudge_id: string
+  action_type: string
+  route?: string | null
+  action_payload: Record<string, any>
+  status: CoachActionAttemptStatus
+  started_at?: string | null
+  observed_at?: string | null
+  completed_at?: string | null
+  abandoned_at?: string | null
+  linked_event_id?: number | null
+  linked_event_type?: string | null
+  outcome_source?: string | null
+}
 
 export interface CoachEvent {
   id: string
@@ -84,6 +104,43 @@ export interface CoachNudge {
   expires_at?: string | null
   created_at?: string | null
   updated_at?: string | null
+  action_attempt?: CoachActionAttempt | null
+}
+
+export interface CoachNudgeStartResponse {
+  ok: boolean
+  idempotent: boolean
+  nudge: Pick<CoachNudge, 'id' | 'status' | 'route' | 'requires_confirmation'>
+  attempt: CoachActionAttempt
+}
+
+export interface CoachNudgeReplay {
+  nudge: Pick<CoachNudge, 'id' | 'skill_id' | 'status' | 'title' | 'route' | 'suggested_action' | 'requires_confirmation' | 'explainability'>
+  trigger_event_id?: string | null
+  attempts: CoachActionAttempt[]
+  timeline: Array<{ id: number; event_type: string; timestamp?: string | null; payload?: Record<string, any> }>
+}
+
+export interface CoachNudgeDraft {
+  nudge: CoachNudge
+  draft: {
+    intent?: string
+    date?: string
+    items?: Array<{ title?: string; task_type?: string }>
+    [key: string]: any
+  }
+}
+
+export interface CoachNudgeDraftConfirmation {
+  ok: boolean
+  result: {
+    route?: string | null
+    created?: Record<string, any>
+    message?: string
+  }
+  attribution?: {
+    attempt?: CoachActionAttempt
+  }
 }
 
 export interface CoachPolicyResult {
@@ -198,6 +255,46 @@ export async function recordCoachNudgeFeedback(
     return await apiFetch<{ ok: boolean; nudge_id: string; status: string }>(`/api/coach/nudges/${encodeURIComponent(nudgeId)}/feedback`, {
       method: 'POST',
       body: JSON.stringify(body),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function startCoachNudgeAction(nudgeId: string): Promise<CoachNudgeStartResponse | null> {
+  try {
+    return await apiFetch<CoachNudgeStartResponse>(`/api/coach/nudges/${encodeURIComponent(nudgeId)}/start`, {
+      method: 'POST',
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function getCoachNudgeReplay(nudgeId: string): Promise<CoachNudgeReplay | null> {
+  try {
+    return await apiFetch<CoachNudgeReplay>(`/api/coach/nudges/${encodeURIComponent(nudgeId)}/replay`)
+  } catch {
+    return null
+  }
+}
+
+export async function getCoachNudgeDraft(nudgeId: string): Promise<CoachNudgeDraft | null> {
+  try {
+    return await apiFetch<CoachNudgeDraft>(`/api/coach/nudges/${encodeURIComponent(nudgeId)}/draft`)
+  } catch {
+    return null
+  }
+}
+
+export async function confirmCoachNudgeDraft(
+  nudgeId: string,
+  attemptId: string,
+): Promise<CoachNudgeDraftConfirmation | null> {
+  try {
+    return await apiFetch<CoachNudgeDraftConfirmation>(`/api/coach/nudges/${encodeURIComponent(nudgeId)}/draft/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ attempt_id: attemptId }),
     })
   } catch {
     return null

@@ -141,11 +141,15 @@ async def _run_lightweight_migrations(conn):
         ("wrong_questions", "mastery_score", "REAL DEFAULT 0.0"),
         ("tasks", "parent_task_id", "INTEGER"),
         ("pomodoros", "task_id", "INTEGER"),
+        ("pomodoros", "coach_action_attempt_id", "VARCHAR(40)"),
         ("agent_jobs", "payload", "JSON"),
         ("agent_jobs", "result", "JSON"),
         ("agent_jobs", "summary", "TEXT"),
         ("agent_jobs", "updated_at", "DATETIME"),
         ("agent_execution_logs", "metadata", "JSON"),
+        # Coach 行动生命周期：旧 SQLite 数据库也需要区分采纳、开始和放弃。
+        ("coach_skill_stats", "started_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("coach_skill_stats", "abandoned_count", "INTEGER NOT NULL DEFAULT 0"),
         ("ai_provider_settings", "available_models", "TEXT DEFAULT '[]'"),
         ("ai_provider_settings", "max_context_tokens", "INTEGER"),
         ("ai_provider_settings", "max_output_tokens", "INTEGER"),
@@ -751,6 +755,51 @@ async def _run_lightweight_migrations(conn):
             )
     except Exception as exc:
         raise RuntimeError("SQLite concept graph provenance migration failed") from exc
+
+    # Coach action attempts bridge a recommendation to a later domain event.
+    # Fresh databases get this from metadata; this additive DDL keeps existing
+    # local files replayable without running Alembic at application startup.
+    try:
+        await conn.execute(sqlalchemy.text(
+            """
+            CREATE TABLE IF NOT EXISTS coach_action_attempts (
+                id VARCHAR(40) PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                nudge_id VARCHAR(40) NOT NULL,
+                action_type VARCHAR(80) NOT NULL DEFAULT 'open_route',
+                route VARCHAR(200) NULL,
+                action_payload JSON NOT NULL DEFAULT '{}',
+                status VARCHAR(20) NOT NULL DEFAULT 'started',
+                started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                observed_at DATETIME NULL,
+                completed_at DATETIME NULL,
+                abandoned_at DATETIME NULL,
+                expires_at DATETIME NULL,
+                linked_event_id INTEGER NULL,
+                linked_event_type VARCHAR(80) NULL,
+                outcome_source VARCHAR(40) NULL,
+                outcome_reason VARCHAR(120) NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(nudge_id) REFERENCES coach_nudges(id) ON DELETE CASCADE,
+                FOREIGN KEY(linked_event_id) REFERENCES learning_events(id) ON DELETE SET NULL
+            )
+            """
+        ))
+        for name, columns in (
+            ("ix_coach_action_attempts_user_id", "user_id"),
+            ("ix_coach_action_attempts_nudge_id", "nudge_id"),
+            ("ix_coach_action_attempts_status", "status"),
+            ("ix_coach_action_attempts_started_at", "started_at"),
+            ("ix_coach_action_attempts_linked_event_id", "linked_event_id"),
+            ("ix_coach_action_attempts_user_nudge_status", "user_id, nudge_id, status"),
+            ("ix_pomodoros_coach_action_attempt_id", "coach_action_attempt_id"),
+        ):
+            table = "pomodoros" if name.startswith("ix_pomodoros") else "coach_action_attempts"
+            await conn.execute(sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({columns})"))
+    except Exception as exc:
+        raise RuntimeError("SQLite Coach action-attempt migration failed") from exc
 
 
 async def init_db():

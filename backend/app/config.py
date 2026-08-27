@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # Kept empty by default: the internal Prometheus endpoint rejects every
     # request until the deployment provides a dedicated operations secret.
     OUTBOX_OPS_TOKEN: str = ""
+    # Server-side proactive Coach scan. It is safe to keep enabled because no
+    # user is evaluated until that user explicitly turns on proactive Coach.
+    AGENT_RUNTIME_SCHEDULER_ENABLED: bool = True
+    AGENT_RUNTIME_POLL_INTERVAL_SECONDS: float = Field(default=300.0, ge=30, le=3600)
+    AGENT_RUNTIME_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
     # Obsidian vault 同步根目录白名单；生产环境必须配置后才允许 vault 同步（决策 D6）
     OBSIDIAN_VAULT_ROOT: str = ""
     

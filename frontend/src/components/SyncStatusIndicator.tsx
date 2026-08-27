@@ -8,10 +8,18 @@ import {
 import { useSyncStatus } from '../sync/useSyncStatus'
 import { syncEngine } from '../sync/SyncEngine'
 
-export function SyncStatusIndicator() {
-  const { status, online, failedCount, lastError } = useSyncStatus()
+interface SyncStatusIndicatorProps {
+  onResolveConflicts?: () => void
+}
+
+export function SyncStatusIndicator({ onResolveConflicts }: SyncStatusIndicatorProps) {
+  const { status, online, failedCount, conflictCount, lastError } = useSyncStatus()
 
   const handleClick = () => {
+    if (conflictCount > 0) {
+      onResolveConflicts?.()
+      return
+    }
     void (status === 'error' ? syncEngine.retryFailed() : syncEngine.syncAll())
   }
 
@@ -48,6 +56,12 @@ export function SyncStatusIndicator() {
     tip = '离线模式'
   }
 
+  if (conflictCount > 0) {
+    icon = <WarningOutlined />
+    color = '#a87332'
+    tip = `${conflictCount} 条同步冲突待你决定`
+  }
+
   return (
     <Tooltip title={tip}>
       <span
@@ -62,7 +76,9 @@ export function SyncStatusIndicator() {
         }}
       >
         {icon}
-        <span style={{ fontSize: 11 }}>{failedCount > 0 ? `同步失败 ${failedCount}` : tip}</span>
+        <span style={{ fontSize: 11 }}>
+          {conflictCount > 0 ? `待处理 ${conflictCount}` : failedCount > 0 ? `同步失败 ${failedCount}` : tip}
+        </span>
       </span>
     </Tooltip>
   )

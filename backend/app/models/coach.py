@@ -1,7 +1,7 @@
 """Autonomous coach runtime models."""
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -43,6 +43,40 @@ class CoachNudge(Base):
     explainability = Column(JSON, nullable=True)
     status = Column(String(20), nullable=False, default="pending", index=True)
     expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class CoachActionAttempt(Base):
+    """One user-initiated attempt to carry a Coach nudge into real study work.
+
+    A nudge is a recommendation; an attempt is the durable bridge from that
+    recommendation to a domain event such as a Pomodoro or a completed review.
+    Keeping it separate means the recommendation remains replayable even when
+    the user leaves and later returns to the action.
+    """
+
+    __tablename__ = "coach_action_attempts"
+    __table_args__ = (
+        Index("ix_coach_action_attempts_user_nudge_status", "user_id", "nudge_id", "status"),
+    )
+
+    id = Column(String(40), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    nudge_id = Column(String(40), ForeignKey("coach_nudges.id", ondelete="CASCADE"), nullable=False, index=True)
+    action_type = Column(String(80), nullable=False, default="open_route")
+    route = Column(String(200), nullable=True)
+    action_payload = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="started", index=True)
+    started_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+    observed_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    abandoned_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    linked_event_id = Column(Integer, ForeignKey("learning_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    linked_event_type = Column(String(80), nullable=True)
+    outcome_source = Column(String(40), nullable=True)
+    outcome_reason = Column(String(120), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -98,7 +132,9 @@ class CoachSkillStats(Base):
     event_type = Column(String(100), nullable=False, default="", index=True)
     shown_count = Column(Integer, nullable=False, default=0)
     accepted_count = Column(Integer, nullable=False, default=0)
+    started_count = Column(Integer, nullable=False, default=0)
     completed_count = Column(Integer, nullable=False, default=0)
+    abandoned_count = Column(Integer, nullable=False, default=0)
     helpful_count = Column(Integer, nullable=False, default=0)
     snoozed_count = Column(Integer, nullable=False, default=0)
     dismissed_count = Column(Integer, nullable=False, default=0)

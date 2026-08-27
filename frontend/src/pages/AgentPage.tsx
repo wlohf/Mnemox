@@ -3,6 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Card, Col, Collapse, Dropdown, Empty, Input, List, Modal, Popconfirm, Progress, Row, Space, Switch, Tag, Typography, message } from 'antd'
 import { BulbOutlined, CheckCircleOutlined, CloseCircleOutlined, ExperimentOutlined, LockOutlined, ReloadOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { PageShell } from '../components/PageShell'
+import { CoachNudgesPanel } from '../components/agent/CoachNudgesPanel'
+import { NorthStarMetricsCard } from '../components/agent/NorthStarMetricsCard'
+import { ProactiveReviewChecksCard } from '../components/agent/ProactiveReviewChecksCard'
+import { WeeklyLearningReportCard } from '../components/agent/WeeklyLearningReportCard'
 import {
   controlAgentProfileItem,
   executeAgentAction,
@@ -11,7 +15,9 @@ import {
   getAgentCoreProfile,
   getAgentGoalContext,
   getAgentGoalContextActionDraft,
+  getAgentProactiveRuntimeStatus,
   getAgentStatus,
+  getWeeklyLearningReport,
   ignoreAgentMemoryCandidate,
   listAgentMemoryCandidates,
   recordAgentActionFeedback,
@@ -27,13 +33,20 @@ import {
   type AgentMemoryCandidate,
   type AgentNegativeReasonCode,
   type AgentPersonalizationItem,
+  type AgentProactiveRuntimeStatus,
   type AgentRuntimeInfo,
+  type WeeklyLearningReport,
 } from '../services/agentApi'
 import {
   listCoachNudges,
+  getCoachNudgeReplay,
   markCoachNudgeShown,
   markPendingCoachNudgesShown,
   recordCoachNudgeFeedback,
+  startCoachNudgeAction,
+  updateCoachPreferences,
+  type CoachActionAttempt,
+  type CoachNudgeReplay,
   type CoachFeedbackOutcome,
   type CoachNudge,
 } from '../services/coachApi'
@@ -42,6 +55,7 @@ import {
   type AssociationRecallResponse,
   type ConceptAssociation,
 } from '../services/associationApi'
+import { getNorthStarMetrics, type NorthStarMetricsReport } from '../services/analyticsApi'
 
 const { Paragraph, Text } = Typography
 
@@ -74,6 +88,17 @@ function riskColor(risk?: AgentBrief['risk_level']) {
   if (risk === 'high') return 'red'
   if (risk === 'medium') return 'orange'
   return 'green'
+}
+
+function routeWithCoachAttempt(route: string, attempt: CoachActionAttempt, nudgeId: string) {
+  const url = new URL(route, window.location.origin)
+  url.searchParams.set('coach_attempt', attempt.id)
+  url.searchParams.set('coach_nudge', nudgeId)
+  const minutes = Number(attempt.action_payload?.minutes)
+  if (Number.isFinite(minutes) && minutes > 0) {
+    url.searchParams.set('coach_minutes', String(minutes))
+  }
+  return `${url.pathname}${url.search}${url.hash}`
 }
 
 function autonomyLabel(level?: string) {
@@ -157,8 +182,15 @@ export function AgentPage() {
   const [draft, setDraft] = useState<AgentActionDraftResponse | null>(null)
   const [executeLoading, setExecuteLoading] = useState(false)
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
+  const [proactiveRuntime, setProactiveRuntime] = useState<AgentProactiveRuntimeStatus | null>(null)
+  const [proactiveSaving, setProactiveSaving] = useState(false)
+  const [weeklyReport, setWeeklyReport] = useState<WeeklyLearningReport | null>(null)
+  const [weeklyReportLoading, setWeeklyReportLoading] = useState(false)
+  const [northStarMetrics, setNorthStarMetrics] = useState<NorthStarMetricsReport | null>(null)
   const [goalContext, setGoalContext] = useState<AgentGoalContext | null>(null)
   const [coachNudges, setCoachNudges] = useState<CoachNudge[]>([])
+  const [coachReplay, setCoachReplay] = useState<CoachNudgeReplay | null>(null)
+  const [coachReplayLoading, setCoachReplayLoading] = useState(false)
   const markedCoachNudgeIds = useRef(new Set<string>())
   const [associationText, setAssociationText] = useState('')
   const [associationLoading, setAssociationLoading] = useState(false)
@@ -176,6 +208,29 @@ export function AgentPage() {
   const loadRuntime = async () => {
     const data = await getAgentStatus()
     if (data) setRuntime(data)
+  }
+
+  const loadProactiveRuntime = async () => {
+    const data = await getAgentProactiveRuntimeStatus()
+    if (data) setProactiveRuntime(data)
+  }
+
+  const loadWeeklyReport = async () => {
+    setWeeklyReportLoading(true)
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    const report = await getWeeklyLearningReport(timeZone)
+    setWeeklyReportLoading(false)
+    if (!report) {
+      message.error('本周复盘暂时无法生成，请稍后重试')
+      return
+    }
+    setWeeklyReport(report)
+  }
+
+  const loadNorthStarMetrics = async () => {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    const report = await getNorthStarMetrics(28, timeZone)
+    setNorthStarMetrics(report)
   }
 
   const loadCoachNudges = async () => {
@@ -196,20 +251,24 @@ export function AgentPage() {
 
   const load = async (llm = useLlm) => {
     setLoading(true)
-    const [data, runtimeData, nudgesData, goalData, candidatesData, profileData] = await Promise.all([
+    const [data, runtimeData, proactiveRuntimeData, nudgesData, goalData, candidatesData, profileData, metricsData] = await Promise.all([
       getAgentBrief(llm),
       getAgentStatus(),
+      getAgentProactiveRuntimeStatus(),
       listCoachNudges(undefined, 8),
       getAgentGoalContext().catch(() => null),
       listAgentMemoryCandidates(),
       getAgentCoreProfile(),
+      getNorthStarMetrics(28, Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
     ])
     setLoading(false)
     if (runtimeData) setRuntime(runtimeData)
+    if (proactiveRuntimeData) setProactiveRuntime(proactiveRuntimeData)
     if (nudgesData) setCoachNudges(nudgesData)
     if (goalData) setGoalContext(goalData)
     setMemoryCandidates(candidatesData || [])
     setCoreProfile(profileData)
+    setNorthStarMetrics(metricsData)
     if (!data) {
       message.error('加载 Agent 简报失败')
       return
@@ -290,6 +349,35 @@ export function AgentPage() {
     if (agent !== 'chat') await load()
   }
 
+  const saveProactiveReviewChecks = async (enabled: boolean) => {
+    setProactiveSaving(true)
+    const saved = await updateCoachPreferences({
+      enabled: enabled ? true : proactiveRuntime?.preference.enabled,
+      proactive_enabled: enabled,
+    })
+    setProactiveSaving(false)
+    if (!saved) {
+      message.error('主动检查设置保存失败，请稍后重试')
+      return
+    }
+    await loadProactiveRuntime()
+    message.success(enabled ? '已开启低频复习检查；不会自动修改学习数据' : '已关闭后台复习检查')
+  }
+
+  const requestProactiveReviewChecks = (enabled: boolean) => {
+    if (!enabled) {
+      void saveProactiveReviewChecks(false)
+      return
+    }
+    Modal.confirm({
+      title: '开启后台复习检查？',
+      content: '系统会低频检查是否有复习积压，只在 Agent 面板准备一条可选建议。它不会自动创建任务、修改计划或开始番茄钟。',
+      okText: '开启检查',
+      cancelText: '暂不开启',
+      onOk: () => saveProactiveReviewChecks(true),
+    })
+  }
+
   const openGoalFocusDraft = async () => {
     const focus = goalContext?.today_focus
     if (!focus) return
@@ -311,9 +399,15 @@ export function AgentPage() {
     const result = await recordCoachNudgeFeedback(nudge.id, { outcome })
     if (!result) {
       message.error('Coach 反馈记录失败')
-      return
+      return false
     }
-    message.success('已记录 Coach 反馈')
+    const outcomeMessage: Partial<Record<CoachFeedbackOutcome, string>> = {
+      accepted: '已采纳建议；准备好后再开始行动',
+      started: '已开始行动；完成后记得回来确认',
+      completed: '已记录完成，Coach 会据此调整后续建议',
+      abandoned: '已记录本次未继续，Coach 会避免重复施压',
+    }
+    message.success(outcomeMessage[outcome] || '已记录 Coach 反馈')
     setCoachNudges((current) => current.map((item) => (
       item.id === nudge.id ? { ...item, status: result.status as CoachNudge['status'] } : item
     )))
@@ -321,6 +415,7 @@ export function AgentPage() {
       ? { ...current, nudge: { ...current.nudge, status: result.status } }
       : current)
     await loadCoachNudges()
+    return true
   }
 
   const restoreAssociationFromNudge = (nudge: CoachNudge) => {
@@ -343,6 +438,40 @@ export function AgentPage() {
     })
     setExpandedAssociationIds(new Set())
     return true
+  }
+
+  const startCoachNudge = async (nudge: CoachNudge) => {
+    const started = await startCoachNudgeAction(nudge.id)
+    if (!started) {
+      message.error('无法开始这条 Coach 建议，请刷新后重试')
+      return
+    }
+    const activeNudge = {
+      ...nudge,
+      ...started.nudge,
+      action_attempt: started.attempt,
+    } as CoachNudge
+    setCoachNudges((current) => current.map((item) => (
+      item.id === nudge.id ? activeNudge : item
+    )))
+    setAssociationResult((current) => current?.nudge?.id === nudge.id
+      ? { ...current, nudge: { ...current.nudge, status: activeNudge.status } }
+      : current)
+    message.success(started.idempotent ? '继续这条 Coach 行动' : '已开始行动；完成后会自动关联真实学习行为')
+    if (activeNudge.skill_id === 'association_recall' && restoreAssociationFromNudge(activeNudge)) return
+    const route = activeNudge.route || activeNudge.suggested_action?.route
+    if (route) navigate(routeWithCoachAttempt(route, started.attempt, nudge.id))
+  }
+
+  const showCoachReplay = async (nudge: CoachNudge) => {
+    setCoachReplayLoading(true)
+    const replay = await getCoachNudgeReplay(nudge.id)
+    setCoachReplayLoading(false)
+    if (!replay) {
+      message.error('暂时无法读取这条 Coach 回放')
+      return
+    }
+    setCoachReplay(replay)
   }
 
   const recallAssociations = async () => {
@@ -674,6 +803,12 @@ export function AgentPage() {
           description={brief?.state_summary || '暂无简报，请刷新后查看。'}
         />
 
+        <ProactiveReviewChecksCard
+          status={proactiveRuntime}
+          saving={proactiveSaving}
+          onChange={requestProactiveReviewChecks}
+        />
+
         {brief?.planner?.source === 'llm' && (
           <Alert
             type="info"
@@ -683,10 +818,17 @@ export function AgentPage() {
           />
         )}
 
+        <WeeklyLearningReportCard
+          report={weeklyReport}
+          loading={weeklyReportLoading}
+          onGenerate={() => void loadWeeklyReport()}
+          onNavigate={navigate}
+        />
+
         <Card
           size="small"
           loading={loading}
-          title="Current Goal"
+          title="当前目标"
           extra={<Button size="small" onClick={() => navigate(goalContext?.active_goal?.route || goalContext?.goal_creation?.route || '/goals')}>打开目标</Button>}
         >
           {goalContext?.active_goal ? (
@@ -709,7 +851,7 @@ export function AgentPage() {
                 </Col>
                 <Col xs={24} md={8}>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Today's Smallest Useful Action</Text>
+                    <Text type="secondary">今天最小且有用的一步</Text>
                     <Text strong>{goalContext.today_focus?.title}</Text>
                     <Text type="secondary">{goalContext.today_focus?.estimated_minutes} 分钟 · {goalContext.today_focus?.reason}</Text>
                   </Space>
@@ -736,13 +878,13 @@ export function AgentPage() {
 
               <Row gutter={[12, 12]}>
                 <Col xs={24} md={12}>
-                  <Text strong>Evidence</Text>
+                  <Text strong>判断依据</Text>
                   <Space wrap style={{ marginTop: 8 }}>
                     {(goalContext.evidence || []).map((item) => <Tag key={item}>{item}</Tag>)}
                   </Space>
                 </Col>
                 <Col xs={24} md={12}>
-                  <Text strong>Supporting Context</Text>
+                  <Text strong>相关上下文</Text>
                   <Space wrap style={{ marginTop: 8 }}>
                     <Tag color={supportingCount(goalContext.supporting_context?.notes) ? 'blue' : 'default'}>笔记 {supportingCount(goalContext.supporting_context?.notes)}</Tag>
                     <Tag color={supportingCount(goalContext.supporting_context?.materials) ? 'purple' : 'default'}>资料 {supportingCount(goalContext.supporting_context?.materials)}</Tag>
@@ -779,62 +921,16 @@ export function AgentPage() {
           )}
         </Card>
 
-        <Card
-          size="small"
-          title={<><BulbOutlined style={{ marginRight: 8 }} />Coach Nudges</>}
-          extra={<Button size="small" onClick={() => void loadCoachNudges()}>刷新</Button>}
-        >
-          <List
-            size="small"
-            dataSource={coachNudges.filter((item) => item.status !== 'dismissed' && item.status !== 'completed')}
-            locale={{ emptyText: '暂无 Coach nudge。聊天低动力、番茄中断或复习积压时会出现在这里。' }}
-            renderItem={(nudge) => (
-              <List.Item
-                actions={[
-                  nudge.route || nudge.suggested_action?.route ? (
-                    <Button
-                      key="open"
-                      size="small"
-                      type="primary"
-                      onClick={() => {
-                        void sendCoachFeedback(nudge, 'accepted')
-                        if (nudge.skill_id === 'association_recall' && restoreAssociationFromNudge(nudge)) return
-                        navigate(nudge.route || nudge.suggested_action?.route || '/agent')
-                      }}
-                    >
-                      {nudge.suggested_action?.label || '去处理'}
-                    </Button>
-                  ) : null,
-                  <Button key="completed" size="small" onClick={() => void sendCoachFeedback(nudge, 'completed')}>已完成</Button>,
-                  <Button key="helpful" size="small" onClick={() => void sendCoachFeedback(nudge, 'helpful')}>有帮助</Button>,
-                  <Button key="later" size="small" onClick={() => void sendCoachFeedback(nudge, 'later')}>稍后</Button>,
-                  <Button key="dismiss" size="small" danger onClick={() => void sendCoachFeedback(nudge, 'too_disruptive')}>太打扰</Button>,
-                ].filter(Boolean)}
-              >
-                <Space direction="vertical" size={4}>
-                  <Space wrap>
-                    <Tag color={priorityColor(nudge.priority)}>{nudge.priority}</Tag>
-                    <Tag>{nudge.skill_id}</Tag>
-                    <Text strong>{nudge.title}</Text>
-                  </Space>
-                  <Paragraph style={{ marginBottom: 0 }}>{nudge.body}</Paragraph>
-                  {nudge.explainability?.reason && (
-                    <Text type="secondary">{nudge.explainability.reason}</Text>
-                  )}
-                  {(nudge.explainability?.sources || []).length > 0 && (
-                    <Space wrap>
-                      {(nudge.explainability?.sources || []).slice(0, 4).map((source) => (
-                        <Tag key={`${source.type}-${source.id}`} color={source.type === 'note' ? 'blue' : source.type === 'wrong_question' ? 'red' : 'purple'}>
-                          {source.type === 'note' ? '笔记' : source.type === 'wrong_question' ? '错题' : '记忆'}：{source.title || source.id}
-                        </Tag>
-                      ))}
-                    </Space>
-                  )}
-                </Space>
-              </List.Item>
-            )}
-          />
-        </Card>
+        <CoachNudgesPanel
+          nudges={coachNudges}
+          replay={coachReplay}
+          replayLoading={coachReplayLoading}
+          onRefresh={() => void loadCoachNudges()}
+          onFeedback={sendCoachFeedback}
+          onStart={startCoachNudge}
+          onShowReplay={showCoachReplay}
+          onCloseReplay={() => setCoachReplay(null)}
+        />
 
         <Card
           size="small"
@@ -1120,6 +1216,11 @@ export function AgentPage() {
             )}
           />
         </Card>
+
+        <NorthStarMetricsCard
+          report={northStarMetrics}
+          onRefresh={() => void loadNorthStarMetrics()}
+        />
 
         <Card size="small" title={<><BulbOutlined style={{ marginRight: 8 }} />关注信号</>} loading={loading}>
           <List

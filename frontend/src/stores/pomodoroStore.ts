@@ -59,6 +59,8 @@ interface PomodoroState {
   breakDuration: number // in minutes
   timerMode: PomodoroMode
   currentBackendId: number | null
+  currentCoachActionAttemptId: string | null
+  currentStartRequestKey: string | null
   startedAt: number | null
   pausedAt: number | null
   pausedTotalMs: number
@@ -72,12 +74,12 @@ interface PomodoroState {
   migrated: boolean
 
   // Actions
-  startTimer: (taskName: string, duration: number, taskId?: number | null) => void
+  startTimer: (taskName: string, duration: number, taskId?: number | null, coachActionAttemptId?: string | null) => void
   startBreakTimer: (durationOverride?: number) => void
   setBreakDuration: (duration: number) => void
   pauseTimer: () => void
   resumeTimer: () => void
-  completeTimer: (actualSeconds?: number, options?: { startBreak?: boolean }) => void
+  completeTimer: (actualSeconds?: number, options?: { startBreak?: boolean; completed?: boolean; stopReason?: 'early_done' | 'interrupted' | 'distracted' }) => void
   resetTimer: (durationOverride?: number) => void
   tick: () => void
   addRecord: (taskName: string, duration: number) => void
@@ -108,6 +110,7 @@ const MAX_RECORDS = 500
 const BACKEND_REFRESH_LIMIT = 500
 const ACTIVE_TIMER_STALE_GRACE_MS = 12 * 60 * 60 * 1000
 export const POMODORO_BACKGROUND_PREFERENCE_KEY = 'pomodoro.background'
+const pendingPomodoroStarts = new Map<string, Promise<PomodoroStartResponse>>()
 
 interface PomodoroBackgroundPreference {
   backgroundImage: string | null
@@ -219,6 +222,8 @@ export const usePomodoroStore = create<PomodoroState>()(
       breakDuration: 5,
       timerMode: 'focus',
       currentBackendId: null,
+      currentCoachActionAttemptId: null,
+      currentStartRequestKey: null,
       startedAt: null,
       pausedAt: null,
       pausedTotalMs: 0,
@@ -227,9 +232,10 @@ export const usePomodoroStore = create<PomodoroState>()(
       backendOnline: false,
       migrated: false,
 
-      startTimer: (taskName: string, duration: number, taskId?: number | null) => {
+      startTimer: (taskName: string, duration: number, taskId?: number | null, coachActionAttemptId?: string | null) => {
         const now = Date.now()
         const nextDuration = Math.max(1, Math.min(120, Math.floor(duration)))
+        const startRequestKey = `${now}-${Math.random().toString(36).slice(2, 10)}`
         set({
           isRunning: true,
           isPaused: false,
@@ -240,18 +246,29 @@ export const usePomodoroStore = create<PomodoroState>()(
           focusDuration: nextDuration,
           timerMode: 'focus',
           currentBackendId: null,
+          currentCoachActionAttemptId: coachActionAttemptId ?? null,
+          currentStartRequestKey: startRequestKey,
           startedAt: now,
           pausedAt: null,
           pausedTotalMs: 0,
         })
         scheduleDesktopReminder(taskName, nextDuration, 'focus')
 
-        // Fire-and-forget API call
-        pomodoroApi.startPomodoro(taskName, nextDuration, taskId)
+        // Keep the request addressable until it settles.  If the learner stops
+        // immediately, ``completeTimer`` waits for this exact backend record
+        // instead of creating an unrelated historical Pomodoro.
+        const startRequest = pomodoroApi.startPomodoro(taskName, nextDuration, taskId, coachActionAttemptId)
+        pendingPomodoroStarts.set(startRequestKey, startRequest)
+        void startRequest
           .then((res) => {
-            set({ currentBackendId: res.id, backendOnline: true })
+            if (get().currentStartRequestKey === startRequestKey) {
+              set({ currentBackendId: res.id, currentStartRequestKey: null, backendOnline: true })
+            } else {
+              set({ backendOnline: true })
+            }
           })
           .catch(() => set({ backendOnline: false }))
+          .finally(() => pendingPomodoroStarts.delete(startRequestKey))
       },
 
       startBreakTimer: (durationOverride?: number) => {
@@ -267,6 +284,8 @@ export const usePomodoroStore = create<PomodoroState>()(
           duration: nextDuration,
           timerMode: 'break',
           currentBackendId: null,
+          currentCoachActionAttemptId: null,
+          currentStartRequestKey: null,
           startedAt: now,
           pausedAt: null,
           pausedTotalMs: 0,
@@ -293,8 +312,22 @@ export const usePomodoroStore = create<PomodoroState>()(
         scheduleDesktopReminder(currentTask || (timerMode === 'break' ? '休息' : '专注学习'), Math.max(1 / 60, remainingTime / 60), timerMode)
       },
 
-      completeTimer: (actualSecondsOverride?: number, options?: { startBreak?: boolean }) => {
-        const { currentTask, currentTaskId, duration, focusDuration, currentBackendId, startedAt, pausedTotalMs, timerMode, breakDuration } = get()
+      completeTimer: (
+        actualSecondsOverride?: number,
+        options?: { startBreak?: boolean; completed?: boolean; stopReason?: 'early_done' | 'interrupted' | 'distracted' },
+      ) => {
+        const {
+          currentTask,
+          currentTaskId,
+          duration,
+          focusDuration,
+          currentBackendId,
+          currentStartRequestKey,
+          startedAt,
+          pausedTotalMs,
+          timerMode,
+          breakDuration,
+        } = get()
         if (timerMode === 'break') {
           clearDesktopReminder()
           set({
@@ -306,6 +339,8 @@ export const usePomodoroStore = create<PomodoroState>()(
             duration: focusDuration,
             timerMode: 'focus',
             currentBackendId: null,
+            currentCoachActionAttemptId: null,
+            currentStartRequestKey: null,
             startedAt: null,
             pausedAt: null,
             pausedTotalMs: 0,
@@ -338,17 +373,31 @@ export const usePomodoroStore = create<PomodoroState>()(
             records: [newRecord, ...state.records].slice(0, MAX_RECORDS),
           }))
 
-          // Sync to backend
+          const markSynced = (backendId: number) => {
+            set((state) => ({
+              records: state.records.map((r) => (
+                r.id === newRecord.id ? { ...r, synced: true, backendId } : r
+              )),
+              backendOnline: true,
+            }))
+          }
+          const completeBackendPomodoro = (backendId: number) => pomodoroApi.completePomodoro(
+            backendId,
+            options?.completed ?? true,
+            undefined,
+            actualMinutes,
+            options?.stopReason,
+          ).then((res) => markSynced(res.id))
+
+          // Sync to backend. When the start request is still in flight, close
+          // that precise row when it arrives so Coach keeps its domain-event
+          // attribution even for an immediately stopped timer.
           if (currentBackendId) {
-            pomodoroApi.completePomodoro(currentBackendId, true, undefined, actualMinutes).then((res) => {
-              // Mark as synced
-              set((state) => ({
-                records: state.records.map((r) =>
-                  r.id === newRecord.id ? { ...r, synced: true, backendId: res.id } : r
-                ),
-                backendOnline: true,
-              }))
-            }).catch(() => set({ backendOnline: false }))
+            void completeBackendPomodoro(currentBackendId).catch(() => set({ backendOnline: false }))
+          } else if (currentStartRequestKey && pendingPomodoroStarts.has(currentStartRequestKey)) {
+            void pendingPomodoroStarts.get(currentStartRequestKey)!
+              .then((started) => completeBackendPomodoro(started.id))
+              .catch(() => set({ backendOnline: false }))
           } else {
             // No backendId — try to create a completed record directly via batch
             pomodoroApi.batchCreatePomodoros(
@@ -369,7 +418,7 @@ export const usePomodoroStore = create<PomodoroState>()(
           }
         }
 
-        if (options?.startBreak === false) {
+        if (options?.startBreak === false || options?.completed === false) {
           clearDesktopReminder()
           set({
             isRunning: false,
@@ -380,6 +429,8 @@ export const usePomodoroStore = create<PomodoroState>()(
             duration: focusDuration,
             timerMode: 'focus',
             currentBackendId: null,
+            currentCoachActionAttemptId: null,
+            currentStartRequestKey: null,
             startedAt: null,
             pausedAt: null,
             pausedTotalMs: 0,
@@ -406,6 +457,8 @@ export const usePomodoroStore = create<PomodoroState>()(
           currentTask: '',
           currentTaskId: null,
           currentBackendId: null,
+          currentCoachActionAttemptId: null,
+          currentStartRequestKey: null,
           startedAt: null,
           pausedAt: null,
           pausedTotalMs: 0,
@@ -560,6 +613,8 @@ export const usePomodoroStore = create<PomodoroState>()(
                   focusDuration: durationMinutes,
                   timerMode: 'focus',
                   currentBackendId: activeTimer.id,
+                  currentCoachActionAttemptId: activeTimer.coach_action_attempt_id ?? null,
+                  currentStartRequestKey: null,
                   startedAt,
                   pausedAt: null,
                   pausedTotalMs: 0,
@@ -581,6 +636,8 @@ export const usePomodoroStore = create<PomodoroState>()(
                   focusDuration: durationMinutes,
                   timerMode: 'focus',
                   currentBackendId: null,
+                  currentCoachActionAttemptId: null,
+                  currentStartRequestKey: null,
                   startedAt: null,
                   pausedAt: null,
                   pausedTotalMs: 0,

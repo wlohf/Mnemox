@@ -26,11 +26,15 @@ export async function listReviewTasks(
   return await apiFetch<ReviewTaskItem[]>(`/api/review/tasks?scope=${scope}&item_type=${itemType}`)
 }
 
-export async function completeReviewTask(taskId: number, quality: number): Promise<ReviewTaskItem | null> {
+export async function completeReviewTask(
+  taskId: number,
+  quality: number,
+  coachActionAttemptId?: string | null,
+): Promise<ReviewTaskItem | null> {
   return await apiFetch<ReviewTaskItem>(`/api/review/tasks/${taskId}/complete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quality }),
+    body: JSON.stringify({ quality, coach_action_attempt_id: coachActionAttemptId ?? null }),
   })
 }
 

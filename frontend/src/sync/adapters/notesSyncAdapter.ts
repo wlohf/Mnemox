@@ -15,8 +15,27 @@ interface ServerNote {
   updated_at: string | null
 }
 
+function serverChangedSince(serverUpdatedAt: string | null, lastSyncedAt: string | null): boolean {
+  if (!lastSyncedAt) return false
+  const serverTime = Date.parse(serverUpdatedAt || '')
+  const syncedTime = Date.parse(lastSyncedAt)
+  return Number.isFinite(serverTime) && (!Number.isFinite(syncedTime) || serverTime > syncedTime)
+}
+
 export const notesSyncAdapter: ModuleSyncAdapter = {
   module: 'notes',
+
+  async checkConflict(op) {
+    const local = await db.notes.get(op.localId)
+    if (!local?._serverId || !local._lastSyncedAt) return { conflict: false }
+    const serverNotes = await apiFetch<ServerNote[]>('/api/notes')
+    const server = serverNotes.find((item) => item.id === local._serverId)
+    if (!server) return { conflict: true, serverData: { __deleted: true } }
+    return {
+      conflict: serverChangedSince(server.updated_at ?? server.created_at, local._lastSyncedAt),
+      serverData: server,
+    }
+  },
 
   async pushCreate(op: QueuedOperation) {
     const payload = JSON.parse(op.payload) as Record<string, unknown>
@@ -134,25 +153,17 @@ export const notesSyncAdapter: ModuleSyncAdapter = {
           created_at: sn.created_at,
         })
       } else if (local._syncStatus === 'pending_update') {
-        // LWW: compare timestamps
-        if (serverUpdatedAt > local._updatedAt) {
-          // Server wins — overwrite and clear pending ops
+        if (serverChangedSince(serverUpdatedAt, local._lastSyncedAt)) {
+          // A pull must not silently decide a concurrent edit either.  This
+          // path covers a server update that arrived while a previous push was
+          // retrying or failed.
           await db.notes.update(local._localId, {
-            title: sn.title,
-            content: sn.content,
-            note_type: sn.note_type,
-            material_id: sn.material_id,
-            chapter_id: sn.chapter_id,
-            tags: JSON.stringify(sn.tags ?? []),
-            links: JSON.stringify(sn.links ?? []),
-            _syncStatus: 'synced',
-            _updatedAt: serverUpdatedAt,
-            _lastSyncedAt: new Date().toISOString(),
+            _syncStatus: 'conflicted',
+            _conflictAt: new Date().toISOString(),
+            _conflictServerData: JSON.stringify(sn),
           })
-          // Remove pending ops for this record
           await db.opQueue.where({ module: 'notes', localId: local._localId }).delete()
         }
-        // else local wins — keep pending op for next push
       }
       // pending_delete → keep delete intent, don't overwrite
       // pending_create → shouldn't have a serverId, skip

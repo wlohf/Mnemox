@@ -48,9 +48,55 @@ export interface EDAReport {
   markdown: string
 }
 
+export interface NorthStarMetricValue {
+  value?: number | null
+  numerator?: number
+  denominator?: number
+  pending_attribution_count?: number
+  pending_observation_count?: number
+  completed_by_domain_event_count?: number
+  completed_by_user_confirmation_count?: number
+  unrecovered_count?: number
+  [key: string]: unknown
+}
+
+export interface NorthStarMetricsReport {
+  generated_at: string
+  period: {
+    days: number
+    time_zone: string
+    start_at: string
+    end_at: string
+  }
+  metrics: {
+    suggestion_execution_rate: NorthStarMetricValue
+    interruption_recovery_time: NorthStarMetricValue
+    review_on_time_rate: NorthStarMetricValue
+    weekly_effective_study_sessions: NorthStarMetricValue
+  }
+  coverage: {
+    ledger_event_count?: number
+    window_event_count?: number
+    raw_event_required?: boolean
+  }
+}
+
 export async function getEdaReport(days = 30): Promise<EDAReport | null> {
   try {
     return await apiFetch<EDAReport>(`/api/analytics/eda-report?days=${days}`)
+  } catch {
+    return null
+  }
+}
+
+export async function getNorthStarMetrics(
+  days = 28,
+  timeZone = 'UTC',
+): Promise<NorthStarMetricsReport | null> {
+  try {
+    return await apiFetch<NorthStarMetricsReport>(
+      `/api/analytics/north-star?days=${encodeURIComponent(String(days))}&time_zone=${encodeURIComponent(timeZone)}`,
+    )
   } catch {
     return null
   }

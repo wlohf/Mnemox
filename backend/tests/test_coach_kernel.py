@@ -2,23 +2,35 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
-from app.models.coach import CoachNudge, CoachSkillStats
+from app.models.coach import CoachActionAttempt, CoachNudge, CoachSkillStats
+from app.models.agent import AgentExecutionLog, AgentJob
+from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
+from app.models.learning_event import LearningEvent
 from app.models.memory import UserMemory
 from app.models.note import Note
 from app.models.question import ReviewSchedule
 from app.models.user import User
 from app.services.coach_action_service import create_coach_nudge, mark_coach_nudge_shown
+from app.services.coach_action_attempt_service import (
+    bind_coach_attempt_to_domain_event,
+    get_coach_nudge_replay,
+    start_coach_action_attempt,
+)
 from app.services.coach_event_service import record_coach_event
 from app.services.coach_feedback_service import list_recent_coach_feedback, record_coach_feedback
 from app.services.coach_learning_service import get_policy_skill_stats, list_skill_stats
 from app.services.coach_policy_engine import default_coach_preferences, evaluate_coach_policy
+from app.services.coach_runtime_service import run_proactive_review_debt_cycle
+from app.services.agent_runtime_worker import AgentRuntimeWorker
 from app.services.coach_context_retriever import retrieve_coach_context
+from app.services.coach_preference_service import update_coach_preferences
 from app.services.coach_skills.base import CoachSkillContext
 from app.services.coach_skills.frustration_support import FrustrationSupportSkill
 from app.services.coach_skills.low_motivation import LowMotivationSkill
@@ -27,7 +39,10 @@ from app.services.coach_skills.planning_rescue import PlanningRescueSkill
 from app.services.coach_skills.reflection_prompt import ReflectionPromptSkill
 from app.services.coach_skills.registry import coach_skill_registry
 from app.services.coach_workflow_service import advance_coach_workflow, list_coach_workflows, start_coach_workflow
+from app.services.agent_service import execute_agent_write_draft
 from app.services.learning_snapshot_service import build_learning_snapshot
+from app.services.learning_event_service import CanonicalEventType, record_learning_event
+from app.services.weekly_learning_report_service import build_weekly_learning_report
 
 
 class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
@@ -113,6 +128,145 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
         self.assertEqual(first["id"], second["id"])
+
+    async def test_proactive_runtime_creates_one_agent_panel_review_rescue(self):
+        user_id = await self._create_user("runtime-review-debt")
+        now = datetime.now().replace(microsecond=0)
+        async with self.sessionmaker() as session:
+            await update_coach_preferences(
+                session,
+                user_id,
+                {
+                    "enabled": True,
+                    "proactive_enabled": True,
+                    "allowed_channels": ["agent_panel"],
+                    "min_minutes_between_nudges": 60,
+                },
+            )
+            session.add_all(
+                [
+                    ReviewSchedule(
+                        user_id=user_id,
+                        item_type="chapter",
+                        item_id=index,
+                        scheduled_date=now - timedelta(days=1),
+                        status="pending",
+                        is_archived=False,
+                    )
+                    for index in range(1, 7)
+                ]
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            created = await run_proactive_review_debt_cycle(session, user_id, now=now)
+            await session.commit()
+
+        self.assertEqual(created["status"], "nudge_created")
+        self.assertEqual(created["nudge"]["skill_id"], "review_debt_rescue")
+        self.assertEqual(created["nudge"]["channel"], "agent_panel")
+        self.assertEqual(created["due_review_count"], 6)
+
+        async with self.sessionmaker() as session:
+            repeated = await run_proactive_review_debt_cycle(session, user_id, now=now + timedelta(minutes=5))
+            rows = await session.execute(
+                select(CoachNudge).where(CoachNudge.user_id == user_id)
+            )
+            count = len(rows.scalars().all())
+
+        self.assertEqual(repeated["status"], "skipped")
+        self.assertEqual(count, 1)
+
+    async def test_weekly_report_stays_a_read_only_action_draft(self):
+        user_id = await self._create_user("weekly-review")
+        now = datetime.now().replace(microsecond=0)
+        async with self.sessionmaker() as session:
+            session.add(
+                ReviewSchedule(
+                    user_id=user_id,
+                    item_type="chapter",
+                    item_id=1,
+                    scheduled_date=now - timedelta(days=1),
+                    status="pending",
+                    is_archived=False,
+                )
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            report = await build_weekly_learning_report(session, user_id, now=now)
+
+        self.assertIn("不会自动修改计划或创建任务", report["disclaimer"])
+        self.assertTrue(any(step["route"] == "/review" for step in report["next_steps"]))
+
+    async def test_runtime_worker_records_only_a_meaningful_nudge_job(self):
+        user_id = await self._create_user("runtime-worker")
+        now = datetime.now().replace(microsecond=0)
+        async with self.sessionmaker() as session:
+            await update_coach_preferences(
+                session,
+                user_id,
+                {"proactive_enabled": True, "allowed_channels": ["agent_panel"]},
+            )
+            session.add_all(
+                [
+                    ReviewSchedule(
+                        user_id=user_id,
+                        item_type="chapter",
+                        item_id=index,
+                        scheduled_date=now - timedelta(days=1),
+                        status="pending",
+                        is_archived=False,
+                    )
+                    for index in range(1, 7)
+                ]
+            )
+            await session.commit()
+
+        worker = AgentRuntimeWorker(self.sessionmaker, poll_interval_seconds=30, batch_size=10)
+        totals = await worker.run_once()
+        self.assertEqual(totals, {"scanned": 1, "nudges_created": 1, "failed": 0})
+
+        async with self.sessionmaker() as session:
+            jobs = await session.execute(
+                select(AgentJob).where(AgentJob.user_id == user_id)
+            )
+            job = jobs.scalar_one()
+            logs = await session.execute(
+                select(AgentExecutionLog).where(AgentExecutionLog.user_id == user_id)
+            )
+            log = logs.scalar_one()
+        self.assertEqual(job.agent, "runtime")
+        self.assertEqual(job.task, "review_debt_rescue")
+        self.assertEqual(log.status, "completed")
+        self.assertEqual(log.extra_metadata["scenario"], "review_debt_rescue_v1")
+
+    async def test_runtime_worker_records_a_safe_retry_notice_after_one_user_failure(self):
+        user_id = await self._create_user("runtime-retry")
+        async with self.sessionmaker() as session:
+            await update_coach_preferences(
+                session,
+                user_id,
+                {"proactive_enabled": True, "allowed_channels": ["agent_panel"]},
+            )
+            await session.commit()
+
+        worker = AgentRuntimeWorker(self.sessionmaker, poll_interval_seconds=30, batch_size=10)
+        with patch(
+            "app.services.agent_runtime_worker.run_proactive_review_debt_cycle",
+            new=AsyncMock(side_effect=RuntimeError("synthetic failure should not reach user history")),
+        ):
+            totals = await worker.run_once()
+
+        self.assertEqual(totals, {"scanned": 1, "nudges_created": 0, "failed": 1})
+        async with self.sessionmaker() as session:
+            logs = await session.execute(
+                select(AgentExecutionLog).where(AgentExecutionLog.user_id == user_id)
+            )
+            log = logs.scalar_one()
+        self.assertEqual(log.status, "retrying")
+        self.assertNotIn("synthetic failure", log.message)
+        self.assertEqual(log.extra_metadata["retry"], "next_poll")
 
     def test_policy_respects_cooldown_daily_cap_and_disabled_skill(self):
         event = {"event_type": "pomodoro.interrupted", "source": "pomodoro", "severity": "info", "payload": {}}
@@ -397,6 +551,212 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(stored.recent_score, 0)
         self.assertEqual(stats[0]["too_disruptive_count"], 1)
         self.assertEqual(feedback_result["learning_stats"]["too_disruptive_count"], 1)
+
+    async def test_action_lifecycle_records_started_and_abandoned_once(self):
+        user_id = await self._create_user("action_lifecycle")
+        async with self.sessionmaker() as session:
+            nudge = await create_coach_nudge(
+                session,
+                user_id,
+                event_id=None,
+                skill_id="minimum_next_step",
+                policy={"channel": "agent_panel", "priority": "medium", "reason": "policy_allowed"},
+                result=await MinimumNextStepSkill().generate(
+                    CoachSkillContext(
+                        user_id=user_id,
+                        event={"event_type": "chat.overload_detected", "payload": {"text": "任务太多"}},
+                        snapshot={"tasks": {"today_tasks": []}, "review": {"due_review_count": 0}},
+                        policy={},
+                    )
+                ),
+            )
+            await mark_coach_nudge_shown(session, user_id, nudge["id"])
+            accepted = await record_coach_feedback(session, user_id, nudge["id"], "accepted")
+            started = await record_coach_feedback(session, user_id, nudge["id"], "started")
+            duplicate_started = await record_coach_feedback(session, user_id, nudge["id"], "started")
+            abandoned = await record_coach_feedback(session, user_id, nudge["id"], "abandoned")
+            duplicate_abandoned = await record_coach_feedback(session, user_id, nudge["id"], "abandoned")
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            stored = (await session.execute(select(CoachNudge).where(CoachNudge.id == nudge["id"]))).scalar_one()
+            stats = (await session.execute(select(CoachSkillStats).where(CoachSkillStats.user_id == user_id))).scalar_one()
+            events = (await session.execute(
+                select(LearningEvent.event_type).where(LearningEvent.user_id == user_id)
+            )).scalars().all()
+
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(started["status"], "started")
+        self.assertTrue(duplicate_started["idempotent"])
+        self.assertEqual(abandoned["status"], "abandoned")
+        self.assertTrue(duplicate_abandoned["idempotent"])
+        self.assertEqual(stored.status, "abandoned")
+        self.assertEqual(stats.accepted_count, 1)
+        self.assertEqual(stats.started_count, 1)
+        self.assertEqual(stats.abandoned_count, 1)
+        self.assertIn(CanonicalEventType.COACH_NUDGE_STARTED, events)
+        self.assertIn(CanonicalEventType.COACH_NUDGE_ABANDONED, events)
+
+    async def test_real_pomodoro_completion_closes_the_coach_attempt_with_evidence(self):
+        user_id = await self._create_user("action_attribution")
+        async with self.sessionmaker() as session:
+            nudge = await create_coach_nudge(
+                session,
+                user_id,
+                event_id=None,
+                skill_id="restart_after_interruption",
+                policy={"channel": "in_app_nudge", "priority": "medium", "reason": "policy_allowed"},
+                result=await LowMotivationSkill().generate(
+                    CoachSkillContext(
+                        user_id=user_id,
+                        event={"event_type": "chat.low_motivation_detected", "payload": {}},
+                        snapshot={"tasks": {"today_tasks": []}, "review": {"due_review_count": 0}},
+                        policy={},
+                    )
+                ),
+            )
+            await mark_coach_nudge_shown(session, user_id, nudge["id"])
+            started = await start_coach_action_attempt(session, user_id, nudge["id"])
+            attempt_id = started["attempt"]["id"]
+            pomodoro_started = await record_learning_event(
+                session,
+                user_id,
+                CanonicalEventType.POMODORO_STARTED,
+                source="test",
+                payload={"pomodoro_id": 99, "coach_action_attempt_id": attempt_id},
+            )
+            await bind_coach_attempt_to_domain_event(
+                session,
+                user_id,
+                attempt_id,
+                event_id=int(pomodoro_started["id"]),
+                event_type=CanonicalEventType.POMODORO_STARTED,
+            )
+            pomodoro_completed = await record_learning_event(
+                session,
+                user_id,
+                CanonicalEventType.POMODORO_COMPLETED,
+                source="test",
+                payload={"pomodoro_id": 99, "duration": 25, "coach_action_attempt_id": attempt_id},
+                duration=25 * 60,
+            )
+            completed = await bind_coach_attempt_to_domain_event(
+                session,
+                user_id,
+                attempt_id,
+                event_id=int(pomodoro_completed["id"]),
+                event_type=CanonicalEventType.POMODORO_COMPLETED,
+                outcome="completed",
+            )
+            duplicate = await bind_coach_attempt_to_domain_event(
+                session,
+                user_id,
+                attempt_id,
+                event_id=int(pomodoro_completed["id"]),
+                event_type=CanonicalEventType.POMODORO_COMPLETED,
+                outcome="completed",
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            stored_nudge = await session.get(CoachNudge, nudge["id"])
+            stored_attempt = await session.get(CoachActionAttempt, attempt_id)
+            stats = (await session.execute(
+                select(CoachSkillStats).where(CoachSkillStats.user_id == user_id)
+            )).scalar_one()
+            replay = await get_coach_nudge_replay(session, user_id, nudge["id"])
+
+        self.assertFalse(started["idempotent"])
+        self.assertEqual(completed["attempt"]["status"], "completed")
+        self.assertTrue(duplicate["idempotent"])
+        self.assertEqual(stored_nudge.status, "completed")
+        self.assertEqual(stored_attempt.status, "completed")
+        self.assertEqual(stored_attempt.outcome_source, "domain_event")
+        self.assertEqual(stored_attempt.linked_event_id, int(pomodoro_completed["id"]))
+        self.assertEqual(stats.shown_count, 1)
+        self.assertEqual(stats.accepted_count, 1)
+        self.assertEqual(stats.started_count, 1)
+        self.assertEqual(stats.completed_count, 1)
+        self.assertEqual(replay["attempts"][0]["id"], attempt_id)
+        self.assertIn(CanonicalEventType.POMODORO_STARTED, [item["event_type"] for item in replay["timeline"]])
+        self.assertIn(CanonicalEventType.POMODORO_COMPLETED, [item["event_type"] for item in replay["timeline"]])
+        completed_lifecycle = [
+            item for item in replay["timeline"]
+            if item["event_type"] == CanonicalEventType.COACH_NUDGE_COMPLETED
+        ]
+        self.assertEqual(completed_lifecycle[0]["payload"]["attribution"]["method"], "domain_event")
+
+    async def test_confirmed_plan_draft_closes_the_coach_attempt_with_evidence(self):
+        user_id = await self._create_user("plan_action_attribution")
+        today = date.today().isoformat()
+        async with self.sessionmaker() as session:
+            nudge = await create_coach_nudge(
+                session,
+                user_id,
+                event_id=None,
+                skill_id="planning_rescue",
+                policy={"channel": "in_app_nudge", "priority": "medium", "reason": "policy_allowed"},
+                result=await PlanningRescueSkill().generate(
+                    CoachSkillContext(
+                        user_id=user_id,
+                        event={"event_type": "app.evaluate", "payload": {}},
+                        snapshot={
+                            "date": today,
+                            "tasks": {"today_tasks": []},
+                            "daily_plan": {"has_content": False},
+                            "review": {"due_review_count": 0},
+                        },
+                        policy={},
+                    )
+                ),
+            )
+            await mark_coach_nudge_shown(session, user_id, nudge["id"])
+            started = await start_coach_action_attempt(session, user_id, nudge["id"])
+            attempt_id = started["attempt"]["id"]
+            nudge_row = await session.get(CoachNudge, nudge["id"])
+            write_result = await execute_agent_write_draft(
+                session,
+                user_id,
+                "add_daily_plan_items",
+                dict(nudge_row.draft or {}),
+            )
+            plan = (write_result.get("created") or {}).get("plan") or {}
+            plan_event = await record_learning_event(
+                session,
+                user_id,
+                "daily_plan.updated",
+                source="test",
+                payload={
+                    "date": plan.get("date"),
+                    "coach_nudge_id": nudge["id"],
+                    "coach_action_attempt_id": attempt_id,
+                },
+            )
+            completed = await bind_coach_attempt_to_domain_event(
+                session,
+                user_id,
+                attempt_id,
+                event_id=int(plan_event["id"]),
+                event_type="daily_plan.updated",
+                outcome="completed",
+                reason="draft_confirmed",
+            )
+            await session.commit()
+
+        async with self.sessionmaker() as session:
+            stored_nudge = await session.get(CoachNudge, nudge["id"])
+            stored_attempt = await session.get(CoachActionAttempt, attempt_id)
+            plan_row = await session.scalar(
+                select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan["date"])
+            )
+
+        self.assertTrue(started["attempt"]["id"])
+        self.assertEqual(completed["attempt"]["status"], "completed")
+        self.assertEqual(stored_nudge.status, "completed")
+        self.assertEqual(stored_attempt.outcome_source, "domain_event")
+        self.assertEqual(stored_attempt.linked_event_type, "daily_plan.updated")
+        self.assertIsNotNone(plan_row)
+        self.assertIn("[ ]", plan_row.content)
 
     def test_policy_suppresses_learned_disruptive_proactive_nudges(self):
         now = datetime.now()

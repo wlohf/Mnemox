@@ -35,7 +35,7 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260823_12"
+CURRENT_HEAD_REVISION = "20260826_14"
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -256,6 +256,28 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "configuration_fingerprint",
             "last_error",
         }.issubset({column["name"] for column in inspector.get_columns("retrieval_projections")})
+        assert {"started_count", "abandoned_count"}.issubset(
+            {column["name"] for column in inspector.get_columns("coach_skill_stats")}
+        )
+        assert {
+            "id",
+            "user_id",
+            "nudge_id",
+            "action_type",
+            "action_payload",
+            "status",
+            "linked_event_id",
+            "outcome_source",
+        }.issubset({column["name"] for column in inspector.get_columns("coach_action_attempts")})
+        assert "coach_action_attempt_id" in {
+            column["name"] for column in inspector.get_columns("pomodoros")
+        }
+        assert "ix_coach_action_attempts_user_nudge_status" in {
+            index["name"] for index in inspector.get_indexes("coach_action_attempts")
+        }
+        assert "ix_pomodoros_coach_action_attempt_id" in {
+            index["name"] for index in inspector.get_indexes("pomodoros")
+        }
         assert "ix_retrieval_projections_user_status" in {
             index["name"] for index in inspector.get_indexes("retrieval_projections")
         }
@@ -475,6 +497,12 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "FOREIGN KEY(memory_id) REFERENCES user_memories" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_memory_observed" in ddl
     assert "ALTER TABLE memory_declarations ADD COLUMN fact_key" in ddl
+    assert "ALTER TABLE coach_skill_stats ADD COLUMN started_count" in ddl
+    assert "ALTER TABLE coach_skill_stats ADD COLUMN abandoned_count" in ddl
+    assert "CREATE TABLE coach_action_attempts" in ddl
+    assert "fk_coach_action_attempts_nudge_id" in ddl
+    assert "ALTER TABLE pomodoros ADD COLUMN coach_action_attempt_id" in ddl
+    assert "CREATE INDEX ix_pomodoros_coach_action_attempt_id" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_fact_review_valid" in ddl
     assert "CREATE UNIQUE INDEX uq_memory_declarations_user_fact_current" in ddl
 

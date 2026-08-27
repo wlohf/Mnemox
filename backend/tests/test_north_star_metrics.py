@@ -68,6 +68,7 @@ class NorthStarMetricsTests(unittest.IsolatedAsyncioTestCase):
                 completed_nudge,
                 CanonicalEventType.COACH_NUDGE_COMPLETED,
                 outcome="completed",
+                attribution={"method": "domain_event", "attempt_id": "ca_completed"},
                 occurred_at=now - timedelta(days=9),
             )
             await record_coach_nudge_event(
@@ -183,6 +184,8 @@ class NorthStarMetricsTests(unittest.IsolatedAsyncioTestCase):
         metrics = report["metrics"]
         self.assertEqual(metrics["suggestion_execution_rate"]["value"], 50.0)
         self.assertEqual(metrics["suggestion_execution_rate"]["denominator"], 2)
+        self.assertEqual(metrics["suggestion_execution_rate"]["completed_by_domain_event_count"], 1)
+        self.assertEqual(metrics["suggestion_execution_rate"]["completed_by_user_confirmation_count"], 0)
         self.assertEqual(metrics["suggestion_execution_rate"]["pending_attribution_count"], 1)
         self.assertEqual(metrics["interruption_recovery_time"]["value"], 30.0)
         self.assertEqual(metrics["interruption_recovery_time"]["denominator"], 2)

@@ -131,6 +131,9 @@ export function useOfflineGoalTasks(params?: {
   ): Promise<OfflineGoalTaskItem | null> => {
     const existing = await db.goalTasks.get(localId)
     if (!existing) return null
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这个任务存在同步冲突，请先在账户菜单中处理')
+    }
 
     const now = new Date().toISOString()
     const updates: Partial<LocalGoalTask> = { _updatedAt: now }
@@ -158,6 +161,9 @@ export function useOfflineGoalTasks(params?: {
   const deleteGoalTask = async (localId: string): Promise<boolean> => {
     const existing = await db.goalTasks.get(localId)
     if (!existing) return false
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这个任务存在同步冲突，请先在账户菜单中处理')
+    }
 
     const now = new Date().toISOString()
 

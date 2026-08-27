@@ -6,34 +6,35 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
 from app.models.user import User
-from app.services.coach_action_service import create_coach_nudge, list_coach_nudges, mark_coach_nudge_shown
-from app.services.coach_event_service import get_coach_event, list_recent_coach_events, record_coach_event
-from app.services.coach_feedback_service import list_recent_coach_feedback, record_coach_feedback
-from app.services.coach_learning_service import get_policy_skill_stats, list_skill_stats
-from app.services.coach_policy_engine import evaluate_coach_policy
-from app.services.coach_preference_service import get_or_create_coach_preferences, update_coach_preferences
-from app.services.coach_skills.base import CoachSkillContext
-from app.services.coach_skills.registry import coach_skill_registry
-from app.services.coach_context_retriever import retrieve_coach_context
-from app.services.coach_workflow_service import advance_coach_workflow, list_coach_workflows, start_coach_workflow
-from app.services.learning_snapshot_service import build_learning_snapshot
-from app.services.note_quote_service import (
-    attach_note_quote_feedback,
-    record_note_quote_usage,
-    select_note_quote,
+from app.models.coach import CoachNudge
+from app.services.coach_action_service import coach_nudge_to_dict, list_coach_nudges, mark_coach_nudge_shown
+from app.services.coach_action_attempt_service import (
+    ACTIVE_ATTEMPT_STATUSES,
+    bind_coach_attempt_to_domain_event,
+    get_coach_action_attempt,
+    get_coach_nudge_replay,
+    list_coach_action_attempts,
+    start_coach_action_attempt,
 )
+from app.services.coach_event_service import get_coach_event, list_recent_coach_events, record_coach_event
+from app.services.coach_feedback_service import record_coach_feedback
+from app.services.coach_learning_service import list_skill_stats
+from app.services.coach_preference_service import get_or_create_coach_preferences, update_coach_preferences
+from app.services.coach_skills.registry import coach_skill_registry
+from app.services.coach_runtime_service import evaluate_coach_event
+from app.services.coach_workflow_service import advance_coach_workflow, list_coach_workflows, start_coach_workflow
+from app.services.learning_event_service import record_learning_event
+from app.services.agent_service import execute_agent_write_draft
+from app.services.note_quote_service import attach_note_quote_feedback
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# 低动力场景技能：生成 nudge 时尝试引用用户自己的笔记（自引激励）
-NOTE_QUOTE_SKILL_IDS = {"low_motivation", "frustration_support", "restart_after_interruption"}
-
 
 class CoachEventCreateRequest(BaseModel):
     event_type: str = Field(..., max_length=100)
@@ -55,7 +56,9 @@ class CoachFeedbackRequest(BaseModel):
     outcome: Literal[
         "helpful",
         "accepted",
+        "started",
         "completed",
+        "abandoned",
         "later",
         "snoozed",
         "dismissed",
@@ -93,6 +96,10 @@ class CoachWorkflowAdvanceRequest(BaseModel):
     status: Literal["active", "paused", "completed", "cancelled"] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     pending_draft: dict[str, Any] | None = None
+
+
+class CoachDraftConfirmRequest(BaseModel):
+    attempt_id: str = Field(..., min_length=1, max_length=40)
 
 
 @router.post("/events")
@@ -158,67 +165,16 @@ async def evaluate_coach(
             "payload": {},
         }
 
-    snapshot = await build_learning_snapshot(
-        db,
-        user_id,
-        include_recent_notes=body.include_recent_notes,
-        include_memories=body.include_memories,
-    )
-    preferences = await get_or_create_coach_preferences(db, user_id)
-    recent_feedback = await list_recent_coach_feedback(db, user_id, limit=30)
-    skill_stats = await get_policy_skill_stats(db, user_id)
-    policy = evaluate_coach_policy(event, snapshot, preferences, recent_feedback, skill_stats)
-    if not policy.get("should_intervene"):
-        return {"nudge": None, "policy": policy, "event": event}
-
-    skill_id = str(policy.get("skill_id") or "")
-    skill = coach_skill_registry.get(skill_id)
-    if not skill:
-        raise HTTPException(status_code=500, detail="Coach skill 未注册")
-
-    coach_context = await retrieve_coach_context(db, user_id, event, snapshot)
-    snapshot["coach_context"] = coach_context
-
-    if skill_id in NOTE_QUOTE_SKILL_IDS:
-        try:
-            note_quote = await select_note_quote(db, user_id)
-            if note_quote:
-                snapshot["note_quote"] = note_quote
-        except Exception as exc:  # 引用失败不影响 nudge 主流程
-            logger.warning("笔记自引选取失败 user_id=%s err=%s", user_id, exc)
-
-    result = await skill.generate(
-        CoachSkillContext(
-            user_id=user_id,
-            event=event,
-            snapshot=snapshot,
-            policy=policy,
-            recent_feedback=recent_feedback,
+    try:
+        return await evaluate_coach_event(
+            db,
+            user_id,
+            event,
+            include_recent_notes=body.include_recent_notes,
+            include_memories=body.include_memories,
         )
-    )
-    nudge = await create_coach_nudge(
-        db,
-        user_id,
-        event_id=event.get("id"),
-        skill_id=skill_id,
-        policy=policy,
-        result=result,
-    )
-
-    used_quote = (result.explainability or {}).get("note_quote")
-    if isinstance(used_quote, dict):
-        try:
-            await record_note_quote_usage(
-                db,
-                user_id,
-                used_quote,
-                channel="coach",
-                nudge_id=str(nudge.get("id") or "") or None,
-            )
-        except Exception as exc:  # 使用记录失败不影响 nudge 主流程
-            logger.warning("笔记自引使用记录失败 user_id=%s err=%s", user_id, exc)
-
-    return {"nudge": nudge, "policy": policy, "event": event}
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/nudges")
@@ -250,6 +206,131 @@ async def mark_nudge_shown(
     if not nudge:
         raise HTTPException(status_code=404, detail="Coach nudge 不存在")
     return nudge
+
+
+@router.post("/nudges/{nudge_id}/start")
+async def start_nudge_action(
+    nudge_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record intent to act, then let the target domain confirm the outcome."""
+
+    try:
+        return await start_coach_action_attempt(db, int(current_user.id), nudge_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/nudges/{nudge_id}/attempts")
+async def get_nudge_attempts(
+    nudge_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await list_coach_action_attempts(
+        db,
+        int(current_user.id),
+        nudge_id=nudge_id,
+        limit=limit,
+    )
+
+
+@router.get("/nudges/{nudge_id}/replay")
+async def replay_nudge(
+    nudge_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    replay = await get_coach_nudge_replay(db, int(current_user.id), nudge_id)
+    if not replay:
+        raise HTTPException(status_code=404, detail="Coach nudge 不存在")
+    return replay
+
+
+@router.get("/nudges/{nudge_id}/draft")
+async def get_nudge_draft(
+    nudge_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    nudge = await db.scalar(
+        select(CoachNudge).where(
+            CoachNudge.id == nudge_id,
+            CoachNudge.user_id == int(current_user.id),
+        )
+    )
+    if not nudge:
+        raise HTTPException(status_code=404, detail="Coach nudge 不存在")
+    if not nudge.requires_confirmation or not isinstance(nudge.draft, dict):
+        raise HTTPException(status_code=400, detail="这条 Coach 建议没有待确认草案")
+    return {
+        "nudge": coach_nudge_to_dict(nudge),
+        "draft": nudge.draft,
+    }
+
+
+@router.post("/nudges/{nudge_id}/draft/confirm")
+async def confirm_nudge_draft(
+    nudge_id: str,
+    body: CoachDraftConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Execute only a displayed Coach plan draft after explicit confirmation."""
+
+    user_id = int(current_user.id)
+    nudge = await db.scalar(
+        select(CoachNudge).where(CoachNudge.id == nudge_id, CoachNudge.user_id == user_id)
+    )
+    if not nudge:
+        raise HTTPException(status_code=404, detail="Coach nudge 不存在")
+    if not nudge.requires_confirmation or not isinstance(nudge.draft, dict):
+        raise HTTPException(status_code=400, detail="这条 Coach 建议没有可确认草案")
+    if str((nudge.suggested_action or {}).get("type") or "") != "create_daily_plan_draft":
+        raise HTTPException(status_code=400, detail="暂不支持确认这种 Coach 草案")
+
+    attempt = await get_coach_action_attempt(db, user_id, body.attempt_id)
+    if not attempt or attempt.nudge_id != nudge.id or attempt.status not in ACTIVE_ATTEMPT_STATUSES:
+        raise HTTPException(status_code=400, detail="Coach 行动尝试不可用")
+
+    intent = str(nudge.draft.get("intent") or "")
+    if intent != "add_daily_plan_items":
+        raise HTTPException(status_code=400, detail="Coach 草案类型不匹配")
+    try:
+        result = await execute_agent_write_draft(db, user_id, intent, nudge.draft)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    created = result.get("created") or {}
+    plan = created.get("plan") or {}
+    domain_event = await record_learning_event(
+        db,
+        user_id,
+        "daily_plan.updated",
+        source="coach_draft_confirmation",
+        payload={
+            "date": plan.get("date") or nudge.draft.get("date"),
+            "item_count": len(created.get("items") or []),
+            "coach_nudge_id": nudge.id,
+            "coach_action_attempt_id": attempt.id,
+        },
+        dedupe_key=f"coach:daily_plan.confirmed:{attempt.id}",
+    )
+    try:
+        attribution = await bind_coach_attempt_to_domain_event(
+            db,
+            user_id,
+            attempt.id,
+            event_id=int(domain_event["id"]),
+            event_type="daily_plan.updated",
+            outcome="completed",
+            reason="draft_confirmed",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "result": result, "attribution": attribution}
 
 
 @router.post("/nudges/{nudge_id}/feedback")

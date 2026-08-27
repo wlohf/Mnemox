@@ -11,7 +11,7 @@ from typing import Any
 
 DEFAULT_ALLOWED_CHANNELS = ["chat_inline", "in_app_nudge", "agent_panel"]
 SUPPORTED_CHANNELS = [*DEFAULT_ALLOWED_CHANNELS, "desktop_notification"]
-NEGATIVE_OUTCOMES = {"dismissed", "too_disruptive", "too_hard", "too_easy", "irrelevant", "not_my_style", "later", "snoozed"}
+NEGATIVE_OUTCOMES = {"dismissed", "too_disruptive", "too_hard", "too_easy", "irrelevant", "not_my_style", "abandoned", "later", "snoozed"}
 
 
 def default_coach_preferences() -> dict[str, Any]:
@@ -157,7 +157,10 @@ def _skill_stat_score(stat: dict[str, Any], channel: str, event_type: str) -> tu
         exactness += 2
     elif not stat.get("event_type"):
         exactness += 1
-    total = sum(int(stat.get(key) or 0) for key in ("shown_count", "accepted_count", "completed_count", "helpful_count", "dismissed_count", "too_disruptive_count"))
+    total = sum(int(stat.get(key) or 0) for key in (
+        "shown_count", "accepted_count", "started_count", "completed_count", "helpful_count",
+        "abandoned_count", "dismissed_count", "too_disruptive_count",
+    ))
     return exactness, total
 
 
@@ -187,7 +190,7 @@ def _positive_signal(stat: dict[str, Any] | None) -> str | None:
     if not stat:
         return None
     shown = max(1, int(stat.get("shown_count") or 0))
-    positive = sum(int(stat.get(key) or 0) for key in ("accepted_count", "completed_count", "helpful_count"))
+    positive = sum(int(stat.get(key) or 0) for key in ("accepted_count", "started_count", "completed_count", "helpful_count"))
     if positive >= 2 and positive / shown >= 0.5:
         return f"历史反馈偏正向 positive={positive}, shown={shown}"
     return None

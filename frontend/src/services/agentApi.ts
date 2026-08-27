@@ -1,4 +1,5 @@
 import { apiFetch } from './apiClient'
+import type { CoachPreferences } from './coachApi'
 
 export type AgentNegativeReasonCode =
   | 'too_long'
@@ -237,6 +238,38 @@ export interface AgentRuntimeInfo {
   profile_control_logs?: AgentProfileControlLog[]
 }
 
+export interface AgentProactiveRuntimeStatus {
+  preference: CoachPreferences
+  scheduler: {
+    available: boolean
+    running: boolean
+    poll_interval_seconds?: number | null
+    last_run_at?: string | null
+    last_success_at?: string | null
+    last_error_at?: string | null
+    message: string
+  }
+}
+
+export interface WeeklyLearningReportStep {
+  title: string
+  reason: string
+  route: string
+  estimated_minutes: number
+}
+
+export interface WeeklyLearningReport {
+  generated_at: string
+  time_zone: string
+  headline: string
+  wins: string[]
+  attention: string[]
+  next_steps: WeeklyLearningReportStep[]
+  metrics: Record<string, unknown>
+  coverage: Record<string, unknown>
+  disclaimer: string
+}
+
 export interface AgentTriggerResponse {
   job: Record<string, unknown>
   result: {
@@ -425,6 +458,23 @@ export async function executeAgentAction(actionId: string, useLlm = false): Prom
 export async function getAgentStatus(): Promise<AgentRuntimeInfo | null> {
   try {
     return await apiFetch<AgentRuntimeInfo>('/api/agent/status')
+  } catch {
+    return null
+  }
+}
+
+export async function getAgentProactiveRuntimeStatus(): Promise<AgentProactiveRuntimeStatus | null> {
+  try {
+    return await apiFetch<AgentProactiveRuntimeStatus>('/api/agent/runtime/proactive-status')
+  } catch {
+    return null
+  }
+}
+
+export async function getWeeklyLearningReport(timeZone = 'UTC'): Promise<WeeklyLearningReport | null> {
+  try {
+    const query = new URLSearchParams({ time_zone: timeZone })
+    return await apiFetch<WeeklyLearningReport>(`/api/agent/weekly-report?${query.toString()}`)
   } catch {
     return null
   }

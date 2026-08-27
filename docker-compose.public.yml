@@ -1,0 +1,17 @@
+# Public deployment for mnemox.wlohf.com. The Caddy reverse proxy and this
+# compose project share the pre-existing external `web` Docker network.
+services:
+  backend:
+    environment:
+      CORS_ORIGINS: '["https://mnemox.wlohf.com"]'
+
+  frontend:
+    networks:
+      default:
+      web:
+        aliases:
+          - mnemox-frontend
+
+networks:
+  web:
+    external: true

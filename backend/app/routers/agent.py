@@ -1,7 +1,7 @@
 """自主学习 Agent 路由"""
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,8 @@ from app.services.agent_service import (
 )
 from app.services.goal_context_service import build_goal_context
 from app.services.learning_event_service import record_learning_event
+from app.services.weekly_learning_report_service import build_weekly_learning_report
+from app.services.coach_preference_service import get_or_create_coach_preferences
 
 router = APIRouter()
 
@@ -148,9 +150,74 @@ async def get_agent_status(
     return status
 
 
+@router.get("/runtime/proactive-status")
+async def get_proactive_runtime_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Expose the opted-in review-debt scanner without exposing other users.
+
+    The worker itself is deployment-scoped, while the choice to be scanned is
+    per learner.  Keeping both states in one response lets the UI explain why
+    a saved preference may not run in a local SQLite session.
+    """
+    preference = await get_or_create_coach_preferences(db, int(current_user.id))
+    worker = getattr(request.app.state, "agent_runtime_worker", None)
+    if worker is None:
+        return {
+            "preference": preference,
+            "scheduler": {
+                "available": False,
+                "running": False,
+                "message": "当前运行模式不会启动后台定时检查；你仍可在页面内按现有 Coach 设置触发评估。",
+            },
+        }
+
+    snapshot = worker.snapshot()
+    running = bool(snapshot.get("running"))
+    return {
+        "preference": preference,
+        "scheduler": {
+            "available": True,
+            "running": running,
+            "poll_interval_seconds": snapshot.get("poll_interval_seconds"),
+            "last_run_at": snapshot.get("last_run_at"),
+            "last_success_at": snapshot.get("last_success_at"),
+            "last_error_at": snapshot.get("last_error_at"),
+            "message": (
+                "后台会低频检查复习积压，只在 Agent 面板准备可选建议，不会自动修改计划或开始学习。"
+                if running
+                else "后台检查器暂未运行；你的偏好已保留，恢复后才会继续检查。"
+            ),
+        },
+    }
+
+
 class AgentKernelRunRequest(BaseModel):
     objective: str | None = None
     max_steps: int = 6
+
+
+@router.get("/weekly-report")
+async def get_weekly_report(
+    time_zone: str = Query("UTC", min_length=1, max_length=64),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return a read-only weekly learning review draft.
+
+    It intentionally exposes no automatic write path: every recommended
+    action still sends the learner to the existing confirmation-first flows.
+    """
+    try:
+        return await build_weekly_learning_report(
+            db,
+            int(current_user.id),
+            time_zone=time_zone,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/kernel/run")

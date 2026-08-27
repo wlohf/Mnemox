@@ -25,7 +25,10 @@ class CanonicalEventType:
     COACH_NUDGE_CREATED = "coach.nudge.created"
     COACH_NUDGE_SHOWN = "coach.nudge.shown"
     COACH_NUDGE_ACCEPTED = "coach.nudge.accepted"
+    COACH_NUDGE_STARTED = "coach.nudge.started"
     COACH_NUDGE_COMPLETED = "coach.nudge.completed"
+    COACH_NUDGE_ABANDONED = "coach.nudge.abandoned"
+    COACH_NUDGE_EXPIRED = "coach.nudge.expired"
     COACH_NUDGE_SNOOZED = "coach.nudge.snoozed"
     COACH_NUDGE_DISMISSED = "coach.nudge.dismissed"
     COACH_NUDGE_FEEDBACK = "coach.nudge.feedback"
@@ -236,6 +239,7 @@ async def record_coach_nudge_event(
     event_type: str,
     *,
     outcome: str | None = None,
+    attribution: dict[str, Any] | None = None,
     occurred_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Append a privacy-minimized Coach lifecycle event to the common ledger."""
@@ -257,6 +261,23 @@ async def record_coach_nudge_event(
     }
     if outcome:
         payload["outcome"] = str(outcome)[:40]
+    if attribution:
+        # Keep lifecycle events useful for replay without copying free-form
+        # notes, content, or arbitrary client payloads into the common ledger.
+        safe_attribution: dict[str, Any] = {}
+        for key in ("method", "attempt_id", "action_type", "linked_event_id", "linked_event_type", "reason"):
+            value = attribution.get(key)
+            if value is None or value == "":
+                continue
+            if key == "linked_event_id":
+                try:
+                    safe_attribution[key] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                safe_attribution[key] = str(value)[:120]
+        if safe_attribution:
+            payload["attribution"] = safe_attribution
 
     dedupe_suffix = str(outcome or "")[:40]
     return await record_learning_event(
@@ -271,6 +292,7 @@ async def record_coach_nudge_event(
             "schema_version": EVENT_SCHEMA_VERSION,
             "nudge_id": nudge_id,
             "trigger_event_id": _event_value(nudge, "event_id"),
+            "attempt_id": (payload.get("attribution") or {}).get("attempt_id"),
         },
     )
 

@@ -118,6 +118,9 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
   ): Promise<OfflineNoteItem | null> => {
     const existing = await db.notes.get(localId)
     if (!existing) return null
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这篇笔记存在同步冲突，请先在账户菜单中处理')
+    }
 
     const now = new Date().toISOString()
     const updates: Partial<LocalNote> = { _updatedAt: now }
@@ -157,6 +160,9 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
   const deleteNote = async (localId: string): Promise<boolean> => {
     const existing = await db.notes.get(localId)
     if (!existing) return false
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这篇笔记存在同步冲突，请先在账户菜单中处理')
+    }
 
     if (existing._syncStatus === 'pending_create') {
       // Never pushed to server — just delete locally

@@ -54,6 +54,7 @@ dist-ssr/
 *.db
 *.sqlite
 *.sqlite3
+/backups/
 
 # Logs
 logs/

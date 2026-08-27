@@ -45,6 +45,15 @@ def _outbox_worker_allowed() -> bool:
     return bool(settings.OUTBOX_WORKER_ENABLED and not _is_sqlite())
 
 
+def _agent_runtime_worker_allowed() -> bool:
+    """The server scheduler is a PostgreSQL production capability.
+
+    Desktop/SQLite retains request-time Coach evaluation, avoiding a hidden
+    background writer in the local single-consumer mode.
+    """
+    return bool(settings.AGENT_RUNTIME_SCHEDULER_ENABLED and not _is_sqlite())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -56,7 +65,9 @@ async def lifespan(app: FastAPI):
     from app.database import async_session_maker
 
     outbox_worker = None
+    agent_runtime_worker = None
     app.state.projection_outbox_worker = None
+    app.state.agent_runtime_worker = None
 
     # Decay stale episodic memories
     try:
@@ -181,8 +192,25 @@ async def lifespan(app: FastAPI):
             app.state.projection_outbox_worker = outbox_worker
             outbox_worker.start()
             logger.info("projection outbox worker started worker_id=%s", outbox_worker.worker_id)
+        if _agent_runtime_worker_allowed():
+            from app.services.agent_runtime_worker import AgentRuntimeWorker
+
+            agent_runtime_worker = AgentRuntimeWorker(
+                async_session_maker,
+                poll_interval_seconds=settings.AGENT_RUNTIME_POLL_INTERVAL_SECONDS,
+                batch_size=settings.AGENT_RUNTIME_BATCH_SIZE,
+            )
+            app.state.agent_runtime_worker = agent_runtime_worker
+            agent_runtime_worker.start()
+            logger.info("agent runtime worker started")
         yield
     finally:
+        if agent_runtime_worker is not None:
+            try:
+                await agent_runtime_worker.stop()
+                logger.info("agent runtime worker stopped")
+            except Exception as exc:
+                logger.warning("agent runtime worker shutdown failed: %s", exc, exc_info=settings.DEBUG)
         if outbox_worker is not None:
             try:
                 await outbox_worker.stop()
@@ -259,8 +287,12 @@ async def health():
     worker = getattr(app.state, "projection_outbox_worker", None)
     worker_enabled = _outbox_worker_allowed()
     worker_running = bool(worker is not None and worker.snapshot().get("running"))
+    runtime_worker = getattr(app.state, "agent_runtime_worker", None)
+    runtime_enabled = _agent_runtime_worker_allowed()
+    runtime_running = bool(runtime_worker is not None and runtime_worker.snapshot().get("running"))
+    runtime_snapshot = runtime_worker.health_snapshot() if runtime_worker is not None else {}
     return {
-        "status": "ok" if not worker_enabled or worker_running else "degraded",
+        "status": "ok" if (not worker_enabled or worker_running) and (not runtime_enabled or runtime_running) else "degraded",
         "projection_outbox_worker": {
             "enabled": worker_enabled,
             "running": worker_running,
@@ -269,6 +301,18 @@ async def health():
                 if worker is None and _is_sqlite() and settings.OUTBOX_WORKER_ENABLED
                 else {}
             ),
+        },
+        "agent_runtime_worker": {
+            "enabled": runtime_enabled,
+            "running": runtime_running,
+            **(
+                {
+                    key: runtime_snapshot.get(key)
+                    for key in ("started_at", "last_run_at", "last_success_at", "last_error_at", "cycles", "nudges_created", "failed_users", "poll_interval_seconds")
+                    if key in runtime_snapshot
+                }
+            ),
+            **({"disabled_reason": "sqlite_request_time_coach"} if runtime_worker is None and _is_sqlite() else {}),
         },
     }
 

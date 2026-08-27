@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  confirmCoachNudgeDraft,
   detectCoachChatEvent,
   markPendingCoachNudgesShown,
+  startCoachNudgeAction,
   type CoachNudge,
 } from './coachApi'
 
@@ -53,5 +55,41 @@ describe('coachApi emotional event classifier', () => {
       expect.objectContaining({ method: 'POST' }),
     )
     expect(marked).toEqual([{ id: 'nudge-1', status: 'shown' }])
+  })
+
+  it('starts a Coach action before handing it to a real learning surface', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      idempotent: false,
+      nudge: { id: 'nudge-1', status: 'started', route: '/pomodoro', requires_confirmation: false },
+      attempt: { id: 'ca-1', nudge_id: 'nudge-1', action_type: 'start_focus', action_payload: {}, status: 'started' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const started = await startCoachNudgeAction('nudge-1')
+
+    expect(started?.attempt.id).toBe('ca-1')
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/coach/nudges/nudge-1/start',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('confirms a Coach plan draft explicitly instead of writing on navigation', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { route: '/plans' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await confirmCoachNudgeDraft('nudge-1', 'ca-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/coach/nudges/nudge-1/draft/confirm',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ attempt_id: 'ca-1' }) }),
+    )
   })
 })

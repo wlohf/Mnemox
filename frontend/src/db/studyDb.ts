@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 
 // ── Sync metadata mixin ──
-export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete' | 'sync_failed'
+export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete' | 'sync_failed' | 'conflicted'
 
 export interface SyncMeta {
   _localId: string        // client-generated UUID, primary key

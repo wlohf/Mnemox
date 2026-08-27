@@ -47,6 +47,12 @@ class Pomodoro(Base):
         comment="关联任务",
         nullable=True,
     )
+    coach_action_attempt_id: Mapped[Optional[str]] = mapped_column(
+        String(40),
+        nullable=True,
+        index=True,
+        comment="由 Coach 建议发起的行动尝试 ID",
+    )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="开始时间", nullable=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="结束时间", nullable=True)
     task_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, comment="任务名称（前端传入）")

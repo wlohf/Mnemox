@@ -15,8 +15,27 @@ interface ServerGoal {
   updated_at: string | null
 }
 
+function serverChangedSince(serverUpdatedAt: string | null, lastSyncedAt: string | null): boolean {
+  if (!lastSyncedAt) return false
+  const serverTime = Date.parse(serverUpdatedAt || '')
+  const syncedTime = Date.parse(lastSyncedAt)
+  return Number.isFinite(serverTime) && (!Number.isFinite(syncedTime) || serverTime > syncedTime)
+}
+
 export const goalsSyncAdapter: ModuleSyncAdapter = {
   module: 'goals',
+
+  async checkConflict(op) {
+    const local = await db.goals.get(op.localId)
+    if (!local?._serverId || !local._lastSyncedAt) return { conflict: false }
+    const serverGoals = await apiFetch<ServerGoal[]>('/api/goals')
+    const server = serverGoals.find((item) => item.id === local._serverId)
+    if (!server) return { conflict: true, serverData: { __deleted: true } }
+    return {
+      conflict: serverChangedSince(server.updated_at ?? server.created_at, local._lastSyncedAt),
+      serverData: server,
+    }
+  },
 
   async pushCreate(op: QueuedOperation) {
     const payload = JSON.parse(op.payload) as Record<string, unknown>
@@ -141,18 +160,11 @@ export const goalsSyncAdapter: ModuleSyncAdapter = {
           created_at: sg.created_at,
         })
       } else if (local._syncStatus === 'pending_update') {
-        if (serverUpdatedAt > local._updatedAt) {
+        if (serverChangedSince(serverUpdatedAt, local._lastSyncedAt)) {
           await db.goals.update(local._localId, {
-            title: sg.title,
-            description: sg.description,
-            target_level: sg.target_level,
-            deadline: sg.deadline,
-            status: sg.status,
-            material_id: sg.material_id,
-            material_title: sg.material_title,
-            _syncStatus: 'synced',
-            _updatedAt: serverUpdatedAt,
-            _lastSyncedAt: new Date().toISOString(),
+            _syncStatus: 'conflicted',
+            _conflictAt: new Date().toISOString(),
+            _conflictServerData: JSON.stringify(sg),
           })
           await db.opQueue.where({ module: 'goals', localId: local._localId }).delete()
         }

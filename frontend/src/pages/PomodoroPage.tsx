@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -188,6 +189,12 @@ function makeEmptyStats(): ReusableTaskStats {
 
 export function PomodoroPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const coachAttemptId = searchParams.get('coach_attempt')?.trim() || null
+  const coachSuggestedMinutesRaw = Number(searchParams.get('coach_minutes'))
+  const coachSuggestedMinutes = Number.isFinite(coachSuggestedMinutesRaw) && coachSuggestedMinutesRaw > 0
+    ? Math.max(1, Math.min(120, coachSuggestedMinutesRaw))
+    : null
   const {
     getStats,
     getCumulativeStats,
@@ -246,6 +253,11 @@ export function PomodoroPage() {
   useEffect(() => {
     void loadBackgroundImagePreference()
   }, [loadBackgroundImagePreference])
+
+  useEffect(() => {
+    if (!coachAttemptId || isRunning || isPaused || !coachSuggestedMinutes) return
+    setFocusMinutes(coachSuggestedMinutes)
+  }, [coachAttemptId, coachSuggestedMinutes, isPaused, isRunning])
 
   useEffect(() => {
     try {
@@ -342,13 +354,14 @@ export function PomodoroPage() {
   const handleStart = () => {
     if (!guardNoActiveTimer()) return
     const safeName = taskName.trim() || '专注学习'
-    startTimer(safeName, focusMinutes)
+    startTimer(safeName, focusMinutes, undefined, coachAttemptId)
+    if (coachAttemptId) navigate('/pomodoro', { replace: true })
     setTasks((prev) => prev.map((task) => (
       normalizeTaskTitle(task.title) === normalizeTaskTitle(safeName)
         ? { ...task, lastStartedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completed: false, completedAt: null }
         : task
     )))
-    message.success('番茄钟已启动')
+    message.success(coachAttemptId ? '番茄钟已启动，Coach 会依据实际结果更新建议' : '番茄钟已启动')
   }
 
   const handleStartTask = (task: ReusablePomodoroTask) => {
@@ -364,8 +377,9 @@ export function PomodoroPage() {
       updatedAt: now,
     }))
     setSelectedTaskId(null)
-    startTimer(task.title, task.minutes)
-    message.success(`开始：${task.title}`)
+    startTimer(task.title, task.minutes, undefined, coachAttemptId)
+    if (coachAttemptId) navigate('/pomodoro', { replace: true })
+    message.success(coachAttemptId ? `开始：${task.title}，已关联 Coach 建议` : `开始：${task.title}`)
   }
 
   const handleStop = () => {
@@ -378,7 +392,7 @@ export function PomodoroPage() {
   }
 
   const confirmStop = () => {
-    completeTimer(undefined, { startBreak: false })
+    completeTimer(undefined, { startBreak: false, completed: false, stopReason: 'interrupted' })
     message.success(stopReason.trim() ? '已记录本次停止原因' : '番茄钟已停止')
     setStopReasonModalVisible(false)
     setStopReason('')
@@ -715,6 +729,15 @@ export function PomodoroPage() {
         </div>
       )}
     >
+      {coachAttemptId && !isRunning && !isPaused && (
+        <Alert
+          type="info"
+          showIcon
+          message="这次专注来自 Coach 建议"
+          description="开始后会关联真实番茄记录；完成或中断都会反馈给 Coach。不会自动创建或修改任何学习数据。"
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <div className="mnemox-pomodoro-workbench">
         <aside className="mnemox-pomodoro-task-pane">
           <div className="mnemox-pomodoro-pane-header">

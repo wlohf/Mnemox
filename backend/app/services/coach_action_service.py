@@ -14,8 +14,8 @@ from app.services.coach_skills.base import CoachSkillResult
 from app.services.learning_event_service import CanonicalEventType, record_coach_nudge_event
 
 
-def coach_nudge_to_dict(row: CoachNudge) -> dict[str, Any]:
-    return {
+def coach_nudge_to_dict(row: CoachNudge, *, action_attempt: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = {
         "id": row.id,
         "user_id": row.user_id,
         "event_id": row.event_id,
@@ -34,6 +34,9 @@ def coach_nudge_to_dict(row: CoachNudge) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+    if action_attempt is not None:
+        result["action_attempt"] = action_attempt
+    return result
 
 
 async def create_coach_nudge(
@@ -88,15 +91,26 @@ async def list_coach_nudges(
     status: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    from app.services.coach_action_attempt_service import (
+        expire_due_coach_nudges,
+        latest_action_attempts_by_nudge,
+    )
+
+    await expire_due_coach_nudges(db, user_id)
     query = select(CoachNudge).where(CoachNudge.user_id == user_id)
     if status:
         query = query.where(CoachNudge.status == status)
     query = query.order_by(CoachNudge.created_at.desc()).limit(max(1, min(int(limit or 20), 100)))
     result = await db.execute(query)
-    return [coach_nudge_to_dict(row) for row in result.scalars().all()]
+    rows = list(result.scalars().all())
+    latest_attempts = await latest_action_attempts_by_nudge(db, user_id, [row.id for row in rows])
+    return [coach_nudge_to_dict(row, action_attempt=latest_attempts.get(row.id)) for row in rows]
 
 
 async def mark_coach_nudge_shown(db: AsyncSession, user_id: int, nudge_id: str) -> dict[str, Any] | None:
+    from app.services.coach_action_attempt_service import expire_due_coach_nudges
+
+    await expire_due_coach_nudges(db, user_id)
     now = datetime.now()
     transition = await db.execute(
         update(CoachNudge)

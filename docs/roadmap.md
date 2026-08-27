@@ -28,8 +28,8 @@
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认、PostgreSQL 16 与 Windows smoke 已通过 GitHub CI；真实 Windows Electron E2E 待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐与 SQL 时态记忆冲突/审核/失效/纠错已完成；下一完整模块为 Coach 教学行为反馈闭环） |
-| Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 AgentKernel 原型实现中；运行时 Spike、调度、自学习归因、知识巩固与写回未开始 |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐、SQL 时态记忆与 Coach 教学行为闭环均已实现；`20260826_14` 的本地 SQLite/前端验证已通过，仍待 PostgreSQL 与真实浏览器专项验收） |
+| Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 原生 AgentKernel 与 opt-in 的“复习积压”服务端切片已实现；框架 Spike、调度扩展、自学习归因、知识巩固写回仍未开始 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
 ## 2. 立即（小胜利轨道）
@@ -68,12 +68,12 @@
 | 5 | 概念图谱 MVP 与 GraphStore Spike | 三表、上传抽取、错题回填、人工改名/合并/删除、来源和质量集完成；只有 SQL 不足时才评估 Neo4j，Spike 不通过不影响 SQL 图 | ✅ SQL 主链已完成：资料自动候选/别名/先修关系、审核、来源版本、更新/删除清理、改名/合并/拆分/删除、错题回填、跨用户/环路拦截和先修缺口均有专项回归；SQL 能满足当前规模，Neo4j 不引入 |
 | 6 | 时态记忆与 Graphiti Spike | `UserMemory` 演进为可审核记忆声明；仅投影筛选后的状态变化 episode；验证失效/冲突/纠错/删除和 SQL 重建 | ✅ SQL 产品主链完成：事实键、部分唯一约束、历史重复回填、跨来源冲突、审核前旧事实保留、确认替代、拒绝/纠错、自动失效、全入口过滤、派生画像删除和前端对照审核均有回归；当前 SQL 满足需求，Graphiti 不引入运行时 |
 | 7 | 学习者模型 | 直接证据主导、间接信号只校准风险/置信度；一次练习或复习可更新概念状态，前端展示证据、模型版本和人工修正 | ✅ 产品主链已完成：强弱证据、练习/正确/提示计数、错题与 FSRS 回填、先修/目标/风险/错误解释型排序及前端原因下钻；真实 holdout 校准继续保持 `collect_more_data`，不冒充已完成 |
-| 8 | Obsidian、联想与体验 | 拉取式同步稳定 ID/冲突/删除；联想接入 Coach 的 shown/feedback/采纳事件；概念地图、先修缺口和建议理由可下钻 | 🔶 Vault 安全、联想 Coach 归因、概念详情、先修缺口、来源证据和建议理由均已接入；真实 Vault 冲突/删除与 Coach 完整教学反馈仍待专项验收 |
+| 8 | Obsidian、联想与体验 | 拉取式同步稳定 ID/冲突/删除；联想接入 Coach 的 shown/feedback/采纳事件；概念地图、先修缺口和建议理由可下钻 | 🔶 Vault 安全、联想 Coach 归因、概念详情、先修缺口、来源证据和建议理由均已接入；Coach 的展示→行动尝试→真实番茄钟/复习/计划确认或用户确认→回放已通过本地专项验证，仍待 PostgreSQL 与真实浏览器专项验收；真实 Vault 冲突/删除仍待验收 |
 
 当前执行检查点（不得跳步）：
 
-1. **下一完整模块：Coach 教学行为闭环**。完成观察、策略、低阻力行动、草案确认及 shown/accepted/rejected/started/completed/abandoned 反馈归因；SQL 时态记忆主链已收口。
-2. 随后再评估 AgentRuntime；Graphiti 只在 SQL 时态查询与已筛选 episode 出现真实能力缺口时启动受控 Spike。
+1. **当前收口：Coach 教学行为闭环验收**。SQLite 中的观察、策略、低阻力行动、草案确认及 shown/accepted/rejected/started/completed/abandoned 归因已回归；确认回放、过期、降级与指标定义在 PostgreSQL 和真实浏览器路径一致。
+2. 验收通过后再评估 AgentRuntime；Graphiti 只在 SQL 时态查询与已筛选 episode 出现真实能力缺口时启动受控 Spike。
 3. 检索生产基线固定为 `RetrievalRouter → Chroma + SQL keyword + RRF`；继续扩大真实问题与资料样本，不因小型合成评测就采用 Qdrant。
 4. 真实学习证据达到至少 50 个 holdout case 后再运行学习者模型离线校准；门槛不足时保持 `collect_more_data`，不阻塞当前功能地基开发。
 5. Obsidian 真实 Vault 冲突 / 删除、正式 PostgreSQL 升级和真实 Windows Electron 启动 / 安装 E2E 属于后续专项验收，不与已通过的 CI smoke 混淆。
@@ -91,7 +91,7 @@
 
 | # | 事项 | 完成标准 |
 | --- | --- | --- |
-| 1 | AgentRuntime Spike | 用“复习积压”场景比较原生 AgentKernel 与 LangGraph；验证 SQLite/PostgreSQL 持久化、SSE、暂停/恢复、取消、重试、草案确认、用户隔离、回放、成本和桌面分发；未通过则继续原生 Kernel |
+| 1 | AgentRuntime Spike | 用“复习积压”场景比较原生 AgentKernel 与 LangGraph；当前原生路径已实现 opt-in 的 PostgreSQL 低频扫描、Agent 面板建议、最小运行记录及下轮重试提示，仍需验证 SQLite/PostgreSQL 持久化、SSE、暂停/恢复、取消、草案确认、用户隔离、回放、成本和桌面分发；未通过则继续原生 Kernel |
 | 2 | AgentKernel 单一纵向闭环 | 一个主动触发场景完成多步只读工具调用、SSE 步骤、行动草案、用户确认执行、旧 Planner fallback、执行日志回放；运行时选型未收口前不能替代旧 Planner |
 | 3 | 后台调度器 MVP | 先支持一个触发器（复习积压）的启动/恢复 catch-up；明确生命周期、幂等键、锁、重试、超时、时区、免打扰和多实例语义；所有触达经 Coach 治理 |
 | 4 | 干预效果自学习 v0 | 先落不可变曝光、接受/执行和后续行为事件；定义归因窗口和四项指标；确定性分桶统计先于 bandit，并置于 feature flag 后 |

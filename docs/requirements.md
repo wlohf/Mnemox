@@ -173,7 +173,7 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 2. 统一 Prompt Injection 防护层，为资料、笔记、搜索和工具结果建立明确的不可信上下文边界。
 3. 收口 RAG 状态的产品语义：资料侧栏和设置入口已展示在线/关键词回退/最近错误；还需让聊天等入口保持同一状态含义，并用浏览器 E2E 验证降级提示。
 4. 保留 API 冒烟，同时补真实浏览器/桌面 E2E，覆盖 Agent 草案确认与执行。
-5. 此前 PostgreSQL 16 空库迁移与多 worker 验收、Chromium 草案确认和 Windows smoke 已通过 GitHub CI；当前数据库 head 为 `20260823_12`，新增时态记忆事实身份、历史回填、冲突关系和当前事实唯一约束。本次迁移仍须重新通过远程 PostgreSQL 门禁；正式生产库须在发布窗口先做快照，再执行升级、schema、数据和多实例运行核对。
+5. 此前 PostgreSQL 16 空库迁移与多 worker 验收、Chromium 草案确认和 Windows smoke 已通过 GitHub CI；当前数据库 head 为 `20260826_14`，包含时态记忆事实身份、历史回填、冲突关系和当前事实唯一约束，以及 Coach 建议到真实番茄钟、复习和已确认计划草案的行为归因。本地 SQLite 迁移、完整回归、构建、lint 与浏览器自测已通过；本次迁移仍须重新通过远程 PostgreSQL 门禁。正式生产库须在发布窗口先做快照，再执行升级、schema、数据和多实例运行核对。
 6. 仓库卫生：清理明确过期的 `release/` 资产，规范提交分支和未提交文件状态。
 
 ### P1：四层学习智能底座（Phase 1）
@@ -187,7 +187,7 @@ Mnemox 是面向个人学习者的 AI 学习教练。它不以通用问答为终
 7. 联想引擎：接入 Coach 呈现、shown/feedback/采纳事件和保守阈值调参。
 8. 概念级体验：完成概念地图、先修缺口、资料小节下钻与学习建议理由展示。
 
-当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、`RetrievalRouter`、资料投影生命周期、离线质量门禁、可审核概念、先修缺口、解释型学习推荐，以及时态记忆冲突/替代/失效/纠错/派生删除均已有实现与验证；Vault 安全边界和 Coach 联想归因也已进入开发基线。此前 PostgreSQL 16 多实例、Chromium 和 Windows smoke 已通过远程 CI，新增迁移需重新验收。下一模块为 Coach 教学行为反馈闭环；真实学习校准样本、正式生产升级和真实 Electron E2E 继续后置，Phase 2 不提前展开。
+当前实现状态：`learner_evidence`、`user_concept_state`、`projection_outbox`、`RetrievalRouter`、资料投影生命周期、离线质量门禁、可审核概念、先修缺口、解释型学习推荐，以及时态记忆冲突/替代/失效/纠错/派生删除均已有实现与验证；Vault 安全边界和 Coach 联想归因也已进入开发基线。Coach 教学行为闭环已实现展示→开始→真实领域行为/用户确认→回放与指标归因，并通过本地 SQLite 迁移、全量回归、构建和浏览器自测；新增迁移仍需远程 PostgreSQL 专项验收。真实学习校准样本、正式生产升级和真实 Electron E2E 继续后置，Phase 2 不提前展开。
 
 ### P2：Agent 升级（Phase 2，垂直切片）
 

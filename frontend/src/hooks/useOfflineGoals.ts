@@ -94,6 +94,9 @@ export function useOfflineGoals(statusFilter?: string) {
   ): Promise<OfflineGoalItem | null> => {
     const existing = await db.goals.get(localId)
     if (!existing) return null
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这个目标存在同步冲突，请先在账户菜单中处理')
+    }
 
     const now = new Date().toISOString()
     const updates: Partial<LocalGoal> = { _updatedAt: now }
@@ -119,6 +122,9 @@ export function useOfflineGoals(statusFilter?: string) {
   const deleteGoal = async (localId: string): Promise<void> => {
     const existing = await db.goals.get(localId)
     if (!existing) return
+    if (existing._syncStatus === 'conflicted') {
+      throw new Error('这个目标存在同步冲突，请先在账户菜单中处理')
+    }
 
     // 本地尚未同步到服务端，直接本地删除
     if (!existing._serverId) {

@@ -19,7 +19,9 @@ CONFIRMED_REVIEW_STATUS = "confirmed"
 COACH_FEEDBACK_OUTCOMES = {
     "helpful",
     "accepted",
+    "started",
     "completed",
+    "abandoned",
     "later",
     "snoozed",
     "dismissed",
@@ -33,12 +35,16 @@ SNOOZE_DURATIONS = {
     "later": timedelta(hours=2),
     "snoozed": timedelta(hours=4),
 }
-IDEMPOTENT_FEEDBACK_OUTCOMES = {"accepted", "helpful", "completed"}
+IDEMPOTENT_FEEDBACK_OUTCOMES = {"accepted", "helpful", "started", "completed", "abandoned"}
 
 
 def _feedback_status(outcome: str) -> str:
     if outcome == "completed":
         return "completed"
+    if outcome == "abandoned":
+        return "abandoned"
+    if outcome == "started":
+        return "started"
     if outcome in {"accepted", "helpful"}:
         return "accepted"
     if outcome in {"later", "snoozed"}:
@@ -51,8 +57,12 @@ def _feedback_event_type(outcome: str) -> str:
 
     if outcome in {"accepted", "helpful"}:
         return CanonicalEventType.COACH_NUDGE_ACCEPTED
+    if outcome == "started":
+        return CanonicalEventType.COACH_NUDGE_STARTED
     if outcome == "completed":
         return CanonicalEventType.COACH_NUDGE_COMPLETED
+    if outcome == "abandoned":
+        return CanonicalEventType.COACH_NUDGE_ABANDONED
     if outcome in {"later", "snoozed"}:
         return CanonicalEventType.COACH_NUDGE_SNOOZED
     if outcome in {"dismissed", "too_disruptive"}:
@@ -66,6 +76,7 @@ async def record_coach_feedback(
     nudge_id: str,
     outcome: str,
     notes: str | None = None,
+    attribution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome = str(outcome or "").strip()
     if outcome not in COACH_FEEDBACK_OUTCOMES:
@@ -74,11 +85,14 @@ async def record_coach_feedback(
     now = datetime.now()
     target_status = _feedback_status(outcome)
     if outcome in IDEMPOTENT_FEEDBACK_OUTCOMES:
-        allowed_statuses = (
-            ("pending", "shown", "snoozed")
-            if target_status == "accepted"
-            else ("pending", "shown", "accepted", "snoozed")
-        )
+        allowed_statuses_by_outcome = {
+            "accepted": ("pending", "shown", "snoozed"),
+            "helpful": ("pending", "shown", "snoozed"),
+            "started": ("pending", "shown", "accepted", "snoozed"),
+            "completed": ("pending", "shown", "accepted", "started", "snoozed"),
+            "abandoned": ("pending", "shown", "accepted", "started", "snoozed"),
+        }
+        allowed_statuses = allowed_statuses_by_outcome[outcome]
         transition = await db.execute(
             update(CoachNudge)
             .where(
@@ -123,6 +137,13 @@ async def record_coach_feedback(
         "notes": (notes or "")[:500],
         "recorded_at": now.isoformat(),
     }
+    if attribution:
+        payload["attribution"] = {
+            key: value
+            for key, value in attribution.items()
+            if key in {"method", "attempt_id", "action_type", "linked_event_id", "linked_event_type", "reason"}
+            and value is not None
+        }
     if outcome in SNOOZE_DURATIONS:
         payload["snooze_until"] = (now + SNOOZE_DURATIONS[outcome]).isoformat()
     memory = UserMemory(
@@ -145,8 +166,33 @@ async def record_coach_feedback(
         nudge,
         _feedback_event_type(outcome),
         outcome=outcome,
+        attribution=attribution,
         occurred_at=now,
     )
+    # Automatic outcomes (for example a completed Pomodoro) must feed the
+    # same self-quote loop as a button-clicked response.  The router keeps a
+    # defensive retry for legacy callers; this update is idempotent.
+    try:
+        from app.services.note_quote_service import attach_note_quote_feedback
+
+        await attach_note_quote_feedback(db, user_id, nudge.id, outcome)
+    except Exception:
+        # Quote analytics must never make the Coach action itself fail.
+        pass
+    attempt = None
+    if outcome in {"completed", "abandoned"}:
+        # A manual confirmation and a verified domain event both use the same
+        # terminal path.  The action-attempt row adds the provenance needed to
+        # tell them apart during replay and metrics aggregation.
+        from app.services.coach_action_attempt_service import sync_attempt_from_feedback
+
+        attempt = await sync_attempt_from_feedback(
+            db,
+            user_id,
+            nudge,
+            outcome,
+            attribution=attribution,
+        )
     await db.flush()
     return {
         "ok": True,
@@ -154,6 +200,7 @@ async def record_coach_feedback(
         "status": nudge.status,
         "memory_key": memory.memory_key,
         "learning_stats": learning_stats,
+        "attempt": attempt,
     }
 
 

@@ -14,7 +14,7 @@ from app.models.learning_event import LearningEvent
 from app.services.learning_event_service import CanonicalEventType, normalize_learning_event_type
 
 
-METRIC_DEFINITIONS_VERSION = 1
+METRIC_DEFINITIONS_VERSION = 2
 DEFAULT_ATTRIBUTION_WINDOW_DAYS = 7
 DEFAULT_RECOVERY_WINDOW_HOURS = 72
 DEFAULT_REVIEW_GRACE_HOURS = 24
@@ -23,8 +23,8 @@ MIN_EFFECTIVE_STUDY_SECONDS = 15 * 60
 
 NORTH_STAR_METRIC_DEFINITIONS = {
     "suggestion_execution_rate": {
-        "label": "建议确认执行率",
-        "numerator": "展示后 7 天内收到 completed 反馈的可执行 Coach nudge 数",
+        "label": "建议已确认执行率",
+        "numerator": "展示后 7 天内完成的可执行 Coach nudge 数；区分真实领域行为与用户确认",
         "denominator": "已完整经过 7 天归因窗口的可执行 Coach nudge 展示数",
         "unit": "percent",
     },
@@ -173,7 +173,9 @@ async def build_north_star_metrics(
     outcomes_by_nudge: dict[str, list[LearningEvent]] = defaultdict(list)
     outcome_types = {
         CanonicalEventType.COACH_NUDGE_ACCEPTED,
+        CanonicalEventType.COACH_NUDGE_STARTED,
         CanonicalEventType.COACH_NUDGE_COMPLETED,
+        CanonicalEventType.COACH_NUDGE_ABANDONED,
         CanonicalEventType.COACH_NUDGE_FEEDBACK,
     }
     for event_type in outcome_types:
@@ -185,7 +187,11 @@ async def build_north_star_metrics(
     mature_shown: list[LearningEvent] = []
     pending_shown = 0
     execution_confirmed = 0
+    execution_domain_confirmed = 0
+    execution_user_confirmed = 0
     accepted = 0
+    started = 0
+    abandoned = 0
     for shown in shown_events:
         shown_at = _event_timestamp(shown, zone=metric_zone)
         if not shown_at:
@@ -200,9 +206,15 @@ async def build_north_star_metrics(
             if not outcome_at or outcome_at < shown_at or outcome_at > shown_at + attribution_window:
                 continue
             outcome_type = _event_type(outcome)
-            outcome_value = str(_event_payload(outcome).get("outcome") or "")
+            outcome_payload = _event_payload(outcome)
+            outcome_value = str(outcome_payload.get("outcome") or "")
             if outcome_type == CanonicalEventType.COACH_NUDGE_COMPLETED or outcome_value == "completed":
                 execution_confirmed += 1
+                attribution = outcome_payload.get("attribution") or {}
+                if isinstance(attribution, dict) and attribution.get("method") == "domain_event":
+                    execution_domain_confirmed += 1
+                else:
+                    execution_user_confirmed += 1
                 break
         for outcome in outcomes_by_nudge.get(nudge_id, []):
             outcome_at = _event_timestamp(outcome, zone=metric_zone)
@@ -212,6 +224,24 @@ async def build_north_star_metrics(
             outcome_value = str(_event_payload(outcome).get("outcome") or "")
             if outcome_type in {CanonicalEventType.COACH_NUDGE_ACCEPTED, CanonicalEventType.COACH_NUDGE_COMPLETED} or outcome_value in {"accepted", "completed", "helpful"}:
                 accepted += 1
+                break
+        for outcome in outcomes_by_nudge.get(nudge_id, []):
+            outcome_at = _event_timestamp(outcome, zone=metric_zone)
+            if not outcome_at or outcome_at < shown_at or outcome_at > shown_at + attribution_window:
+                continue
+            outcome_type = _event_type(outcome)
+            outcome_value = str(_event_payload(outcome).get("outcome") or "")
+            if outcome_type == CanonicalEventType.COACH_NUDGE_STARTED or outcome_value == "started":
+                started += 1
+                break
+        for outcome in outcomes_by_nudge.get(nudge_id, []):
+            outcome_at = _event_timestamp(outcome, zone=metric_zone)
+            if not outcome_at or outcome_at < shown_at or outcome_at > shown_at + attribution_window:
+                continue
+            outcome_type = _event_type(outcome)
+            outcome_value = str(_event_payload(outcome).get("outcome") or "")
+            if outcome_type == CanonicalEventType.COACH_NUDGE_ABANDONED or outcome_value == "abandoned":
+                abandoned += 1
                 break
 
     recovery_window = timedelta(hours=DEFAULT_RECOVERY_WINDOW_HOURS)
@@ -327,9 +357,13 @@ async def build_north_star_metrics(
                 "numerator": execution_confirmed,
                 "denominator": len(mature_shown),
                 "accepted_count": accepted,
+                "started_count": started,
+                "completed_by_domain_event_count": execution_domain_confirmed,
+                "completed_by_user_confirmation_count": execution_user_confirmed,
+                "abandoned_count": abandoned,
                 "pending_attribution_count": pending_shown,
                 "attribution_window_days": DEFAULT_ATTRIBUTION_WINDOW_DAYS,
-                "evidence": "user_confirmed_feedback",
+                "evidence": "domain_event_or_user_confirmation",
             },
             "interruption_recovery_time": {
                 "value": round(float(median(recovery_minutes)), 1) if recovery_minutes else None,

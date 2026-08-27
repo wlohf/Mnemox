@@ -11,12 +11,15 @@ from app.models.coach import CoachEvent, CoachNudge, CoachSkillStats
 
 
 POSITIVE_OUTCOMES = {"helpful", "accepted", "completed"}
-NEGATIVE_OUTCOMES = {"dismissed", "too_disruptive", "too_hard", "too_easy", "irrelevant", "not_my_style"}
+STARTED_OUTCOMES = {"started"}
+NEGATIVE_OUTCOMES = {"dismissed", "too_disruptive", "too_hard", "too_easy", "irrelevant", "not_my_style", "abandoned"}
 SNOOZE_OUTCOMES = {"later", "snoozed"}
 OUTCOME_COLUMNS = {
     "helpful": "helpful_count",
     "accepted": "accepted_count",
+    "started": "started_count",
     "completed": "completed_count",
+    "abandoned": "abandoned_count",
     "later": "snoozed_count",
     "snoozed": "snoozed_count",
     "dismissed": "dismissed_count",
@@ -37,7 +40,9 @@ def coach_skill_stats_to_dict(row: CoachSkillStats) -> dict[str, Any]:
         "event_type": row.event_type,
         "shown_count": row.shown_count,
         "accepted_count": row.accepted_count,
+        "started_count": row.started_count,
         "completed_count": row.completed_count,
+        "abandoned_count": row.abandoned_count,
         "helpful_count": row.helpful_count,
         "snoozed_count": row.snoozed_count,
         "dismissed_count": row.dismissed_count,
@@ -144,9 +149,16 @@ async def record_skill_feedback(
     if outcome in POSITIVE_OUTCOMES:
         stats.last_positive_at = now
         _apply_score(stats, 1.0 if outcome != "completed" else 1.5, now)
+    elif outcome in STARTED_OUTCOMES:
+        _apply_score(stats, 0.5, now)
     elif outcome in NEGATIVE_OUTCOMES:
         stats.last_negative_at = now
-        _apply_score(stats, -1.0 if outcome != "too_disruptive" else -1.5, now)
+        if outcome == "too_disruptive":
+            _apply_score(stats, -1.5, now)
+        elif outcome == "abandoned":
+            _apply_score(stats, -0.75, now)
+        else:
+            _apply_score(stats, -1.0, now)
     elif outcome in SNOOZE_OUTCOMES:
         stats.last_negative_at = now
         _apply_score(stats, -0.5, now)

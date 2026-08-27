@@ -43,6 +43,8 @@ describe('pomodoro desktop reminder sync', () => {
       breakDuration: 5,
       timerMode: 'focus',
       currentBackendId: null,
+      currentCoachActionAttemptId: null,
+      currentStartRequestKey: null,
       startedAt: null,
       pausedAt: null,
       pausedTotalMs: 0,
@@ -166,6 +168,28 @@ describe('pomodoro desktop reminder sync', () => {
       currentTaskId: null,
       timerMode: 'focus',
     })
+  })
+
+  it('closes the same backend timer when a Coach-linked focus timer is stopped immediately', async () => {
+    pomodoroApiMock.startPomodoro.mockResolvedValueOnce({ id: 71 })
+    pomodoroApiMock.completePomodoro.mockResolvedValueOnce({ id: 71 })
+
+    usePomodoroStore.getState().startTimer('Coach focus', 5, null, 'ca-71')
+    usePomodoroStore.getState().completeTimer(60, {
+      startBreak: false,
+      completed: false,
+      stopReason: 'interrupted',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(pomodoroApiMock.completePomodoro).toHaveBeenCalledWith(
+      71,
+      false,
+      undefined,
+      1,
+      'interrupted',
+    )
   })
 
   it('persists a custom background image and can reset it', () => {

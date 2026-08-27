@@ -15,37 +15,6 @@ const plans = {
   [yesterday]: '# 2026-06-01\n\n- [ ] 复习错题\n- [ ] 梳理笔记结构',
 }
 
-const notes = [
-  {
-    _localId: 'note-1',
-    _serverId: null,
-    _syncStatus: 'synced',
-    title: 'AI 科研',
-    content: '# AI 科研\n\n记录实验方案。',
-    note_type: 'general',
-    material_id: null,
-    chapter_id: null,
-    tags: JSON.stringify(['科研', '项目']),
-    links: '[]',
-    created_at: '2026-06-02T08:00:00.000Z',
-    _updatedAt: '2026-06-02T08:00:00.000Z',
-  },
-  {
-    _localId: 'note-2',
-    _serverId: null,
-    _syncStatus: 'pending_update',
-    title: '临时想法',
-    content: '一个还没分类的记录。',
-    note_type: 'general',
-    material_id: null,
-    chapter_id: null,
-    tags: JSON.stringify([]),
-    links: '[]',
-    created_at: '2026-06-01T08:00:00.000Z',
-    _updatedAt: '2026-06-01T08:00:00.000Z',
-  },
-]
-
 function json(body, status = 200) {
   return {
     status,
@@ -54,38 +23,13 @@ function json(body, status = 200) {
   }
 }
 
-async function seedOfflineNotes(page) {
-  await page.addInitScript((seedNotes) => {
-    localStorage.setItem('study_assistant_token', 'selftest-token')
-    const dbName = 'StudyAssistantDB'
-    const request = indexedDB.open(dbName)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains('notes')) {
-        db.createObjectStore('notes', { keyPath: '_localId' })
-      }
-      if (!db.objectStoreNames.contains('syncQueue')) {
-        db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true })
-      }
-    }
-    request.onsuccess = () => {
-      const db = request.result
-      const tx = db.transaction(['notes'], 'readwrite')
-      const store = tx.objectStore('notes')
-      store.clear()
-      for (const note of seedNotes) {
-        store.put(note)
-      }
-    }
-  }, notes)
-}
-
 async function mockRoutes(page) {
   const state = {
     agentExecuteCount: 0,
     nextConversationId: 41,
     conversations: [],
     messagesByConversation: new Map(),
+    notes: [],
   }
 
   await page.route('**/api/**', async (route) => {
@@ -206,12 +150,46 @@ async function mockRoutes(page) {
       return
     }
 
-    if (pathname === '/api/rag/health' || pathname === '/api/wrong-questions/' || pathname === '/api/review/tasks' || pathname === '/api/review/due-count' || pathname === '/api/materials/' || pathname.startsWith('/api/materials/search') || pathname === '/api/motivation/quotes' || pathname === '/api/motivation/settings') {
-      await route.fulfill(json(pathname === '/api/review/due-count' ? { due_count: 0 } : pathname === '/api/rag/health' ? { healthy: true } : []))
+    if (pathname === '/api/notes') {
+      if (method === 'POST') {
+        const payload = JSON.parse(request.postData() || '{}')
+        const note = {
+          id: state.notes.length + 1,
+          title: payload.title || '新笔记',
+          content: payload.content || '',
+          note_type: payload.note_type || 'general',
+          material_id: payload.material_id ?? null,
+          chapter_id: payload.chapter_id ?? null,
+          tags: payload.tags || [],
+          links: payload.links || [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+        state.notes.push(note)
+        await route.fulfill(json(note))
+      } else {
+        await route.fulfill(json(state.notes))
+      }
       return
     }
 
-    if (pathname === '/api/goals/' || pathname === '/api/goals/tasks' || pathname === '/api/goals/tasks/daily') {
+    if (pathname === '/api/rag/health' || pathname === '/api/wrong-questions/' || pathname === '/api/review/tasks' || pathname === '/api/review/due-count' || pathname === '/api/materials/' || pathname.startsWith('/api/materials/search') || pathname === '/api/motivation/quotes' || pathname === '/api/motivation/settings') {
+      await route.fulfill(json(pathname === '/api/review/due-count'
+        ? { due_count: 0 }
+        : pathname === '/api/rag/health'
+          ? {
+              enabled: true,
+              rag_online: false,
+              embedding_enabled: false,
+              fallback_active: true,
+              total_chunks: 0,
+              last_retrieval_status: { mode: 'fallback', message: '未配置 embedding，资料问答将使用关键词检索。' },
+            }
+          : []))
+      return
+    }
+
+    if (pathname === '/api/goals' || pathname === '/api/goals/' || pathname === '/api/goals/tasks' || pathname === '/api/goals/tasks/daily' || pathname === '/api/anki/cards' || pathname === '/api/wrong-questions') {
       await route.fulfill(json([]))
       return
     }
@@ -307,7 +285,7 @@ async function mockRoutes(page) {
       return
     }
 
-    if (pathname === '/api/ai-settings/providers' || pathname === '/api/ai-settings/routing' || pathname === '/api/rag/settings') {
+    if (pathname === '/api/ai-settings/' || pathname === '/api/ai-settings/providers' || pathname === '/api/ai-settings/routing' || pathname === '/api/rag/settings') {
       await route.fulfill(json([]))
       return
     }
@@ -336,8 +314,10 @@ async function run() {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   try {
     await page.clock.setFixedTime(new Date(`${today}T12:00:00.000Z`))
-    await seedOfflineNotes(page)
     const mockState = await mockRoutes(page)
+    await page.addInitScript(() => {
+      localStorage.setItem('study_assistant_token', 'selftest-token')
+    })
     const results = []
 
     await page.goto(`${BASE_URL}/pomodoro`, { waitUntil: 'networkidle' })
@@ -350,20 +330,27 @@ async function run() {
     await page.goto(`${BASE_URL}/plans?date=${today}`, { waitUntil: 'networkidle' })
     await assertText(page.locator('.mnemox-doc-header'), today)
     await assertText(page.locator('.mnemox-task-list'), '优化 Mnemox 右侧今日任务')
+    const generatedPlanResponse = page.waitForResponse(response => (
+      new URL(response.url()).pathname === `/api/plans/generate/${today}`
+      && response.request().method() === 'POST'
+    ))
     await page.locator('.mnemox-doc-toolbar').getByRole('button', { name: 'AI 生成' }).click()
+    await generatedPlanResponse
+    await page.locator('.mnemox-task-list').filter({ hasText: 'AI 生成的第一项任务' }).waitFor()
     await assertText(page.locator('.mnemox-task-list'), 'AI 生成的第一项任务')
     results.push('plans-workbench-ok')
 
     await page.goto(`${BASE_URL}/notes`, { waitUntil: 'networkidle' })
     await assertText(page.locator('.mnemox-folder-list'), '全部笔记')
-    await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
+    await page.getByRole('button', { name: '新建笔记' }).click()
+    await page.locator('.mnemox-file-list').filter({ hasText: '新笔记' }).waitFor()
+    await assertText(page.locator('.mnemox-file-list'), '新笔记')
     await page.getByRole('button', { name: '未分类 1' }).click()
-    await assertText(page.locator('.mnemox-file-list'), '临时想法')
-    await page.getByRole('button', { name: '项目 1' }).click()
-    await assertText(page.locator('.mnemox-file-list'), 'AI 科研')
+    await assertText(page.locator('.mnemox-file-list'), '新笔记')
     results.push('notes-workbench-ok')
 
     await page.goto(`${BASE_URL}/`, { waitUntil: 'networkidle' })
+    await page.locator('.mnemox-right-sidebar-content').filter({ hasText: '优化 Mnemox 右侧今日任务' }).waitFor()
     await assertText(page.locator('.mnemox-right-sidebar-content'), '今日任务')
     await assertText(page.locator('.mnemox-right-sidebar-content'), '优化 Mnemox 右侧今日任务')
     await page.locator('button').filter({ hasText: '编辑' }).first().click()

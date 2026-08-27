@@ -16,6 +16,12 @@ from ..models.user import User
 from ..services.event_tracker import EventTracker
 from ..models.learning_event import EventType
 from ..models.goal import Task, Goal
+from ..services.coach_action_attempt_service import (
+    ACTIVE_ATTEMPT_STATUSES,
+    bind_coach_attempt_to_domain_event,
+    get_coach_action_attempt,
+)
+from ..services.learning_event_service import CanonicalEventType
 
 
 router = APIRouter()
@@ -40,6 +46,7 @@ class PomodoroCreate(BaseModel):
     task_id: Optional[int] = None
     task_name: Optional[str] = None
     duration: float = 25.0  # 默认25分钟
+    coach_action_attempt_id: Optional[str] = Field(None, max_length=40)
 
 
 class PomodoroUpdate(BaseModel):
@@ -61,6 +68,7 @@ class PomodoroResponse(BaseModel):
     duration: float
     completed: bool
     note: Optional[str]
+    coach_action_attempt_id: Optional[str] = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -104,10 +112,17 @@ async def start_pomodoro(
         if not task_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="任务不存在")
 
+    attempt_id = str(data.coach_action_attempt_id or "").strip() or None
+    if attempt_id:
+        attempt = await get_coach_action_attempt(db, int(current_user.id), attempt_id)
+        if not attempt or attempt.status not in ACTIVE_ATTEMPT_STATUSES:
+            raise HTTPException(status_code=400, detail="Coach 行动尝试不可用")
+
     pomodoro = Pomodoro(
         user_id=current_user.id,
         chapter_id=data.chapter_id,
         task_id=data.task_id,
+        coach_action_attempt_id=attempt_id,
         task_name=data.task_name,
         started_at=datetime.now(),
         duration=data.duration,
@@ -121,9 +136,14 @@ async def start_pomodoro(
     # Keep the domain record, ledger event, and projection outbox in one
     # request transaction. ``get_db`` commits only after this handler returns.
     tracker = EventTracker(db, user_id=cast(int, cast(object, current_user.id)))
-    await tracker.track(
+    started_event = await tracker.track(
         event_type=EventType.POMODORO_START,
-        event_data={"pomodoro_id": pomodoro.id, "task_name": data.task_name, "duration": data.duration},
+        event_data={
+            "pomodoro_id": pomodoro.id,
+            "task_name": data.task_name,
+            "duration": data.duration,
+            "coach_action_attempt_id": attempt_id,
+        },
         chapter_id=pomodoro.chapter_id,
         task_id=pomodoro.task_id,
         duration=int(data.duration * 60),
@@ -131,6 +151,17 @@ async def start_pomodoro(
         dedupe_key=f"pomodoro.started:{pomodoro.id}",
         occurred_at=pomodoro.started_at,
     )
+    if attempt_id:
+        try:
+            await bind_coach_attempt_to_domain_event(
+                db,
+                int(current_user.id),
+                attempt_id,
+                event_id=int(started_event.id),
+                event_type=CanonicalEventType.POMODORO_STARTED,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
     ended_at = pomodoro.ended_at
@@ -144,6 +175,7 @@ async def start_pomodoro(
         duration=pomodoro.duration,
         completed=pomodoro.completed,
         note=pomodoro.note,
+        coach_action_attempt_id=pomodoro.coach_action_attempt_id,
         created_at=pomodoro.created_at.isoformat()
     )
 
@@ -190,7 +222,7 @@ async def complete_pomodoro(
     event_type = EventType.POMODORO_COMPLETE if data.completed else EventType.POMODORO_INTERRUPT
     actual_mins = pomodoro.duration
     tracker = EventTracker(db, user_id=_uid)
-    await tracker.track(
+    outcome_event = await tracker.track(
         event_type=event_type,
         event_data={
             "pomodoro_id": pomodoro.id,
@@ -198,6 +230,7 @@ async def complete_pomodoro(
             "duration": actual_mins,
             "completed": data.completed,
             "stop_reason": data.stop_reason,  # early_done / interrupted / distracted
+            "coach_action_attempt_id": pomodoro.coach_action_attempt_id,
         },
         chapter_id=pomodoro.chapter_id,
         task_id=pomodoro.task_id,
@@ -206,6 +239,23 @@ async def complete_pomodoro(
         dedupe_key=f"pomodoro.{'completed' if data.completed else 'interrupted'}:{pomodoro.id}",
         occurred_at=pomodoro.ended_at,
     )
+    if pomodoro.coach_action_attempt_id:
+        try:
+            await bind_coach_attempt_to_domain_event(
+                db,
+                _uid,
+                pomodoro.coach_action_attempt_id,
+                event_id=int(outcome_event.id),
+                event_type=(
+                    CanonicalEventType.POMODORO_COMPLETED
+                    if data.completed
+                    else CanonicalEventType.POMODORO_INTERRUPTED
+                ),
+                outcome="completed" if data.completed else "abandoned",
+                reason=data.stop_reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if data.completed:
         background_tasks.add_task(_refresh_profile_after_commit, _uid)
 
@@ -222,6 +272,7 @@ async def complete_pomodoro(
         duration=pomodoro.duration,
         completed=pomodoro.completed,
         note=pomodoro.note,
+        coach_action_attempt_id=pomodoro.coach_action_attempt_id,
         created_at=pomodoro.created_at.isoformat()
     )
 
@@ -256,6 +307,7 @@ async def get_recent_pomodoros(
             duration=p.duration,
             completed=p.completed,
             note=p.note,
+            coach_action_attempt_id=p.coach_action_attempt_id,
             created_at=p.created_at.isoformat()
         )
         for p in pomodoros

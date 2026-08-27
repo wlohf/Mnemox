@@ -18,8 +18,27 @@ interface ServerTask {
   updated_at: string | null
 }
 
+function serverChangedSince(serverUpdatedAt: string | null, lastSyncedAt: string | null): boolean {
+  if (!lastSyncedAt) return false
+  const serverTime = Date.parse(serverUpdatedAt || '')
+  const syncedTime = Date.parse(lastSyncedAt)
+  return Number.isFinite(serverTime) && (!Number.isFinite(syncedTime) || serverTime > syncedTime)
+}
+
 export const goalTasksSyncAdapter: ModuleSyncAdapter = {
   module: 'goalTasks',
+
+  async checkConflict(op) {
+    const local = await db.goalTasks.get(op.localId)
+    if (!local?._serverId || !local.goal_id || !local._lastSyncedAt) return { conflict: false }
+    const serverTasks = await apiFetch<ServerTask[]>(`/api/goals/${local.goal_id}/tasks`)
+    const server = serverTasks.find((item) => item.id === local._serverId)
+    if (!server) return { conflict: true, serverData: { __deleted: true } }
+    return {
+      conflict: serverChangedSince(server.updated_at ?? server.created_at, local._lastSyncedAt),
+      serverData: server,
+    }
+  },
 
   async pushCreate(op: QueuedOperation) {
     const local = await db.goalTasks.get(op.localId)
@@ -169,21 +188,11 @@ export const goalTasksSyncAdapter: ModuleSyncAdapter = {
           created_at: st.created_at,
         })
       } else if (local._syncStatus === 'pending_update') {
-        if (serverUpdatedAt > local._updatedAt) {
+        if (serverChangedSince(serverUpdatedAt, local._lastSyncedAt)) {
           await db.goalTasks.update(local._localId, {
-            goal_id: st.goal_id,
-            parent_task_id: st.parent_task_id ?? null,
-            chapter_id: st.chapter_id,
-            chapter_title: st.chapter_title,
-            title: st.title,
-            description: st.description,
-            task_type: st.task_type,
-            planned_date: st.planned_date,
-            status: st.status,
-            completed_at: st.completed_at,
-            _syncStatus: 'synced',
-            _updatedAt: serverUpdatedAt,
-            _lastSyncedAt: new Date().toISOString(),
+            _syncStatus: 'conflicted',
+            _conflictAt: new Date().toISOString(),
+            _conflictServerData: JSON.stringify(st),
           })
           await db.opQueue.where({ module: 'goalTasks', localId: local._localId }).delete()
         }

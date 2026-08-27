@@ -12,7 +12,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://typescriptlang.org)
 [![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue)](LICENSE.md)
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [核心功能](#核心功能) · [体验亮点](#体验亮点) · [安全与部署提示](#安全与部署提示) · [技术栈](#技术栈)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [核心功能](#核心功能) · [体验亮点](#体验亮点) · [安全与部署提示](#安全与部署提示) · [公网部署](docs/deployment.md) · [技术栈](#技术栈)
 
 </div>
 
@@ -269,6 +269,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - Markdown 展示默认跳过原始 HTML，并对外链使用 `noopener`；如果后续引入新的 Markdown 渲染组件，也要保持同等安全策略。
 - AI Provider Key 和 Tavily Key 可以通过环境变量或设置页配置；设置页保存的密钥会加密落库。
 - 聊天、RAG、记忆和联网搜索上下文会按需发送给你配置的模型或搜索服务；多人部署时应评估 Key 的隔离、额度限制和审计需求。
+- 公开 HTTPS 部署的 Caddy 与 Compose 配置见 [部署说明](docs/deployment.md)；公网版本不发布后端、数据库或文件卷端口。
 
 ---
 
@@ -460,7 +461,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 **3. 启动**
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
 访问：
@@ -472,7 +473,7 @@ http://localhost
 停止：
 
 ```bash
-docker compose down
+docker compose -f docker-compose.yml -f docker-compose.local.yml down
 ```
 
 ### 方式三：手动本地开发启动

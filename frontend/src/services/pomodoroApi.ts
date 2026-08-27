@@ -12,6 +12,7 @@ export interface PomodoroStartResponse {
   duration: number
   completed: boolean
   note: string | null
+  coach_action_attempt_id?: string | null
   created_at: string
 }
 
@@ -38,12 +39,18 @@ export interface BatchCreateResponse {
 export async function startPomodoro(
   taskName: string,
   duration: number,
-  taskId?: number | null
+  taskId?: number | null,
+  coachActionAttemptId?: string | null,
 ): Promise<PomodoroStartResponse> {
   return await apiFetch<PomodoroStartResponse>(`${API_BASE}/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_name: taskName, duration, task_id: taskId ?? null }),
+    body: JSON.stringify({
+      task_name: taskName,
+      duration,
+      task_id: taskId ?? null,
+      coach_action_attempt_id: coachActionAttemptId ?? null,
+    }),
   })
 }
 

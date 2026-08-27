@@ -1,0 +1,6 @@
+# Local Docker experience: publish the single-page application on the host.
+# Keep this separate so the public deployment never publishes an app port.
+services:
+  frontend:
+    ports:
+      - "80:80"

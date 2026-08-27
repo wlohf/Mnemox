@@ -24,6 +24,7 @@ export interface SyncState {
   status: SyncStatusValue
   online: boolean
   failedCount: number
+  conflictCount: number
   lastError?: string
 }
 
@@ -38,7 +39,7 @@ type Listener = () => void
 export class SyncEngine {
   private adapters = new Map<ModuleName, ModuleSyncAdapter>()
   private listeners = new Set<Listener>()
-  private state: SyncState = { status: 'idle', online: navigator.onLine, failedCount: 0 }
+  private state: SyncState = { status: 'idle', online: navigator.onLine, failedCount: 0, conflictCount: 0 }
   private intervalId: ReturnType<typeof setInterval> | null = null
   private currentSyncPromise: Promise<void> | null = null
   private followUpRequested = false
@@ -85,7 +86,7 @@ export class SyncEngine {
       clearInterval(this.intervalId)
       this.intervalId = null
     }
-    this.setState({ status: 'idle', online: navigator.onLine })
+    this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, conflictCount: 0, lastError: undefined })
   }
 
   // ── Public API ──
@@ -118,7 +119,7 @@ export class SyncEngine {
 
   private async runSync(options: SyncOptions = {}) {
     if (!this.authenticated || !getToken()) {
-      this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, lastError: undefined })
+      this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, conflictCount: 0, lastError: undefined })
       return
     }
     if (!isNetworkOnline()) {
@@ -138,15 +139,25 @@ export class SyncEngine {
           console.warn(`[SyncEngine] pullAll failed for module=${adapter.module}`, e)
         }
       }
+      const conflictCount = await this.countConflicts()
       if (failedCount > 0) {
         this.setState({
           status: 'error',
           online: true,
           failedCount,
+          conflictCount,
           lastError: `${failedCount} 个本地改动同步失败，点击重试`,
         })
+      } else if (conflictCount > 0) {
+        this.setState({
+          status: 'idle',
+          online: true,
+          failedCount: 0,
+          conflictCount,
+          lastError: undefined,
+        })
       } else {
-        this.setState({ status: 'idle', online: true, failedCount: 0, lastError: undefined })
+        this.setState({ status: 'idle', online: true, failedCount: 0, conflictCount: 0, lastError: undefined })
       }
     } catch (e) {
       const message = this.formatError(e)
@@ -161,6 +172,67 @@ export class SyncEngine {
 
   async retryFailed() {
     await this.syncAll({ retryFailed: true })
+  }
+
+  /**
+   * Resolve a concurrent edit deliberately. "keep_local" re-queues the
+   * current local record after acknowledging the server version; "use_server"
+   * drops only the unsynced local edit and refreshes from the adapter.
+   */
+  async resolveConflict(
+    module: ModuleName,
+    localId: string,
+    strategy: 'keep_local' | 'use_server',
+  ): Promise<void> {
+    const table = db.table(module)
+    const record = await table.get(localId) as Record<string, unknown> | undefined
+    if (!record || record._syncStatus !== 'conflicted') {
+      throw new Error('这条同步冲突已不存在，请刷新后重试')
+    }
+
+    if (strategy === 'keep_local') {
+      const now = new Date().toISOString()
+      const remote = this.parseConflictServerData(record._conflictServerData)
+      const serverUpdatedAt = typeof remote?.updated_at === 'string' ? remote.updated_at : null
+      const serverDeleted = remote?.__deleted === true
+      await db.opQueue.where({ module, localId }).delete()
+      await table.update(localId, {
+        _syncStatus: 'pending_update',
+        _updatedAt: now,
+        // The learner has now seen the remote version. Save its revision as
+        // the new comparison point so the confirmed local choice can be sent.
+        _lastSyncedAt: serverUpdatedAt ?? record._lastSyncedAt ?? now,
+        _conflictAt: null,
+        _conflictServerData: null,
+        _syncError: null,
+        _syncFailedAt: null,
+      })
+      await db.opQueue.add({
+        module,
+        // A confirmed local choice can recreate an item deleted elsewhere;
+        // this is still explicit user intent, never an automatic resurrection.
+        opType: serverDeleted ? 'create' : 'update',
+        localId,
+        payload: JSON.stringify(record),
+        createdAt: now,
+      })
+      await this.refreshConflictCount()
+      await this.syncAll()
+      return
+    }
+
+    await db.opQueue.where({ module, localId }).delete()
+    await table.update(localId, {
+      _syncStatus: 'synced',
+      _conflictAt: null,
+      _conflictServerData: null,
+      _syncError: null,
+      _syncFailedAt: null,
+    })
+    const adapter = this.adapters.get(module)
+    if (!adapter) throw new Error(`未注册同步适配器: ${module}`)
+    await adapter.pullAll()
+    await this.refreshConflictCount()
   }
 
   getSnapshot = (): SyncState => this.state
@@ -201,18 +273,9 @@ export class SyncEngine {
             const conflictResult = await adapter.checkConflict(op)
             if (conflictResult.conflict) {
               console.warn(`[SyncEngine] Conflict detected for op ${op.id}, marking conflict`)
-              // 标记冲突而非直接覆盖，让用户决定
-              const table = db.table(op.module)
-              const record = await table.get(op.localId)
-              if (record) {
-                await table.update(op.localId, {
-                  _conflictAt: new Date().toISOString(),
-                  _conflictServerData: JSON.stringify(conflictResult.serverData),
-                  _syncStatus: 'pending_update', // 保持 pending 状态等待用户解决
-                  _syncError: null,
-                  _syncFailedAt: null,
-                })
-              }
+              // Do not overwrite either copy.  The explicit state leaves the
+              // final choice to the learner instead of silently using a clock.
+              await this.markOperationConflicted(op, conflictResult.serverData)
               await db.opQueue.delete(op.id!)
               success = true // 不算失败，而是已处理
               break
@@ -281,6 +344,19 @@ export class SyncEngine {
     }
   }
 
+  private async markOperationConflicted(op: QueuedOperation, serverData: unknown) {
+    const table = db.table(op.module)
+    const record = await table.get(op.localId)
+    if (!record) return
+    await table.update(op.localId, {
+      _conflictAt: new Date().toISOString(),
+      _conflictServerData: JSON.stringify(serverData ?? null),
+      _syncStatus: 'conflicted',
+      _syncError: null,
+      _syncFailedAt: null,
+    })
+  }
+
   private async clearOperationFailure(op: QueuedOperation) {
     if (op.opType === 'delete') return
 
@@ -304,6 +380,33 @@ export class SyncEngine {
     return '同步失败'
   }
 
+  private parseConflictServerData(value: unknown): Record<string, unknown> | null {
+    if (typeof value !== 'string' || !value) return null
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+    } catch {
+      return null
+    }
+  }
+
+  private async countConflicts(): Promise<number> {
+    let count = 0
+    const modules: ModuleName[] = ['notes', 'goals', 'goalTasks', 'ankiCards', 'wrongQuestions']
+    for (const module of modules) {
+      const table = db.table?.(module)
+      // The isolated engine test intentionally supplies only the queue mock.
+      if (!table?.toArray) continue
+      const rows = await table.toArray() as Array<{ _syncStatus?: string }>
+      count += rows.filter((row) => row._syncStatus === 'conflicted').length
+    }
+    return count
+  }
+
+  private async refreshConflictCount() {
+    this.setState({ conflictCount: await this.countConflicts() })
+  }
+
   // ── Internal ──
 
   private handleOnline = () => {
@@ -324,6 +427,7 @@ export class SyncEngine {
       prev.status !== this.state.status ||
       prev.online !== this.state.online ||
       prev.failedCount !== this.state.failedCount ||
+      prev.conflictCount !== this.state.conflictCount ||
       prev.lastError !== this.state.lastError
     ) {
       this.listeners.forEach((l) => l())

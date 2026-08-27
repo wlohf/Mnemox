@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,9 +17,11 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.services.review_scheduler import apply_review
 from app.services.learning_event_service import (
+    CanonicalEventType,
     record_review_completed_event,
     record_review_scheduled_event,
 )
+from app.services.coach_action_attempt_service import bind_coach_attempt_to_domain_event
 from app.services.projection_outbox_service import process_event_projection
 from app.utils.prompt_safety import wrap_untrusted_context
 
@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 class ReviewCompleteRequest(BaseModel):
     quality: int  # 0-5
+    coach_action_attempt_id: str | None = Field(None, max_length=40)
 
 
 class ChapterEnqueueRequest(BaseModel):
@@ -41,6 +44,29 @@ def _calc_mastery_status(quality: int) -> str:
     if quality >= 2:
         return "partial"
     return "not_mastered"
+
+
+async def _link_coach_review_attempt(
+    db: AsyncSession,
+    user_id: int,
+    attempt_id: str | None,
+    completed_event: dict[str, Any],
+) -> None:
+    """Link a review completion only after the canonical event was persisted."""
+
+    if not attempt_id:
+        return
+    try:
+        await bind_coach_attempt_to_domain_event(
+            db,
+            user_id,
+            attempt_id,
+            event_id=int(completed_event["id"]),
+            event_type=CanonicalEventType.REVIEW_COMPLETED,
+            outcome="completed",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: int) -> list[ReviewSchedule]:
@@ -349,6 +375,12 @@ async def complete_review_task(
             scheduler=schedule.algorithm,
             occurred_at=now,
         )
+        await _link_coach_review_attempt(
+            db,
+            int(current_user.id),
+            body.coach_action_attempt_id,
+            completed_event,
+        )
         await process_event_projection(
             db,
             user_id=int(current_user.id),
@@ -405,6 +437,12 @@ async def complete_review_task(
         scheduler=schedule.algorithm,
         concept_id=wrong.concept_id,
         occurred_at=now,
+    )
+    await _link_coach_review_attempt(
+        db,
+        int(current_user.id),
+        body.coach_action_attempt_id,
+        completed_event,
     )
     await process_event_projection(
         db,
@@ -518,6 +556,7 @@ class ReviewContentResponse(BaseModel):
 
 class ReviewSubmitRequest(BaseModel):
     answers: List[dict]
+    coach_action_attempt_id: str | None = Field(None, max_length=40)
 
 
 @router.get("/{task_id}/content")
@@ -768,6 +807,12 @@ async def submit_review_answers(
         scheduler=schedule.algorithm,
         normalized_score=score / 100.0,
         occurred_at=now,
+    )
+    await _link_coach_review_attempt(
+        db,
+        int(current_user.id),
+        body.coach_action_attempt_id,
+        completed_event,
     )
     await process_event_projection(
         db,

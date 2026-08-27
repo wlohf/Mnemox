@@ -641,10 +641,10 @@ function AgentSettings() {
   return (
     <div style={{ padding: '8px 0' }}>
       <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 10 }}>AI 学习教练提醒</div>
-      {row('主动提醒', '学习状态异常时自动弹出建议',
+      {row('页面内提醒', '仅在 Mnemox 打开时检查学习状态并显示建议',
         <Switch size="small" checked={interventionEnabled} onChange={setInterventionEnabled} />
       )}
-      {interventionEnabled && row('提醒间隔', '每隔多少分钟检查一次学习状态（默认30分钟）',
+      {interventionEnabled && row('检查间隔', '当前页面每隔多少分钟检查一次（默认30分钟）',
         <InputNumber
           size="small"
           min={5} max={240}
@@ -661,7 +661,7 @@ function AgentSettings() {
           {row('启用 Coach', '允许 Coach 根据事件生成低频学习 nudges',
             <Switch size="small" checked={coachPreferences.enabled} onChange={(enabled) => updateCoachPref({ enabled })} />
           )}
-          {row('定时评估', '按冷却间隔低频检查学习状态；默认关闭',
+          {row('定时评估', '开启后，服务器低频检查复习积压，并只在 Agent 页准备建议；不会自动执行，默认关闭',
             <Switch
               size="small"
               checked={coachPreferences.proactive_enabled}

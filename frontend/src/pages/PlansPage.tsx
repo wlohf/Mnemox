@@ -18,6 +18,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiFetch, getApiErrorMessage } from '../services/apiClient'
 import { generateDailyPlan } from '../services/learningApi'
 import { generateFeynmanProbe, type FeynmanProbeResult } from '../services/feynmanProbeApi'
+import { confirmCoachNudgeDraft, getCoachNudgeDraft, type CoachNudgeDraft } from '../services/coachApi'
 import { MarkdownLiveEditor } from '../components/MarkdownLiveEditor'
 import { PageShell } from '../components/PageShell'
 
@@ -85,6 +86,8 @@ export function PlansPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const routeDate = normalizeDateParam(searchParams.get('date'))
+  const coachAttemptId = searchParams.get('coach_attempt')?.trim() || null
+  const coachNudgeId = searchParams.get('coach_nudge')?.trim() || null
 
   const [plans, setPlans] = useState<Plan[]>([])
   const [loading, setLoading] = useState(false)
@@ -99,6 +102,9 @@ export function PlansPage() {
   const [quickRange, setQuickRange] = useState<QuickRange>('this_week')
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs]>([dayjs().subtract(90, 'day'), dayjs()])
   const [calendarValue, setCalendarValue] = useState<Dayjs>(dayjs(routeDate))
+  const [coachDraft, setCoachDraft] = useState<CoachNudgeDraft | null>(null)
+  const [coachDraftLoading, setCoachDraftLoading] = useState(false)
+  const [coachDraftConfirming, setCoachDraftConfirming] = useState(false)
 
   const [rangeStart, rangeEnd] = quickRange === 'custom' ? customRange : getRangeForQuick(quickRange)
 
@@ -122,8 +128,25 @@ export function PlansPage() {
   }, [loadPlans])
 
   useEffect(() => {
+    if (!coachNudgeId || !coachAttemptId) {
+      setCoachDraft(null)
+      return
+    }
+    let cancelled = false
+    setCoachDraftLoading(true)
+    void getCoachNudgeDraft(coachNudgeId).then((draft) => {
+      if (!cancelled) setCoachDraft(draft)
+    }).finally(() => {
+      if (!cancelled) setCoachDraftLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [coachAttemptId, coachNudgeId])
+
+  useEffect(() => {
     if (searchParams.get('date') !== routeDate) {
-      setSearchParams({ date: routeDate }, { replace: true })
+      const next = new URLSearchParams(searchParams)
+      next.set('date', routeDate)
+      setSearchParams(next, { replace: true })
     }
     if (routeDate !== activeDate) {
       setActiveDate(routeDate)
@@ -144,8 +167,10 @@ export function PlansPage() {
     setActiveDate(dateStr)
     setCalendarValue(dayjs(dateStr))
     setProbeResult(null)
-    setSearchParams({ date: dateStr }, { replace })
-  }, [setSearchParams])
+    const next = new URLSearchParams(searchParams)
+    next.set('date', dateStr)
+    setSearchParams(next, { replace })
+  }, [searchParams, setSearchParams])
 
   const upsertPlan = (plan: Plan) => {
     setPlans((prev) => {
@@ -204,6 +229,25 @@ export function PlansPage() {
       message.success(result.fallback ? '已生成基础追问' : '已生成明镜追问')
     } finally {
       setProbing(false)
+    }
+  }
+
+  const confirmCoachDraft = async () => {
+    if (!coachDraft || !coachNudgeId || !coachAttemptId) return
+    setCoachDraftConfirming(true)
+    try {
+      const confirmed = await confirmCoachNudgeDraft(coachNudgeId, coachAttemptId)
+      if (!confirmed) {
+        message.error('草案确认失败，请刷新后重试')
+        return
+      }
+      const planDate = String(confirmed.result.created?.plan?.date || coachDraft.draft.date || activeDate)
+      message.success(confirmed.result.message || '已确认并加入今日计划')
+      setCoachDraft(null)
+      setSearchParams({ date: normalizeDateParam(planDate) }, { replace: true })
+      void loadPlans()
+    } finally {
+      setCoachDraftConfirming(false)
     }
   }
 
@@ -297,6 +341,22 @@ export function PlansPage() {
       )}
       maxWidth={1540}
     >
+      {(coachDraft || coachDraftLoading) && (
+        <Alert
+          type="info"
+          showIcon
+          message={coachDraft?.nudge.title || 'Coach 已准备一份待确认草案'}
+          description={coachDraft
+            ? `将加入：${(coachDraft.draft.items || []).map((item) => item.title).filter(Boolean).join('；') || '最小学习计划'}。确认前不会写入计划。`
+            : '正在读取草案内容…'}
+          action={coachDraft ? (
+            <Button type="primary" size="small" loading={coachDraftConfirming} onClick={() => void confirmCoachDraft()}>
+              确认加入计划
+            </Button>
+          ) : undefined}
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <div className="mnemox-plan-workbench">
         <aside className="mnemox-plan-sidebar">
           <div className="mnemox-panel-heading">
