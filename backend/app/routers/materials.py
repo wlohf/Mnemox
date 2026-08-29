@@ -1,5 +1,6 @@
 """资料管理路由"""
 from pathlib import Path
+import zipfile
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ ALLOWED_CONTENT_TYPES = {
     ".md": {"text/markdown", "text/plain", "application/octet-stream"},
 }
 MAX_FILE_SIZE = max(1, int(settings.MATERIAL_UPLOAD_MAX_MB)) * 1024 * 1024
+MAX_DOCX_UNCOMPRESSED_SIZE = max(1, int(settings.MATERIAL_ARCHIVE_MAX_UNCOMPRESSED_MB)) * 1024 * 1024
 
 
 class MaterialResponse(BaseModel):
@@ -154,6 +156,37 @@ def _save_upload_with_hash(upload_file: UploadFile, abs_file_path: Path, max_siz
     return hasher.hexdigest(), total
 
 
+def _validate_material_file_signature(file_path: Path, extension: str) -> None:
+    """Reject disguised files and DOCX archive bombs before extracting text."""
+    try:
+        if extension == ".pdf":
+            with file_path.open("rb") as source:
+                signature = source.read(5)
+            if not signature.startswith(b"%PDF-"):
+                raise HTTPException(status_code=400, detail="PDF 文件内容无效")
+        elif extension == ".docx":
+            with zipfile.ZipFile(file_path) as archive:
+                infos = archive.infolist()
+                total_uncompressed = sum(max(0, int(info.file_size)) for info in infos)
+                names = {info.filename for info in infos}
+                if (
+                    len(infos) > 2_000
+                    or total_uncompressed > MAX_DOCX_UNCOMPRESSED_SIZE
+                    or "[Content_Types].xml" not in names
+                    or "word/document.xml" not in names
+                ):
+                    raise HTTPException(status_code=400, detail="DOCX 文件结构或解压后大小不符合限制")
+        elif extension in {".txt", ".md"}:
+            with file_path.open("rb") as source:
+                sample = source.read(8192)
+            if b"\x00" in sample:
+                raise HTTPException(status_code=400, detail="文本资料包含不支持的二进制内容")
+    except HTTPException:
+        raise
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise HTTPException(status_code=400, detail="文件内容与声明格式不匹配") from exc
+
+
 def _keyword_score(material: Material, query: str) -> float:
     q = query.lower()
     title = str(getattr(material, "title", "") or "")
@@ -262,6 +295,12 @@ async def upload_material(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    try:
+        _validate_material_file_signature(abs_file_path, file_extension)
+    except HTTPException:
+        abs_file_path.unlink(missing_ok=True)
+        raise
 
     # 在数据库里保存相对路径，便于迁移/部署
     repo_rel_path = to_repo_relative(abs_file_path)

@@ -113,6 +113,10 @@ async def _run_lightweight_migrations(conn):
     # CURRENT_TIMESTAMP is NOT allowed — use NULL or a literal string instead,
     # then backfill with UPDATE afterwards.
     other_migrations = [
+        ("users", "token_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "failed_login_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "login_failed_window_started_at", "DATETIME"),
+        ("users", "login_locked_until", "DATETIME"),
         ("user_memories", "material_id", "INTEGER"),
         ("user_memories", "memory_type", "VARCHAR(20) DEFAULT 'semantic'"),
         ("user_memories", "source_type", "VARCHAR(50)"),

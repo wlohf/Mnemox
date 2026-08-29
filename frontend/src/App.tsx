@@ -13,7 +13,6 @@ import { useThemeStore } from './stores/themeStore'
 import { useAuthStore } from './stores/authStore'
 import { usePomodoroStore } from './stores/pomodoroStore'
 import { checkSystemUpdate } from './services/systemApi'
-import { getToken } from './services/apiClient'
 import { PomodoroTicker } from './components/PomodoroTicker'
 
 const ObsidianLayout = lazy(() => import('./components/Layout/ObsidianLayout').then(m => ({ default: m.ObsidianLayout })))
@@ -85,7 +84,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (isAuthenticated && getToken()) {
+    if (isAuthenticated) {
       syncEngine.start(true)
       void refreshPomodoroRecords()
     } else {
@@ -237,7 +236,7 @@ function App() {
     >
       <AntdApp>
         <PomodoroTicker />
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <BrowserRouter>
           <Suspense fallback={<PageSpinner />}>
             <Routes>
               <Route path="/login" element={<LoginPage />} />

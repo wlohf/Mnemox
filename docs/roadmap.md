@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认、PostgreSQL 16 与 Windows smoke 已通过 GitHub CI；真实 Windows Electron E2E 待补） |
-| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐、SQL 时态记忆与 Coach 教学行为闭环均已实现；`20260826_14` 的本地 SQLite/前端验证已通过，仍待 PostgreSQL 与真实浏览器专项验收） |
+| Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐、SQL 时态记忆与 Coach 教学行为闭环均已实现；PostgreSQL 备份、恢复和临时库升级已实演，正式源库升级与真实浏览器专项验收仍待发布窗口） |
 | Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 原生 AgentKernel 与 opt-in 的“复习积压”服务端切片已实现；框架 Spike、调度扩展、自学习归因、知识巩固写回仍未开始 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 

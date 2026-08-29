@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -35,7 +36,17 @@ V13_BASELINE_REVISION = "20260801_00"
 PHASE1_HEAD_REVISION = "20260801_01"
 LEARNER_MODEL_REVISION = "20260804_01"
 PROJECTION_OUTBOX_REVISION = "20260804_02"
-CURRENT_HEAD_REVISION = "20260826_14"
+
+
+def _current_head_revision() -> str:
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    revision = ScriptDirectory.from_config(config).get_current_head()
+    assert revision is not None
+    return revision
+
+
+CURRENT_HEAD_REVISION = _current_head_revision()
 
 
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
@@ -278,6 +289,12 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
         assert "ix_pomodoros_coach_action_attempt_id" in {
             index["name"] for index in inspector.get_indexes("pomodoros")
         }
+        assert {
+            "token_version",
+            "failed_login_count",
+            "login_failed_window_started_at",
+            "login_locked_until",
+        }.issubset({column["name"] for column in inspector.get_columns("users")})
         assert "ix_retrieval_projections_user_status" in {
             index["name"] for index in inspector.get_indexes("retrieval_projections")
         }
@@ -347,6 +364,13 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             assert connection.execute(
                 text("SELECT mastery FROM concepts WHERE id = 1")
             ).scalar_one() == 72.5
+            assert connection.execute(
+                text(
+                    "SELECT token_version, failed_login_count, "
+                    "login_failed_window_started_at, login_locked_until "
+                    "FROM users WHERE id = 1"
+                )
+            ).one() == (0, 0, None, None)
             assert connection.execute(
                 text(
                     "SELECT evidence_type, evidence_category, score, reliability, source_type "
@@ -503,6 +527,10 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "fk_coach_action_attempts_nudge_id" in ddl
     assert "ALTER TABLE pomodoros ADD COLUMN coach_action_attempt_id" in ddl
     assert "CREATE INDEX ix_pomodoros_coach_action_attempt_id" in ddl
+    assert "ALTER TABLE users ADD COLUMN token_version" in ddl
+    assert "ALTER TABLE users ADD COLUMN failed_login_count" in ddl
+    assert "ALTER TABLE users ADD COLUMN login_failed_window_started_at" in ddl
+    assert "ALTER TABLE users ADD COLUMN login_locked_until" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_fact_review_valid" in ddl
     assert "CREATE UNIQUE INDEX uq_memory_declarations_user_fact_current" in ddl
 

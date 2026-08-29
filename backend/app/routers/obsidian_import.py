@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.paths import ensure_data_dirs, get_user_images_dir
-from app.routers.images import _detect_image_extension, _read_limited
+from app.routers.images import _detect_image_extension, _read_limited, _validate_image_content
 from app.database import get_db
 from app.auth import get_current_user
 from app.models.user import User
@@ -51,6 +51,7 @@ async def _save_attachment(file: UploadFile, user_id: int) -> tuple[str, str]:
         ext = "jpg"
     if detected_ext != ext:
         raise HTTPException(status_code=400, detail=f"附件 {original} 扩展名与实际内容不一致")
+    _validate_image_content(data)
 
     ensure_data_dirs()
     filename = f"{uuid.uuid4().hex}.{ext}"
@@ -126,6 +127,8 @@ async def import_obsidian_note(
     md_name = md_file.filename or ""
     if not md_name.lower().endswith(".md"):
         raise HTTPException(status_code=400, detail="只支持导入 .md Markdown 文件")
+    if len(attachments) > settings.MAX_OBSIDIAN_ATTACHMENTS:
+        raise HTTPException(status_code=400, detail=f"单次最多导入 {settings.MAX_OBSIDIAN_ATTACHMENTS} 个附件")
 
     # Read markdown content
     raw = await _read_limited(

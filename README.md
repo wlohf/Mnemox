@@ -234,7 +234,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 | AI 编排 | 自研 Multi-LLM Router |
 | RAG 框架 | RetrievalRouter + LlamaIndex + ChromaDB + SQL keyword / RRF |
 | 向量嵌入 | OpenAI text-embedding-3-small |
-| 文件解析 | PyPDF2 + python-docx |
+| 文件解析 | pypdf + python-docx |
 | 容器化 | Docker + Docker Compose |
 | 数据库迁移 | Alembic |
 

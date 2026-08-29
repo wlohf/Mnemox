@@ -1,6 +1,7 @@
 """资料管理服务层"""
 import hashlib
 import logging
+import asyncio
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -50,7 +51,18 @@ class MaterialService:
         """创建新资料"""
         content_status = "pending"
         if (content is None or content.strip() == "") and file_path:
-            extracted = extract_text(from_repo_relative(file_path))
+            try:
+                extracted = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        extract_text,
+                        from_repo_relative(file_path),
+                        settings.MATERIAL_EXTRACT_MAX_CHARS,
+                    ),
+                    timeout=settings.MATERIAL_EXTRACT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("资料文本提取超时，已跳过: %s", file_path)
+                extracted = None
             if extracted:
                 content = extracted
                 content_status = "extracted"

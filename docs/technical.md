@@ -273,11 +273,11 @@ SQL 概念图额外保存别名、来源证据、审核状态和操作审计。�
 
 SQL 时态记忆以 `user_id + fact_key` 识别事实，并使用条件为 `review_status = 'confirmed' AND valid_to IS NULL AND fact_key != ''` 的部分唯一索引保证同一事实只有一条开放的已确认声明。自动矛盾值进入 `staged` 并关联 `conflicts_with_id`；旧事实在人工确认前保持生效。用户接受候选会在同一事务内关闭旧事实并设置 `supersedes_id`；拒绝、纠错和到期分别保留 `resolution_reason`。过期值在统一检索、聊天、Coach、Agent、反馈排序与学习快照的 SQL 入口均被过滤；用户纠错、删除、替代或失效会移除引用旧事实的 `agent_core_profile`。完整契约和 Graphiti 暂缓依据见 [SQL 时态记忆生命周期 ADR](superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md)。
 
-迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明，`20260822_10` 增加资料检索投影及版本化 SQL chunk 清单，`20260822_11` 增加概念审核、别名、来源证据、操作审计及学习状态计数，`20260823_12` 增加记忆事实键、冲突关联、处理原因、历史重复清理和当前事实部分唯一索引，`20260826_13` 增加 Coach 建议开始与未继续的反馈统计，`20260826_14` 新增 Coach 行动尝试及番茄钟关联字段。SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态；PostgreSQL 只通过 Alembic。
+迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明，`20260822_10` 增加资料检索投影及版本化 SQL chunk 清单，`20260822_11` 增加概念审核、别名、来源证据、操作审计及学习状态计数，`20260823_12` 增加记忆事实键、冲突关联、处理原因、历史重复清理和当前事实部分唯一索引，`20260826_13` 增加 Coach 建议开始与未继续的反馈统计，`20260826_14` 新增 Coach 行动尝试及番茄钟关联字段，`20260827_15` 增加账号会话版本与持久登录节流状态。SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态；PostgreSQL 只通过 Alembic。
 
-默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260826_14`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。完整演练和回滚步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)。
+默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260827_15`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。早期步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)，当前备份、恢复和升级证据见 [PostgreSQL 发布演练报告](postgres-release-rehearsal-2026-08-28.md)。
 
-一次性 PostgreSQL 16 演练库已从 v1.3 基线升级并验证早期 Phase 1 链路：2 个用户、2 个概念和 2 条学习事件保留，生成 2 条可靠度 0.35 的 legacy 证据和 2 条状态；mastery/score 分别为 72.5/0.725 与 41/0.41。演练还完成 1 条 outbox 在线消费，并核对用户、概念和事件外键均为 `ON DELETE CASCADE`。当前 CI 为每次变更启动 PostgreSQL 16 空库，通过生产入口升级到当前 head `20260826_14`，验收真实 `SKIP LOCKED`、共享策略升级、双 worker exactly-once 投影和独立心跳，再执行 `alembic check`。本地已完成 `20260826_14` SQLite 初始化、完整回归、构建和服务健康检查；PR #8 至 PR #11 已通过此前 head 的真实 PostgreSQL 门禁，本次 Coach 迁移仍需重新运行，不能标为已通过。正式发布窗口仍需在快照保护下核对生产数据、Vault、记忆声明、检索投影 schema 和回滚准备；生产回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。
+一次性 PostgreSQL 16 演练库已从历史版本升级并验证 Phase 1 数据保留：用户、资料、笔记、概念和学习事件保留，可靠度 0.35 的 legacy 证据与状态按预期生成。CI 除启动 PostgreSQL 16 空库、验收真实 `SKIP LOCKED`、共享策略升级、双 worker exactly-once、独立心跳和 `alembic check` 外，还会从 `20260801_01` 写入固定历史数据，执行 custom-format dump/restore，再通过生产入口升级到代码 head 并核对数据。2026-08-28 当前部署的 `20260826_14` dump 已在一次性恢复库成功升级到 `20260827_15`，schema drift 为零且稳定数据量不变；临时库已删除，源库仍保持 `20260826_14`。正式发布窗口仍需在快照保护下显式升级源库，并核对生产数据、Vault、记忆声明、检索投影 schema 和回滚准备；生产回滚依赖升级前快照与应用版本同步回退，不使用自动 downgrade。
 
 ### 6.4 事件与投影流
 
@@ -330,7 +330,7 @@ Docker 场景使用根目录 `docker-compose.yml`。Windows 本地体验可使�
 
 ### 8.2 数据库迁移
 
-PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260826_14`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
+PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线和 Phase 1 增量组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260827_15`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
 
 ### 8.3 验证命令
 
@@ -359,13 +359,13 @@ npm test
 
 发布前还应执行 `git diff --check`，并验证版本号、发布清单和桌面安装包资产保持一致。
 
-CI 还会在独立 PostgreSQL 16 服务库上依次执行 `python run_migrations.py`、`python -m pytest -q tests/acceptance/test_postgres_release_gate.py` 与 `python -m alembic check`。该用例只有在 `POSTGRES_ACCEPTANCE_DATABASE_URL` 明确指向 `postgresql+asyncpg` 时运行，普通 SQLite 单元套件会跳过它。
+CI 还会在独立 PostgreSQL 16 服务库上执行空库迁移、`test_postgres_release_gate.py`、历史库 dump/restore/升级演练与 `alembic check`。历史门禁固定验证用户、资料、笔记、概念、事件、legacy learner evidence 和当前 schema；两个验收文件只有在对应环境变量明确指向 `postgresql+asyncpg` 时运行，普通 SQLite 单元套件会跳过它们。
 
 ## 9. 当前技术债与优化方向
 
 | 优先级 | 事项 | 原因 |
 | --- | --- | --- |
-| P0 | 正式 PostgreSQL 发布升级 | 此前 PostgreSQL 16 空库迁移与多 worker 门禁已在 GitHub CI 通过；本次 `20260826_14` 新增迁移需重新验证，正式库仍需在发布窗口完成快照、升级、生产数据/Vault/记忆/检索投影 schema 核对与回滚准备。 |
+| P0 | 正式 PostgreSQL 发布升级 | 空库、多 worker、历史数据 dump/restore 和 `20260826_14 -> 20260827_15` 临时库升级均已具备自动门禁并完成本地实演；正式源库仍需在发布窗口完成冻结写入、快照、显式升级、生产数据/Vault/记忆/检索投影 schema 核对与回滚准备。 |
 | P0 | 真实关键路径 E2E | Chromium 草案取消/确认门禁与 Windows smoke 已在 GitHub CI 通过；仍需真实后端集成和 Windows Electron 启动/安装包 E2E。 |
 | P0 | 多用户越权审计与回归测试 | 产品存在多领域详情、写入和文件访问接口，必须持续验证资源归属。 |
 | P0 | 统一 Prompt Injection 防护 | RAG、笔记、搜索和工具返回均会进入模型上下文。 |

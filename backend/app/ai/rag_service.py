@@ -13,6 +13,7 @@ import httpx
 
 from app.config import settings
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
+from app.utils.outbound_url import validate_ai_provider_url
 from app.utils.paths import get_chromadb_dir, get_data_dir
 
 
@@ -143,7 +144,9 @@ class OpenAICompatibleEmbedding:
             "Content-Type": "application/json",
         }
 
-        with httpx.Client(timeout=self.timeout) as client:
+        # A validated provider URL must not be allowed to redirect to a
+        # different host after the initial DNS/IP safety check.
+        with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
             response = client.post(self.embeddings_url, headers=headers, json=payload)
 
         try:
@@ -303,6 +306,8 @@ class RAGService:
                 return
 
             cfg = self._resolve_config()
+            if cfg["embedding_enabled"]:
+                cfg["base_url"] = await validate_ai_provider_url(cfg["base_url"])
 
             def _init():
                 from llama_index.core.node_parser import SentenceSplitter
@@ -351,6 +356,8 @@ class RAGService:
         similarity_threshold: Optional[float] = None,
     ) -> None:
         """使用新的 embedding 配置重建模型，不影响 ChromaDB 数据。"""
+        if api_key:
+            base_url = await validate_ai_provider_url(base_url)
         new_chunk_size = int(chunk_size or getattr(self, '_chunk_size', settings.RAG_CHUNK_SIZE))
         new_chunk_overlap = int(chunk_overlap or getattr(self, '_chunk_overlap', settings.RAG_CHUNK_OVERLAP))
         old_base_url = (getattr(self, '_current_base_url', "") or "").rstrip("/")

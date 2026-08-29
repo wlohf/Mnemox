@@ -150,11 +150,13 @@ class AIProviderFactory:
                 api_key = decrypt_secret(row.api_key)
                 if not api_key:
                     raise ValueError(f"{row.display_name or row.provider_name} API Key 未配置")
+                from app.utils.outbound_url import validate_ai_provider_url
+                safe_base_url = await validate_ai_provider_url(row.base_url)
                 return AIProviderFactory.create_provider_from_settings(
                     provider_name=row.provider_name,
                     api_key=api_key,
                     model=model or row.model,
-                    base_url=row.base_url,
+                    base_url=safe_base_url,
                     max_context_tokens=row.max_context_tokens,
                     max_output_tokens=row.max_output_tokens,
                 )

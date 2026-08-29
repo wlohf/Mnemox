@@ -23,7 +23,6 @@ import { getApiErrorMessage, withAuthQuery } from '../services/apiClient'
 import { uploadBackgroundImageStrict } from '../services/imageApi'
 import {
   checkForDesktopUpdate,
-  downloadInstallerAndRunDesktopUpdate,
   downloadDesktopUpdate,
   getDesktopUpdateState,
   getDesktopUpdateSettings,
@@ -372,21 +371,6 @@ function SystemSettings() {
     if (!url) {
       message.warning('当前版本暂无可用下载链接')
       return
-    }
-
-    if (desktopUpdaterAvailable) {
-      try {
-      const nextState = await downloadInstallerAndRunDesktopUpdate({
-        url,
-        version: displayedLatestVersion,
-      })
-      setDesktopUpdateState(nextState)
-        message.success('开始下载更新，下载完成后将启动安装程序')
-        return
-      } catch (error) {
-        message.error(getApiErrorMessage(error, '下载并安装更新失败，请稍后再试'))
-        return
-      }
     }
 
     const openUrl = getUpdateOpenUrl(updateInfo)

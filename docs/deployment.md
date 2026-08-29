@@ -60,13 +60,37 @@ docker compose -f docker-compose.yml -f docker-compose.public.yml up -d --build
 
 脚本会生成 PostgreSQL custom-format dump 和对应 SHA-256 校验文件，不打印任何密钥。恢复是破坏性操作，必须先在独立的非生产数据库验证 dump，再经明确发布决定执行；不要在日常更新命令中自动恢复或删除备份。
 
+每次备份会生成三个权限受限的文件：`.dump`、`.dump.sha256` 和 `.dump.metadata.json`。元数据只包含 PostgreSQL/Alembic 版本、public 表数量和四类稳定数据的聚合计数，不包含连接串、密钥或业务正文。脚本在发布文件前会先用 `pg_restore --list` 校验 custom archive 结构；校验文件使用可移动的相对文件名，因此整组文件迁移目录后仍可复验。
+
 仓库还提供只用于**恢复演练**的验证脚本；它会在同一个 PostgreSQL 容器中创建一个名称以 `mnemox_restore_verify_` 开头的临时库，恢复该 dump、检查用户表、表数量和 Alembic 版本，然后自动删除临时库。它不会读取、修改或替换正式 `study_assistant` 数据库：
 
 ```bash
 ./scripts/verify_postgres_backup.sh /srv/backups/mnemox/mnemox-postgres-20260827T000000Z.dump
 ```
 
-这只能证明备份可恢复，不能替代“把恢复数据切换为正式服务”的人工发布决定。
+加上 `--upgrade` 后，脚本会把当前工作区的应用模型、Alembic 链和生产迁移入口挂载到一次性后端容器，只针对临时恢复库执行升级与 `alembic check`，并比较升级前后的 `users/materials/notes/learning_events` 行数。临时库无论成功或失败都会清理，源库不会升级：
+
+```bash
+./scripts/verify_postgres_backup.sh --upgrade /srv/backups/mnemox/mnemox-postgres-20260827T000000Z.dump
+```
+
+发布前通常直接运行组合入口；它依次创建新备份并完成上述恢复与升级演练：
+
+```bash
+./scripts/rehearse_postgres_release.sh /srv/backups/mnemox
+```
+
+演练通过只能证明当前 dump 可恢复、当前迁移可在副本上完成，不能替代“把新版本切换为正式服务”的发布决定。正式升级仍应先冻结写入并停止旧后端，再构建新镜像、显式运行迁移入口，最后启动服务：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.public.yml build backend frontend
+docker compose -f docker-compose.yml -f docker-compose.public.yml stop backend
+./scripts/rehearse_postgres_release.sh /srv/backups/mnemox
+docker compose -f docker-compose.yml -f docker-compose.public.yml run --rm --no-deps backend python run_migrations.py
+docker compose -f docker-compose.yml -f docker-compose.public.yml up -d
+```
+
+任何一步失败都不要让旧应用连接已部分升级的库；保留失败日志和备份，按发布决定从独立恢复库切换连接并同步回退应用版本。项目不依赖自动 Alembic downgrade。
 
 ## 验收
 

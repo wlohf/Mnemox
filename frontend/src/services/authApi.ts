@@ -1,4 +1,4 @@
-import { apiFetch, setToken, getToken } from './apiClient'
+import { apiFetch } from './apiClient'
 
 export interface UserInfo {
   id: number
@@ -38,6 +38,7 @@ export async function login(username: string, password: string): Promise<string>
   const res = await fetch('/api/auth/login', {
     method: 'POST',
     body,
+    credentials: 'same-origin',
   })
 
   if (!res.ok) {
@@ -46,7 +47,6 @@ export async function login(username: string, password: string): Promise<string>
   }
 
   const data = await res.json()
-  setToken(data.access_token)
   return data.access_token
 }
 
@@ -59,6 +59,7 @@ export async function register(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, email, password }),
+    credentials: 'same-origin',
   })
 
   if (!res.ok) {
@@ -70,7 +71,18 @@ export async function register(
 }
 
 export async function getMe(): Promise<UserInfo | null> {
-  const token = getToken()
-  if (!token) return null
-  return await apiFetch<UserInfo>('/api/auth/me')
+  try {
+    return await apiFetch<UserInfo>('/api/auth/me')
+  } catch {
+    return null
+  }
+}
+
+export async function logoutSession(): Promise<void> {
+  try {
+    await apiFetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // The browser may already have an expired cookie; local logout should
+    // still complete in that case.
+  }
 }

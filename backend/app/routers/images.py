@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import html
+import os
+import tempfile
 import uuid
+from io import BytesIO
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from PIL import Image, UnidentifiedImageError
 
 from app.config import settings
 from app.utils.paths import ensure_data_dirs, get_user_images_dir
@@ -49,7 +54,7 @@ async def _read_limited(
     error_detail: str | None = None,
 ) -> bytes:
     detail = error_detail or f"图片大小不能超过 {settings.IMAGE_UPLOAD_MAX_MB} MB"
-    chunks: list[bytes] = []
+    data = bytearray()
     total = 0
     while True:
         chunk = await file.read(1024 * 1024)
@@ -58,8 +63,35 @@ async def _read_limited(
         total += len(chunk)
         if max_size > 0 and total > max_size:
             raise HTTPException(status_code=400, detail=detail)
-        chunks.append(chunk)
-    return b"".join(chunks)
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _validate_image_content(data: bytes) -> None:
+    """Verify that image bytes can be parsed without accepting pixel bombs."""
+    try:
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+            if width < 1 or height < 1 or width * height > settings.MAX_IMAGE_PIXELS:
+                raise HTTPException(status_code=400, detail="图片像素尺寸超过限制")
+            image.verify()
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="文件内容不是可用图片") from exc
+
+
+def _validate_image_path(path: Path) -> None:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            if width < 1 or height < 1 or width * height > settings.MAX_IMAGE_PIXELS:
+                raise HTTPException(status_code=400, detail="图片像素尺寸超过限制")
+            image.verify()
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="文件内容不是可用图片") from exc
 
 
 async def _save_image(file: UploadFile, user_id: int, max_size: int = MAX_SIZE) -> dict:
@@ -67,21 +99,43 @@ async def _save_image(file: UploadFile, user_id: int, max_size: int = MAX_SIZE) 
     content_type = (file.content_type or "").lower()
     if content_type and not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="上传内容类型必须是图片")
-    data = await _read_limited(file, max_size)
-    detected_ext = _detect_image_extension(data)
-    if detected_ext is None:
-        raise HTTPException(status_code=400, detail="文件内容不是有效图片")
-    if ext in {"jpg", "jpeg"}:
-        ext = "jpg"
-    if detected_ext != ext:
-        raise HTTPException(status_code=400, detail="图片扩展名与实际文件内容不一致")
-
     ensure_data_dirs()
-    filename = f"{uuid.uuid4().hex}.{ext}"
     dest_dir = get_user_images_dir(user_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / filename
-    dest.write_bytes(data)
+    temp_path: Path | None = None
+    total = 0
+    signature = bytearray()
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".upload-", suffix=".tmp", dir=dest_dir, delete=False
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if max_size > 0 and total > max_size:
+                    raise HTTPException(status_code=400, detail=f"图片大小不能超过 {settings.IMAGE_UPLOAD_MAX_MB} MB")
+                if len(signature) < 16:
+                    signature.extend(chunk[: 16 - len(signature)])
+                temp_file.write(chunk)
+
+        detected_ext = _detect_image_extension(bytes(signature))
+        if detected_ext is None:
+            raise HTTPException(status_code=400, detail="文件内容不是有效图片")
+        if ext in {"jpg", "jpeg"}:
+            ext = "jpg"
+        if detected_ext != ext:
+            raise HTTPException(status_code=400, detail="图片扩展名与实际文件内容不一致")
+        _validate_image_path(temp_path)
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        dest = dest_dir / filename
+        os.replace(temp_path, dest)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
     url = f"/api/uploads/images/{user_id}/{filename}"
     original = file.filename or filename
@@ -115,8 +169,8 @@ async def upload_background_image(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
 ):
-    """上传自定义背景图；不设置应用级文件大小上限。"""
-    return await _save_image(file, int(current_user.id), max_size=0)
+    """上传自定义背景图，使用与普通图片相同的安全限制。"""
+    return await _save_image(file, int(current_user.id))
 
 
 @router.post("/upload-batch")

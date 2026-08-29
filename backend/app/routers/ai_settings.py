@@ -17,6 +17,7 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.utils.ai_errors import format_ai_provider_error
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
+from app.utils.outbound_url import validate_ai_provider_url
 from app.models.search_settings import AISearchSettings
 from app.services.search_settings_service import (
     get_or_create_search_settings,
@@ -604,12 +605,13 @@ async def create_provider(
         base_name = f"{provider_type}-{base_name}" if base_name else provider_type
     provider_name = await _unique_provider_name(db, current_user.id, base_name)
 
+    base_url = await validate_ai_provider_url(body.base_url)
     row = AIProviderSetting(
         user_id=current_user.id,
         provider_name=provider_name,
         display_name=display_name,
         api_key=encrypt_secret(body.api_key) if body.api_key else "",
-        base_url=body.base_url or "",
+        base_url=base_url,
         model=body.model or "",
         available_models=_dump_available_models(body.available_models or [], body.model or ""),
         max_context_tokens=_clamp_token_limit(body.max_context_tokens),
@@ -644,7 +646,7 @@ async def update_provider(
     if body.api_key is not None:
         row.api_key = encrypt_secret(body.api_key) if body.api_key else ""
     if body.base_url is not None:
-        row.base_url = body.base_url
+        row.base_url = await validate_ai_provider_url(body.base_url)
     if body.model is not None:
         row.model = body.model
         if row.available_models:
@@ -693,6 +695,7 @@ async def search_provider_models(
         raise HTTPException(status_code=400, detail="API Key 未配置，无法搜索模型")
 
     try:
+        base_url = await validate_ai_provider_url(base_url)
         discovered = await _fetch_model_catalog(row.provider_name, api_key, base_url, model_hint)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"搜索模型失败：{format_ai_provider_error(e)}")
@@ -815,6 +818,7 @@ async def test_provider(
         return TestResult(success=False, message="API Key 未配置", capability="chat", provider_name=row.provider_name, model=model)
 
     try:
+        base_url = await validate_ai_provider_url(base_url)
         from app.ai.factory import AIProviderFactory
         provider = AIProviderFactory.create_provider_from_settings(
             provider_name=row.provider_name,

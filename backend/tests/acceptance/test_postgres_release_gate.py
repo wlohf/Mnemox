@@ -11,7 +11,10 @@ import os
 import unittest
 import uuid
 from datetime import datetime
+from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -32,8 +35,20 @@ from app.services.projection_outbox_worker import ProjectionOutboxWorker
 
 
 DATABASE_URL = os.environ.get("POSTGRES_ACCEPTANCE_DATABASE_URL", "").strip()
-EXPECTED_ALEMBIC_HEAD = "20260826_14"
 POSTGRES_URL_CONFIGURED = DATABASE_URL.startswith("postgresql+asyncpg://")
+
+
+def _expected_alembic_head() -> str:
+    backend_dir = Path(__file__).resolve().parents[2]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    revision = ScriptDirectory.from_config(config).get_current_head()
+    if revision is None:
+        raise RuntimeError("Alembic revision graph has no head")
+    return revision
+
+
+EXPECTED_ALEMBIC_HEAD = _expected_alembic_head()
 
 
 @unittest.skipUnless(
@@ -91,10 +106,28 @@ class PostgresReleaseGateTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             server_version = int(await session.scalar(text("SHOW server_version_num")))
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
+            user_columns = set(
+                (
+                    await session.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_schema = 'public' AND table_name = 'users'"
+                        )
+                    )
+                ).scalars()
+            )
 
         self.assertGreaterEqual(server_version, 160000)
         self.assertLess(server_version, 170000)
         self.assertEqual(revision, EXPECTED_ALEMBIC_HEAD)
+        self.assertTrue(
+            {
+                "token_version",
+                "failed_login_count",
+                "login_failed_window_started_at",
+                "login_locked_until",
+            }.issubset(user_columns)
+        )
 
     async def test_global_consumer_skips_a_locked_row_and_keeps_working(self) -> None:
         locked_event_id, available_event_id = await self._seed_projection_events(

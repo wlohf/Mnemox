@@ -398,11 +398,9 @@ async def get_uploaded_file(file_path: str, request: Request):
     from app.database import async_session_maker
 
     auth_header = request.headers.get("Authorization", "")
-    token = ""
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-    else:
-        token = (request.query_params.get("token") or "").strip()
+    token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else ""
+    if not token:
+        token = request.cookies.get(settings.AUTH_COOKIE_NAME, "")
 
     if not token:
         raise HTTPException(
@@ -429,7 +427,7 @@ async def get_uploaded_file(file_path: str, request: Request):
         # 与不存在同样返回 404，避免泄露他人文件是否存在
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    return FileResponse(target)
+    return FileResponse(target, headers={"Cache-Control": "private, no-store"})
 
 
 def _resolve_frontend_dist_dir():

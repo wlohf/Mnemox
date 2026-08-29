@@ -1,5 +1,5 @@
 import { db, type ModuleName, type QueuedOperation } from '../db/studyDb'
-import { getToken, isNetworkOnline } from '../services/apiClient'
+import { isNetworkOnline } from '../services/apiClient'
 
 // ── Adapter interface ──
 
@@ -54,7 +54,7 @@ export class SyncEngine {
   // ── Lifecycle ──
 
   start(isAuthenticated = true) {
-    this.authenticated = isAuthenticated && !!getToken()
+    this.authenticated = isAuthenticated
     if (!this.authenticated) {
       this.stop()
       return
@@ -118,7 +118,7 @@ export class SyncEngine {
   }
 
   private async runSync(options: SyncOptions = {}) {
-    if (!this.authenticated || !getToken()) {
+    if (!this.authenticated) {
       this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, conflictCount: 0, lastError: undefined })
       return
     }
@@ -411,7 +411,7 @@ export class SyncEngine {
 
   private handleOnline = () => {
     this.setState({ status: 'idle', online: true })
-    if (this.authenticated && getToken()) {
+    if (this.authenticated) {
       void this.syncAll()
     }
   }

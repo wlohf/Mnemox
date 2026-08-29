@@ -2,7 +2,7 @@
 
 > 状态：维护中
 >
-> 更新日期：2026-08-26
+> 更新日期：2026-08-28
 >
 > 当前发布版本：v1.3.0
 > 当前阶段：Phase 1 收口 + Phase 2 单场景纵向切片；统一检索、资料生命周期、可审核概念图谱、可解释学习推荐、SQL 时态记忆和 Coach 教学行为闭环已完成代码实现。AgentRuntime 已开始“复习积压”单场景的 opt-in 服务端切片，仍待真实用户行为验收后扩大范围。
@@ -37,10 +37,10 @@ Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach �
 | 概念图谱 | SQL 概念、别名、五类关系、来源摘录、审核和操作审计已接入；支持资料更新/删除清理、人工身份治理、错题回填、先修缺口和跨用户/环路拦截。 |
 | 学习推荐 | 强弱证据分别约束掌握与风险；状态保存答题/正确/提示计数，并结合 FSRS、目标、错误和已确认先修生成只读、逐项可解释的下一步建议。 |
 | 时态记忆 | 稳定事实键、当前事实部分唯一约束、历史重复回填、冲突审核、旧事实保留、确认替代、纠错原因、到期失效、全入口过滤、派生画像删除和跨用户隔离均已实现。 |
-| 数据库 | SQLite lightweight migration 与 Alembic 当前 head 为 `20260826_14`；新增 `coach_action_attempts` 与番茄钟关联字段，保留旧 SQLite 兼容路径。本地 SQLite 初始化、迁移和启动已复验；Coach 闭环仍待 PostgreSQL CI 复验。 |
+| 数据库 | SQLite lightweight migration 与 Alembic 代码 head 为 `20260827_15`；真实 PostgreSQL 16 dump 已恢复到临时库并从 `20260826_14` 升级到 head，`alembic check` 与稳定计数通过；非空 `20260801_01` 历史数据的 dump/restore/head 升级也已本地实演并加入 CI。正式源库仍为 `20260826_14`，等待发布窗口显式升级。 |
 | 前端 | 资料侧栏展示检索投影状态；`/mastery` 展示概念与学习建议；`/memory` 展示事实冲突对照、候选审核、有效期、纠错原因和跨投影历史；`/agent` 可生成不写入数据的本周复盘。 |
 | 主动 AgentRuntime v0 | PostgreSQL 服务端低频 worker 只扫描已明确 opt-in 的用户；首个场景为复习积压，建议仅进入 Agent 面板，并持久化最小运行记录以便回放。 |
-| 本地回归 | 后端 `414 passed, 8 skipped, 53 subtests passed`；前端 `25 files / 85 tests passed`；桌面端 `21 passed`；SQLite 初始化/迁移、后端健康检查、生产构建、类型检查、lint 和浏览器自测通过。 |
+| 本地回归 | 后端当前 `436 passed, 9 skipped, 58 subtests passed`；前端上次记录为 `25 files / 85 tests passed`；桌面端上次记录为 `21 passed`；本轮新增 PostgreSQL 16 空库、非空历史升级、dump/restore 与 schema drift 专项均通过。 |
 | 已通过 CI | PR #8、PR #9、PR #10 与 [PR #11](https://github.com/wlohf/Mnemox/pull/11) 均已通过 Backend、Frontend、PostgreSQL 16、多 worker、Chromium、Windows smoke 和 Repository integrity；新增时态记忆迁移已完成真实 PostgreSQL 16 验收。 |
 
 ## 3. 已通过的远程验收
@@ -96,6 +96,6 @@ python evaluate_retrieval.py --backend all --include-qdrant --summary-only
 
 1. **Coach 教学行为闭环验收**：本地 SQLite 迁移、番茄钟/计划确认归因、回放单测和前端验证已通过；继续复验公网真实浏览器三条路径，积累真实样本，不把相关性误称为因果。
 2. **AgentRuntime 单场景验收**：当前先验证 opt-in 的“复习积压 → Agent 面板建议 → 用户行动/反馈 → 回放”链路；不要扩大到自动执行、通用多 Agent 或桌面推送。
-3. **生产验收与版本发布**：完成正式 PostgreSQL 升级、备份回滚、真实 Windows Electron 启动/安装/升级 E2E、真实 Vault 冲突与删除、版本号、tag、Release 和安装包。
+3. **生产验收与版本发布**：PostgreSQL 备份、一次性恢复和升级演练已自动化并完成本地真实环境实演；继续完成正式源库升级、真实 Windows Electron 启动/安装/升级 E2E、真实 Vault 冲突与删除、版本号、tag、Release 和安装包。
 
 当前不进入多 Agent、语音、MCP 或其他生态扩展。

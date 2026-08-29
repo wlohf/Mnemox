@@ -78,6 +78,20 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_PER_MINUTE: int = 120
     AUTH_RATE_LIMIT_PER_MINUTE: int = 10
+    RATE_LIMIT_MAX_BUCKETS: int = Field(default=10_000, ge=100, le=1_000_000)
+    # Forwarded headers are untrusted by default. Public Docker deployment
+    # explicitly enables this only because the backend has no public port.
+    TRUST_PROXY_HEADERS: bool = False
+    TRUSTED_PROXY_HOPS: int = Field(default=0, ge=0, le=5)
+    # Public deployments must not let account-configured AI endpoints reach
+    # loopback/private infrastructure. Local/desktop development remains
+    # allowed unless this is explicitly disabled there too.
+    ALLOW_PRIVATE_AI_ENDPOINTS: bool = False
+    # RAG embedding configuration is process-wide. Public deployments must
+    # explicitly name the account(s) allowed to alter it; an empty list safely
+    # disables browser-side mutation while env-based RAG configuration remains
+    # available.
+    RAG_SETTINGS_ADMIN_USERNAMES: str = ""
     AGENT_LLM_PLANNER_TIMEOUT_SECONDS: float = 12.0
     
     # 服务器配置
@@ -118,7 +132,16 @@ class Settings(BaseSettings):
     # Auth
     SECRET_KEY: str = "change-me-in-production"
     AI_KEY_ENCRYPTION_SECRET: str = ""
-    ACCESS_TOKEN_EXPIRE_HOURS: int = 24
+    ACCESS_TOKEN_EXPIRE_HOURS: int = Field(default=12, ge=1, le=168)
+    AUTH_COOKIE_NAME: str = "mnemox_access_token"
+    AUTH_PASSWORD_MIN_LENGTH: int = Field(default=12, ge=8, le=128)
+    AUTH_ACCOUNT_MAX_FAILURES: int = Field(default=5, ge=3, le=20)
+    AUTH_ACCOUNT_WINDOW_SECONDS: int = Field(default=900, ge=60, le=86_400)
+    MAX_IMAGE_PIXELS: int = Field(default=40_000_000, ge=1_000_000, le=250_000_000)
+    MAX_OBSIDIAN_ATTACHMENTS: int = Field(default=20, ge=1, le=200)
+    MATERIAL_EXTRACT_MAX_CHARS: int = Field(default=2_000_000, ge=10_000, le=20_000_000)
+    MATERIAL_EXTRACT_TIMEOUT_SECONDS: float = Field(default=20.0, ge=2.0, le=300.0)
+    MATERIAL_ARCHIVE_MAX_UNCOMPRESSED_MB: int = Field(default=50, ge=5, le=500)
 
     # App Update
     APP_VERSION: str = "1.3.0"

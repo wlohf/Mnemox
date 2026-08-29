@@ -1,4 +1,3 @@
-import { getToken } from './apiClient'
 import type { WebSearchMode } from './aiSettingsApi'
 
 export interface ChatMessage {
@@ -129,15 +128,14 @@ export async function sendMessageStream(
         payload.web_search_provider_name = webSearchProviderName.trim()
       }
     }
-    const token = getToken()
     const res = await fetch('/api/chat/send', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(payload),
       signal,
+      credentials: 'same-origin',
     })
 
     if (!res.ok) {

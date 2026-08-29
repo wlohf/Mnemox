@@ -22,6 +22,7 @@ const { createDesktopAuthStore } = require('./desktopAuth')
 const { normalizeCoachNotificationPayload } = require('./desktopCoach')
 const { createDesktopPreferenceStore } = require('./desktopPreferences')
 const { createReminderManager } = require('./desktopReminder')
+const { isSafeExternalUrl, isTrustedRendererUrl } = require('./desktopSecurity')
 const { createTrayIcon } = require('./trayIcon')
 
 app.setName('Mnemox')
@@ -156,8 +157,18 @@ function createWindow() {
   })
 
   mainWindow.loadURL(`http://127.0.0.1:${backendPort}/dashboard`)
+  const preventUntrustedNavigation = (event, url) => {
+    if (!isTrustedRendererUrl(url, backendPort)) {
+      event.preventDefault()
+    }
+  }
+  mainWindow.webContents.on('will-navigate', preventUntrustedNavigation)
+  mainWindow.webContents.on('will-redirect', preventUntrustedNavigation)
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url).catch(() => {})
+    }
     return { action: 'deny' }
   })
   mainWindow.on('close', (event) => {
@@ -165,6 +176,20 @@ function createWindow() {
     if (!tray) return
     event.preventDefault()
     mainWindow.hide()
+  })
+}
+
+function assertTrustedIpcSender(event) {
+  const senderUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || ''
+  if (!isTrustedRendererUrl(senderUrl, backendPort)) {
+    throw new Error('拒绝来自非 Mnemox 本地页面的桌面请求')
+  }
+}
+
+function handleTrustedIpc(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertTrustedIpcSender(event)
+    return handler(...args)
   })
 }
 
@@ -231,12 +256,11 @@ function registerAutoUpdater() {
     },
   })
 
-  ipcMain.handle('desktop-updater:get-state', () => autoUpdateManager.getState())
-  ipcMain.handle('desktop-updater:check', () => autoUpdateManager.checkForUpdates())
-  ipcMain.handle('desktop-updater:download', () => autoUpdateManager.downloadUpdate())
-  ipcMain.handle('desktop-updater:download-installer-and-run', (_event, payload) => autoUpdateManager.downloadInstallerAndRun(payload))
-  ipcMain.handle('desktop-updater:get-settings', () => readUpdateSettings(updateSettingsPath))
-  ipcMain.handle('desktop-updater:set-settings', (_event, settings) => {
+  handleTrustedIpc('desktop-updater:get-state', () => autoUpdateManager.getState())
+  handleTrustedIpc('desktop-updater:check', () => autoUpdateManager.checkForUpdates())
+  handleTrustedIpc('desktop-updater:download', () => autoUpdateManager.downloadUpdate())
+  handleTrustedIpc('desktop-updater:get-settings', () => readUpdateSettings(updateSettingsPath))
+  handleTrustedIpc('desktop-updater:set-settings', (settings) => {
     const current = readUpdateSettings(updateSettingsPath)
     const next = {
       autoCheck: settings?.autoCheck !== false,
@@ -246,7 +270,7 @@ function registerAutoUpdater() {
     writeUpdateSettings(updateSettingsPath, next)
     return next
   })
-  ipcMain.handle('desktop-updater:quit-and-install', async () => {
+  handleTrustedIpc('desktop-updater:quit-and-install', async () => {
     stopBackend()
     await autoUpdateManager.quitAndInstall()
     return null
@@ -259,9 +283,9 @@ function registerDesktopAuth() {
     fs,
     credentialsPath: path.join(app.getPath('userData'), 'saved-login.bin'),
   })
-  ipcMain.handle('desktop-auth:get-saved-login', () => desktopAuthStore.getSavedLogin())
-  ipcMain.handle('desktop-auth:save-login', (_event, payload) => desktopAuthStore.saveSavedLogin(payload))
-  ipcMain.handle('desktop-auth:clear-saved-login', () => desktopAuthStore.clearSavedLogin())
+  handleTrustedIpc('desktop-auth:get-saved-login', () => desktopAuthStore.getSavedLogin())
+  handleTrustedIpc('desktop-auth:save-login', (payload) => desktopAuthStore.saveSavedLogin(payload))
+  handleTrustedIpc('desktop-auth:clear-saved-login', () => desktopAuthStore.clearSavedLogin())
 }
 
 function registerDesktopPreferences() {
@@ -269,8 +293,8 @@ function registerDesktopPreferences() {
     fs,
     preferencesPath: path.join(app.getPath('userData'), 'desktop-preferences.json'),
   })
-  ipcMain.handle('desktop-preferences:get', (_event, key) => desktopPreferenceStore.get(key))
-  ipcMain.handle('desktop-preferences:set', (_event, key, value) => desktopPreferenceStore.set(key, value))
+  handleTrustedIpc('desktop-preferences:get', (key) => desktopPreferenceStore.get(key))
+  handleTrustedIpc('desktop-preferences:set', (key, value) => desktopPreferenceStore.set(key, value))
 }
 
 function registerDesktopReminder() {
@@ -291,12 +315,12 @@ function registerDesktopReminder() {
       }
     },
   })
-  ipcMain.handle('desktop-reminder:set', (_event, payload) => reminderManager.setReminder(payload))
-  ipcMain.handle('desktop-reminder:clear', () => reminderManager.clearReminder())
+  handleTrustedIpc('desktop-reminder:set', (payload) => reminderManager.setReminder(payload))
+  handleTrustedIpc('desktop-reminder:clear', () => reminderManager.clearReminder())
 }
 
 function registerDesktopCoachNotifications() {
-  ipcMain.handle('desktop-coach:notify', (_event, payload) => {
+  handleTrustedIpc('desktop-coach:notify', (payload) => {
     const normalized = normalizeCoachNotificationPayload(payload)
     if (!normalized) return null
     const notice = new Notification({
