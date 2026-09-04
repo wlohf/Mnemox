@@ -22,6 +22,7 @@ from ..services.coach_action_attempt_service import (
     get_coach_action_attempt,
 )
 from ..services.learning_event_service import CanonicalEventType
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 
 
 router = APIRouter()
@@ -36,8 +37,14 @@ async def _refresh_profile_after_commit(user_id: int) -> None:
     async with async_session_maker() as session:
         try:
             await compute_and_save_profile(session, user_id)
-        except Exception:
-            logger.warning("番茄钟完成后的画像刷新失败 user_id=%s", user_id, exc_info=True)
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "番茄钟完成后的画像刷新失败 user_id=%s err=%s",
+                user_id,
+                safe_exception_summary(exc),
+            )
 
 
 class PomodoroCreate(BaseModel):
@@ -161,7 +168,7 @@ async def start_pomodoro(
                 event_type=CanonicalEventType.POMODORO_STARTED,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
     started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
     ended_at = pomodoro.ended_at
@@ -255,7 +262,7 @@ async def complete_pomodoro(
                 reason=data.stop_reason,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
     if data.completed:
         background_tasks.add_task(_refresh_profile_after_commit, _uid)
 

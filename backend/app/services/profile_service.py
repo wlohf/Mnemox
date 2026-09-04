@@ -10,13 +10,17 @@ from datetime import datetime, timedelta, date
 from typing import Any, Optional
 
 from sqlalchemy import select, func, and_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_profile import UserProfile
 from app.models.pomodoro import Pomodoro
 from app.models.learning_event import LearningEvent
 from app.models.question import WrongQuestion
+from app.utils.error_safety import safe_exception_summary
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.utc import utc_now_db, utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +33,14 @@ MIN_STUDY_DAYS = 7
 
 
 async def compute_and_save_profile(db: AsyncSession, user_id: int) -> UserProfile:
-    """聚合计算并持久化用户画像，返回最新画像对象。"""
+    """聚合并暂存用户画像，事务提交由调用方统一负责。"""
     try:
         profile = await _compute_profile(db, user_id)
-        await _upsert_profile(db, profile)
+        profile = await _upsert_profile(db, profile)
         logger.info("用户画像已更新 user_id=%s", user_id)
         return profile
     except Exception as exc:
-        logger.warning("画像计算失败 user_id=%s: %s", user_id, exc)
+        logger.warning("画像计算失败 user_id=%s: %s", user_id, safe_exception_summary(exc))
         raise
 
 
@@ -49,7 +53,7 @@ async def get_profile(db: AsyncSession, user_id: int) -> Optional[UserProfile]:
 
 
 async def get_or_compute_profile(db: AsyncSession, user_id: int) -> Optional[UserProfile]:
-    """获取画像；若不存在或超过 1 小时未更新则重新计算。"""
+    """获取画像；过期时在 savepoint 中刷新，但不提交外层事务。"""
     result = await db.execute(
         select(UserProfile).where(UserProfile.user_id == user_id)
     )
@@ -58,14 +62,15 @@ async def get_or_compute_profile(db: AsyncSession, user_id: int) -> Optional[Use
     should_recompute = (
         profile is None
         or profile.last_updated is None
-        or (datetime.now() - profile.last_updated).total_seconds() > 3600
+        or (utc_now_db() - profile.last_updated).total_seconds() > 3600
     )
 
     if should_recompute:
         try:
-            profile = await compute_and_save_profile(db, user_id)
+            async with db.begin_nested():
+                profile = await compute_and_save_profile(db, user_id)
         except Exception:
-            pass  # 计算失败时返回旧画像或 None
+            pass  # savepoint 已回滚；返回旧画像或 None，外层事务仍可继续
 
     return profile
 
@@ -139,7 +144,7 @@ def build_profile_prompt_snippet(profile: Optional[UserProfile]) -> str:
 
 async def _compute_profile(db: AsyncSession, user_id: int) -> UserProfile:
     """从数据库聚合所有维度，返回未持久化的 UserProfile 对象。"""
-    now = datetime.now()
+    now = utc_now_db()
     since = now - timedelta(days=RECENT_DAYS)
 
     # ── 番茄钟全量统计 ──
@@ -248,42 +253,93 @@ async def _compute_profile(db: AsyncSession, user_id: int) -> UserProfile:
         optimal_hours=optimal_hours,
         weak_points=weak_points,
         recent_performance=recent_performance,
-        last_updated=datetime.now(),
+        last_updated=now,
     )
     return profile
 
 
-async def _upsert_profile(db: AsyncSession, profile: UserProfile) -> None:
-    """INSERT OR REPLACE user_profiles 行（SQLite upsert）。"""
+_PROFILE_PROJECTION_FIELDS = (
+    "total_study_hours",
+    "total_study_days",
+    "total_pomodoros",
+    "avg_session_duration",
+    "avg_pomodoro_per_day",
+    "focus_score",
+    "consistency_score",
+    "self_control_score",
+    "planning_score",
+    "preferred_time_slots",
+    "optimal_hours",
+    "weak_points",
+    "recent_performance",
+    "last_updated",
+)
+
+
+async def _upsert_profile(db: AsyncSession, profile: UserProfile) -> UserProfile:
+    """Atomically stage one computed projection without committing its unit of work.
+
+    PostgreSQL and SQLite are the supported runtime databases. Their native
+    conflict handlers close the first-write race where two requests both see a
+    missing profile and then try to insert the same ``user_id``. Fields owned by
+    other profile producers are deliberately not overwritten.
+    """
+    values = {"user_id": int(profile.user_id)}
+    values.update(
+        {field: getattr(profile, field) for field in _PROFILE_PROJECTION_FIELDS}
+    )
+    dialect_name = db.bind.dialect.name if db.bind is not None else ""
+    if dialect_name == "postgresql":
+        statement = postgresql_insert(UserProfile).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={field: getattr(statement.excluded, field) for field in _PROFILE_PROJECTION_FIELDS},
+        )
+        await db.execute(statement)
+    elif dialect_name == "sqlite":
+        statement = sqlite_insert(UserProfile).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={field: getattr(statement.excluded, field) for field in _PROFILE_PROJECTION_FIELDS},
+        )
+        await db.execute(statement)
+    else:
+        # Unsupported dialects retain the legacy behavior explicitly. Production
+        # and local development exercise the atomic branches above.
+        return await _upsert_profile_fallback(db, profile)
+
+    row = await db.scalar(
+        select(UserProfile)
+        .where(UserProfile.user_id == int(profile.user_id))
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        raise RuntimeError("profile upsert did not produce a readable row")
+    await db.flush()
+    return row
+
+
+async def _upsert_profile_fallback(db: AsyncSession, profile: UserProfile) -> UserProfile:
+    """Compatibility path for dialects without a supported native upsert."""
     existing = await db.execute(
         select(UserProfile).where(UserProfile.user_id == profile.user_id)
     )
     row = existing.scalar_one_or_none()
     if row is None:
         db.add(profile)
+        row = profile
     else:
-        row.total_study_hours = profile.total_study_hours
-        row.total_study_days = profile.total_study_days
-        row.total_pomodoros = profile.total_pomodoros
-        row.avg_session_duration = profile.avg_session_duration
-        row.avg_pomodoro_per_day = profile.avg_pomodoro_per_day
-        row.focus_score = profile.focus_score
-        row.consistency_score = profile.consistency_score
-        row.self_control_score = profile.self_control_score
-        row.planning_score = profile.planning_score
-        row.preferred_time_slots = profile.preferred_time_slots
-        row.optimal_hours = profile.optimal_hours
-        row.weak_points = profile.weak_points
-        row.recent_performance = profile.recent_performance
-        row.last_updated = profile.last_updated
-    await db.commit()
+        for field in _PROFILE_PROJECTION_FIELDS:
+            setattr(row, field, getattr(profile, field))
+    await db.flush()
+    return row
 
 
 def _compute_streak(study_dates: set[date]) -> int:
     """计算截至今天的连续学习天数。"""
     if not study_dates:
         return 0
-    today = date.today()
+    today = utc_today()
     streak = 0
     cursor = today
     while cursor in study_dates:

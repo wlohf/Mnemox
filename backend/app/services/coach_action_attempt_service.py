@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.coach import CoachActionAttempt, CoachNudge
 from app.models.learning_event import LearningEvent
 from app.services.learning_event_service import CanonicalEventType, learning_event_to_dict, record_coach_nudge_event
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 ACTIVE_ATTEMPT_STATUSES = {"started"}
@@ -32,17 +33,17 @@ def coach_action_attempt_to_dict(row: CoachActionAttempt) -> dict[str, Any]:
         "route": row.route,
         "action_payload": row.action_payload or {},
         "status": row.status,
-        "started_at": row.started_at.isoformat() if row.started_at else None,
-        "observed_at": row.observed_at.isoformat() if row.observed_at else None,
-        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
-        "abandoned_at": row.abandoned_at.isoformat() if row.abandoned_at else None,
-        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "started_at": to_utc_iso(row.started_at) if row.started_at else None,
+        "observed_at": to_utc_iso(row.observed_at) if row.observed_at else None,
+        "completed_at": to_utc_iso(row.completed_at) if row.completed_at else None,
+        "abandoned_at": to_utc_iso(row.abandoned_at) if row.abandoned_at else None,
+        "expires_at": to_utc_iso(row.expires_at) if row.expires_at else None,
         "linked_event_id": row.linked_event_id,
         "linked_event_type": row.linked_event_type,
         "outcome_source": row.outcome_source,
         "outcome_reason": row.outcome_reason,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": to_utc_iso(row.created_at) if row.created_at else None,
+        "updated_at": to_utc_iso(row.updated_at) if row.updated_at else None,
     }
 
 
@@ -217,7 +218,7 @@ async def start_coach_action_attempt(
             "attempt": coach_action_attempt_to_dict(existing),
         }
 
-    now = datetime.now()
+    now = utc_now_db()
     action = nudge.suggested_action or {}
     attempt = CoachActionAttempt(
         id=f"ca_{uuid4().hex[:24]}",
@@ -310,7 +311,7 @@ async def bind_coach_attempt_to_domain_event(
             "nudge": _nudge_summary(nudge),
         }
 
-    now = datetime.now()
+    now = utc_now_db()
     attempt.observed_at = now
     attempt.linked_event_id = int(event_id)
     attempt.linked_event_type = str(event_type)[:80]
@@ -383,7 +384,7 @@ async def sync_attempt_from_feedback(
     if not attempt or attempt.status in TERMINAL_ATTEMPT_STATUSES:
         return coach_action_attempt_to_dict(attempt) if attempt else None
 
-    now = datetime.now()
+    now = utc_now_db()
     attempt.status = outcome
     method = str((attribution or {}).get("method") or "learner_confirmation")[:40]
     attempt.outcome_source = method
@@ -412,7 +413,7 @@ async def sync_attempt_from_feedback(
 async def expire_due_coach_nudges(db: AsyncSession, user_id: int, *, now: datetime | None = None) -> int:
     """Close stale nudges without pretending that silence is negative feedback."""
 
-    current = now or datetime.now()
+    current = to_db_utc(now) if now is not None else utc_now_db()
     result = await db.execute(
         select(CoachNudge).where(
             CoachNudge.user_id == int(user_id),

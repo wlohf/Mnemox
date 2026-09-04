@@ -45,6 +45,7 @@ from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
 from app.utils.ai_errors import format_ai_provider_error
+from app.utils.error_safety import safe_exception_summary
 from app.utils.prompt_safety import wrap_untrusted_context
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,7 @@ async def _detect_and_create_wrong_questions(
 
         await db.flush()
     except Exception as e:
-        logger.warning("自动检测错题失败: %s", e)
+        logger.warning("自动检测错题失败: %s", safe_exception_summary(e))
 
 
 router = APIRouter()
@@ -384,7 +385,7 @@ async def _build_system_prompt_with_rag(
                 prompt += _fallback_large_materials(large_materials)
         except Exception as e:
             # RAG 失败，回退
-            logger.warning("RAG 检索失败，回退到截断注入: %s", e)
+            logger.warning("RAG 检索失败，回退到截断注入: %s", safe_exception_summary(e))
             prompt += _fallback_large_materials(large_materials)
     elif large_materials:
         # RAG 未启用，回退
@@ -522,7 +523,7 @@ async def _resolve_materials_and_build_prompt(
             mode_prompt = await get_user_prompt(db, user_id, "coach")
             system_prompt = mode_prompt + "\n" + system_prompt
     except Exception as _mpe:
-        logger.warning("模式 prompt 注入失败: %s", _mpe)
+        logger.warning("模式 prompt 注入失败: %s", safe_exception_summary(_mpe))
         # fallback 到原来的 coach 逻辑
         if chat_mode == "coach":
             system_prompt = COACH_SYSTEM_PROMPT + "\n" + system_prompt
@@ -537,7 +538,7 @@ async def _resolve_materials_and_build_prompt(
                 conversation_id, db, user_id=user_id
             )
     except Exception as e:
-        logger.warning("构建记忆/摘要提示失败: %s", e)
+        logger.warning("构建记忆/摘要提示失败: %s", safe_exception_summary(e))
 
     system_prompt += WARM_COACH_PERSONALITY
 
@@ -574,7 +575,7 @@ async def _resolve_materials_and_build_prompt(
         if _snippet:
             system_prompt += "\n\n" + _snippet
     except Exception as _pe:
-        logger.warning("用户画像注入失败: %s", _pe)
+        logger.warning("用户画像注入失败: %s", safe_exception_summary(_pe))
 
     # 注入自主 Agent 简报：让对话具备主动规划、风险提醒和下一步建议意识
     try:
@@ -584,7 +585,7 @@ async def _resolve_materials_and_build_prompt(
         if _agent_snippet:
             system_prompt += "\n\n" + _agent_snippet
     except Exception as _ae:
-        logger.warning("自主 Agent 简报注入失败: %s", _ae)
+        logger.warning("自主 Agent 简报注入失败: %s", safe_exception_summary(_ae))
 
     return system_prompt, detected, auto_selected
 
@@ -775,11 +776,12 @@ async def _persist_streamed_chat_turn(
                     user_id,
                 )
                 continue
-            logger.exception(
-                "流式对话核心消息保存失败: conversation_id=%s study_session_id=%s user_id=%s",
+            logger.warning(
+                "流式对话核心消息保存失败: conversation_id=%s study_session_id=%s user_id=%s err=%s",
                 body.conversation_id,
                 body.study_session_id,
                 user_id,
+                safe_exception_summary(exc),
             )
             raise
 
@@ -806,7 +808,7 @@ async def _persist_streamed_chat_turn(
                 await enrich_db.commit()
             except Exception as e:
                 await enrich_db.rollback()
-                logger.warning("对话反思失败: %s", e)
+                logger.warning("对话反思失败: %s", safe_exception_summary(e))
 
             try:
                 await _detect_and_create_wrong_questions(
@@ -819,7 +821,7 @@ async def _persist_streamed_chat_turn(
                 await enrich_db.commit()
             except Exception as e:
                 await enrich_db.rollback()
-                logger.warning("错题自动检测失败: %s", e)
+                logger.warning("错题自动检测失败: %s", safe_exception_summary(e))
 
             try:
                 from app.services.event_tracker import EventTracker as _ET
@@ -838,14 +840,14 @@ async def _persist_streamed_chat_turn(
                 await enrich_db.commit()
             except Exception as e:
                 await enrich_db.rollback()
-                logger.warning("学习事件追踪失败: %s", e)
-        except Exception:
+                logger.warning("学习事件追踪失败: %s", safe_exception_summary(e))
+        except Exception as exc:
             await enrich_db.rollback()
             logger.warning(
-                "流式对话后处理失败，但核心消息已保存: conversation_id=%s user_id=%s",
+                "流式对话后处理失败，但核心消息已保存: conversation_id=%s user_id=%s err=%s",
                 body.conversation_id,
                 user_id,
-                exc_info=True,
+                safe_exception_summary(exc),
             )
 
 
@@ -857,12 +859,13 @@ def _is_ai_configuration_error(exc: Exception) -> bool:
 
 
 def _ai_configuration_error(exc: Exception) -> HTTPException:
+    safe_error = format_ai_provider_error(exc)
     return HTTPException(
         status_code=400,
         detail={
             "code": "AI_PROVIDER_NOT_CONFIGURED",
             "message": (
-                f"AI 提供商未配置或不可用：{str(exc)}。"
+                f"AI 提供商未配置或不可用：{safe_error}。"
                 "请先在设置中检查并启用当前供应商的 API Key、Base URL 和模型配置。"
                 "如果你开启了联网搜索，也不会额外使用单独的搜索 Key。"
             ),
@@ -1298,7 +1301,7 @@ async def chat_send(
             raise _ai_configuration_error(e)
         raise HTTPException(
             status_code=500,
-            detail=f"无法创建 AI 提供商：{str(e)}",
+            detail=f"无法创建 AI 提供商：{format_ai_provider_error(e)}",
         )
 
     messages = _trim_messages_for_context_budget(
@@ -1312,8 +1315,11 @@ async def chat_send(
 
     try:
         await db.rollback()
-    except Exception:
-        logger.warning("释放流式对话请求数据库会话失败", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "释放流式对话请求数据库会话失败: %s",
+            safe_exception_summary(exc),
+        )
 
     async def event_stream():
         # 先发送自动命中的资料信息（标题匹配 + 项目资料 + 读取资料库意图）
@@ -1374,7 +1380,10 @@ async def chat_send(
                     else:
                         yield f"data: {json.dumps({'type': 'web_search_results', 'results': []}, ensure_ascii=False)}\n\n"
                 except Exception as exc:
-                    logger.warning("专用搜索提供商联网失败，降级为应用层网页搜索: %s", exc)
+                    logger.warning(
+                        "专用搜索提供商联网失败，降级为应用层网页搜索: %s",
+                        safe_exception_summary(exc),
+                    )
                     notice = "专用搜索提供商暂时不可用，已降级为应用层联网搜索。"
                     yield f"data: {json.dumps({'type': 'web_search_notice', 'message': notice}, ensure_ascii=False)}\n\n"
                     web_prompt, web_results = await _build_external_web_search_prompt(
@@ -1402,7 +1411,10 @@ async def chat_send(
                     else:
                         yield f"data: {json.dumps({'type': 'web_search_results', 'results': []}, ensure_ascii=False)}\n\n"
                 except Exception as exc:
-                    logger.warning("外部联网搜索失败，降级为普通聊天: %s", exc)
+                    logger.warning(
+                        "外部联网搜索失败，降级为普通聊天: %s",
+                        safe_exception_summary(exc),
+                    )
                     notice = "联网搜索暂时失败，已降级为普通聊天。请检查网络后重试。"
                     effective_system_prompt = (
                         f"{system_prompt or ''}\n\n"
@@ -1480,7 +1492,12 @@ async def chat_send(
             # 保存成功后再发送结束标记，避免前端误判为可恢复成功。
             yield "data: [DONE]\n\n"
         except Exception as e:
-            logger.exception("流式 AI 回复失败: conversation_id=%s user_id=%s", body.conversation_id, user_id)
+            logger.warning(
+                "流式 AI 回复失败: conversation_id=%s user_id=%s err=%s",
+                body.conversation_id,
+                user_id,
+                safe_exception_summary(e),
+            )
             error_text = format_ai_provider_error(e)
             if "API Key 不正确或没有权限" in error_text:
                 error_text = (
@@ -1577,7 +1594,7 @@ async def chat_send_sync(
             raise _ai_configuration_error(e)
         raise HTTPException(
             status_code=500,
-            detail=f"无法创建 AI 提供商：{str(e)}",
+            detail=f"无法创建 AI 提供商：{format_ai_provider_error(e)}",
         )
 
     messages = _trim_messages_for_context_budget(

@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models.chat import ChatConversation, ChatMessage
 from app.auth import get_current_user
 from app.models.user import User
+from app.utils.pydantic_compat import provided_model_fields
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -316,7 +317,7 @@ async def update_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
 
-    fields_set = getattr(body, "model_fields_set", getattr(body, "__fields_set__", set()))
+    fields_set = provided_model_fields(body)
 
     if body.title is not None:
         conv.title = body.title

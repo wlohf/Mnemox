@@ -148,6 +148,11 @@ class ProjectionOutboxOperationsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item["id"] for item in queue["items"]], [owner_row])
             self.assertNotIn("last_error", queue["items"][0])
             self.assertNotIn("payload", queue["items"][0])
+            self.assertEqual(
+                queue["items"][0]["error_code"],
+                "projection_outbox.processing_failed",
+            )
+            self.assertRegex(queue["items"][0]["error_fingerprint"], r"^[0-9a-f]{16}$")
 
             retried = await retry_dead_letter_task(
                 session,

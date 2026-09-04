@@ -4,6 +4,11 @@ services:
   backend:
     environment:
       CORS_ORIGINS: '["https://mnemox.wlohf.com"]'
+      # Requests reach the backend through Caddy and the frontend Nginx
+      # proxy. The backend itself has no public port, so two forwarded hops
+      # are the trusted public deployment boundary.
+      TRUST_PROXY_HEADERS: "true"
+      TRUSTED_PROXY_HOPS: "2"
 
   frontend:
     networks:

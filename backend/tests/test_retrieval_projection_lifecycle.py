@@ -1,13 +1,14 @@
 """Durable material ingestion, update, deletion, recovery, and tenant boundaries."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
@@ -15,7 +16,10 @@ from app.models.material import Material
 from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 from app.models.user import User
 from app.services.material_retrieval_backend import KeywordMaterialRetrievalBackend, MaterialSearchScope
-from app.services.retrieval_projection_service import RetrievalProjectionService
+from app.services.retrieval_projection_service import (
+    RetrievalProjectionService,
+    serialized_retrieval_configuration_change,
+)
 
 
 class _Collection:
@@ -66,6 +70,21 @@ class _Rag:
         if self.fail_remove:
             raise RuntimeError("vector store unavailable")
         self._collection.rows.pop((int(user_id or 0), int(material_id)), None)
+
+
+class _CoordinatedRag(_Rag):
+    def __init__(self) -> None:
+        super().__init__()
+        self.old_started = asyncio.Event()
+        self.release_old = asyncio.Event()
+        self.started_contents: list[str] = []
+
+    async def index_material(self, *, content: str, **kwargs) -> int:
+        self.started_contents.append(content)
+        if content.startswith("obsolete"):
+            self.old_started.set()
+            await self.release_old.wait()
+        return await super().index_material(content=content, **kwargs)
 
 
 class RetrievalProjectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -129,6 +148,89 @@ class RetrievalProjectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([chunk.chunk_index for chunk in chunks], [0, 1])
         self.assertEqual([chunk.source_version for chunk in chunks], [1, 1])
 
+    async def test_projection_identity_uses_atomic_insert_on_supported_database(self) -> None:
+        user_id = await self._user("atomic-projection-owner")
+        material_id = await self._material(user_id, "Atomic", "one version")
+        statements: list[str] = []
+
+        def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(str(statement))
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", capture_statement)
+        try:
+            async with self.sessions() as db:
+                service = RetrievalProjectionService(db, rag=self.rag)
+                material = await db.get(Material, material_id)
+                first = await service.ingest(material, user_id=user_id)
+                second = await service.ingest(material, user_id=user_id, force=True)
+                projection_count = await db.scalar(
+                    select(func.count()).select_from(RetrievalProjection)
+                )
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", capture_statement)
+
+        projection_inserts = [
+            statement.upper()
+            for statement in statements
+            if "INSERT INTO RETRIEVAL_PROJECTIONS" in statement.upper()
+        ]
+        self.assertEqual(first["source_version"], 1)
+        self.assertEqual(second["source_version"], 1)
+        self.assertEqual(projection_count, 1)
+        self.assertEqual(len(projection_inserts), 2)
+        self.assertTrue(all("ON CONFLICT" in statement for statement in projection_inserts))
+        self.assertTrue(all("DO NOTHING" in statement for statement in projection_inserts))
+
+    async def test_late_old_ingest_cannot_overwrite_new_canonical_version(self) -> None:
+        user_id = await self._user("fenced-projection-owner")
+        material_id = await self._material(
+            user_id,
+            "Fenced",
+            "obsolete version|old vector",
+        )
+        rag = _CoordinatedRag()
+
+        async def ingest_current() -> dict:
+            async with self.sessions() as db:
+                material = await db.get(Material, material_id)
+                return await RetrievalProjectionService(db, rag=rag).ingest(
+                    material,
+                    user_id=user_id,
+                    force=True,
+                )
+
+        old_task = asyncio.create_task(ingest_current())
+        await asyncio.wait_for(rag.old_started.wait(), timeout=2)
+
+        async with self.sessions() as db:
+            material = await db.get(Material, material_id)
+            material.content = "replacement version|new vector"
+            material.content_hash = hashlib.sha256(material.content.encode()).hexdigest()
+            await db.commit()
+
+        new_task = asyncio.create_task(ingest_current())
+        await asyncio.sleep(0.05)
+        self.assertEqual(rag.started_contents, ["obsolete version|old vector"])
+
+        rag.release_old.set()
+        old_result, new_result = await asyncio.gather(old_task, new_task)
+
+        async with self.sessions() as db:
+            projection = await RetrievalProjectionService(db, rag=rag).get_projection(
+                user_id,
+                material_id,
+            )
+
+        self.assertEqual(old_result["indexed_version"], 1)
+        self.assertEqual(new_result["indexed_version"], 2)
+        self.assertEqual(projection.status, "ready")
+        self.assertEqual(projection.source_version, 2)
+        self.assertEqual(projection.indexed_version, 2)
+        self.assertEqual(
+            rag._collection.rows[(user_id, material_id)],
+            ["replacement version", "new vector"],
+        )
+
     async def test_missing_embeddings_keep_sql_chunks_and_keyword_retrieval(self) -> None:
         user_id = await self._user("fallback-owner")
         material_id = await self._material(user_id, "Hybrid search", "RRF fusion|reranker comparison")
@@ -158,6 +260,8 @@ class RetrievalProjectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projection["status"], "failed")
         self.assertEqual(projection["chunk_count"], 0)
         self.assertIn("没有可索引", projection["last_error"])
+        self.assertEqual(projection["last_error_code"], "retrieval.index_failed")
+        self.assertRegex(projection["last_error_fingerprint"], r"^[0-9a-f]{16}$")
 
     async def test_refresh_replaces_old_chunks_vectors_and_source_version(self) -> None:
         user_id = await self._user("refresh-owner")
@@ -200,6 +304,8 @@ class RetrievalProjectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["operation"], "forget")
         self.assertIn("vector store unavailable", failed["last_error"])
+        self.assertEqual(failed["last_error_code"], "retrieval.forget_failed")
+        self.assertRegex(failed["last_error_fingerprint"], r"^[0-9a-f]{16}$")
 
         self.rag.fail_remove = False
         async with self.sessions() as db:
@@ -267,6 +373,36 @@ class RetrievalProjectionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(own.status, "degraded")
         self.assertEqual(other.status, "ready")
         self.assertEqual(summary["degraded"], 1)
+
+    async def test_configuration_change_waits_for_in_flight_ingest(self) -> None:
+        user_id = await self._user("configuration-fence-owner")
+        material_id = await self._material(user_id, "Source", "obsolete content")
+        coordinated_rag = _CoordinatedRag()
+        configuration_entered = asyncio.Event()
+
+        async def ingest() -> None:
+            async with self.sessions() as db:
+                material = await db.get(Material, material_id)
+                await RetrievalProjectionService(db, rag=coordinated_rag).ingest(
+                    material,
+                    user_id=user_id,
+                )
+
+        async def change_configuration() -> None:
+            async with self.sessions() as db:
+                async with serialized_retrieval_configuration_change(db):
+                    configuration_entered.set()
+
+        ingest_task = asyncio.create_task(ingest())
+        await asyncio.wait_for(coordinated_rag.old_started.wait(), timeout=1)
+        configuration_task = asyncio.create_task(change_configuration())
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(configuration_entered.wait(), timeout=0.05)
+
+        coordinated_rag.release_old.set()
+        await ingest_task
+        await asyncio.wait_for(configuration_entered.wait(), timeout=1)
+        await configuration_task
 
     async def test_forget_user_removes_only_owned_sql_chunks_and_vectors(self) -> None:
         owner = await self._user("purge-owner")

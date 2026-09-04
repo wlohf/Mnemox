@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { getMe, login as apiLogin, type UserInfo } from '../services/authApi'
+import { getMe, login as apiLogin, logoutSession, type UserInfo } from '../services/authApi'
 import { clearToken } from '../services/apiClient'
 import { clearSavedLogin, getSavedLogin, saveLoginIfAvailable } from '../services/desktopAuth'
 
@@ -52,6 +52,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: (options: LogoutOptions = {}) => {
+    void logoutSession()
     clearToken()
     if (options.clearSavedPassword) {
       void clearSavedLogin()

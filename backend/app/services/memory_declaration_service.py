@@ -9,6 +9,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.memory import MemoryDeclaration, UserMemory
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 MANUAL_DECLARATION_VERSION = "manual-memory-declaration-v1"
@@ -76,7 +77,7 @@ async def _current_fact_declaration(
         UserMemory.user_id == user_id,
         UserMemory.status == "active",
         UserMemory.review_status == "confirmed",
-        or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+        or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
     ]
     if exclude_declaration_id is not None:
         conditions.append(MemoryDeclaration.id != exclude_declaration_id)
@@ -139,7 +140,7 @@ async def record_manual_memory_declaration(
     the current projection first, then record the declaration in the same
     transaction so the effective value and its provenance stay atomic.
     """
-    now = observed_at or datetime.now()
+    now = to_db_utc(observed_at) if observed_at is not None else utc_now_db()
     fact_key = memory_fact_key(memory)
     prior_result = await db.execute(
         select(MemoryDeclaration)
@@ -300,7 +301,7 @@ async def record_automatic_memory_declaration(
     closes its predecessor before persisting the new state. Manual corrections
     are protected by the caller's lock checks and therefore never arrive here.
     """
-    now = observed_at or datetime.now()
+    now = to_db_utc(observed_at) if observed_at is not None else utc_now_db()
     fact_key = memory_fact_key(memory)
     source_type = (memory.source_type or "automatic")[:50]
     source_id = (memory.source_id or None)
@@ -398,7 +399,7 @@ async def sync_memory_declaration_review_status(
     declaration = result.scalar_one_or_none()
     if not declaration:
         return None
-    now = reviewed_at or datetime.now()
+    now = to_db_utc(reviewed_at) if reviewed_at is not None else utc_now_db()
     affected_ids: set[int] = set()
     if review_status == "confirmed":
         current = await _current_fact_declaration(
@@ -447,7 +448,7 @@ async def expire_memory_facts(
     observed_at: datetime | None = None,
 ) -> list[int]:
     """Close overdue projections and their canonical declarations atomically."""
-    now = observed_at or datetime.now()
+    now = to_db_utc(observed_at) if observed_at is not None else utc_now_db()
     result = await db.execute(
         select(UserMemory).where(
             UserMemory.user_id == user_id,
@@ -538,9 +539,9 @@ def declaration_to_dict(declaration: MemoryDeclaration) -> dict[str, Any]:
         "predicate": declaration.predicate,
         "fact_key": declaration.fact_key,
         "value": declaration.value,
-        "valid_from": declaration.valid_from.isoformat() if declaration.valid_from else None,
-        "valid_to": declaration.valid_to.isoformat() if declaration.valid_to else None,
-        "observed_at": declaration.observed_at.isoformat() if declaration.observed_at else None,
+        "valid_from": to_utc_iso(declaration.valid_from) if declaration.valid_from else None,
+        "valid_to": to_utc_iso(declaration.valid_to) if declaration.valid_to else None,
+        "observed_at": to_utc_iso(declaration.observed_at) if declaration.observed_at else None,
         "confidence": declaration.confidence,
         "review_status": declaration.review_status,
         "source_event_id": declaration.source_event_id,
@@ -552,7 +553,7 @@ def declaration_to_dict(declaration: MemoryDeclaration) -> dict[str, Any]:
         "supersedes_id": declaration.supersedes_id,
         "conflicts_with_id": declaration.conflicts_with_id,
         "resolution_reason": declaration.resolution_reason,
-        "created_at": declaration.created_at.isoformat() if declaration.created_at else None,
+        "created_at": to_utc_iso(declaration.created_at) if declaration.created_at else None,
     }
 
 

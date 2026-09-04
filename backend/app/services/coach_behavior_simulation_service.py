@@ -22,6 +22,7 @@ from app.services.learning_event_service import (
     record_review_scheduled_event,
 )
 from app.services.north_star_metrics_service import build_north_star_metrics
+from app.utils.utc import to_utc_iso
 
 
 SIMULATION_VERSION = "coach-behavior-synthetic-v1"
@@ -50,7 +51,7 @@ def _policy_checks(now: datetime) -> dict[str, Any]:
     """Exercise the proactive allow, cooldown and disruption guardrails."""
 
     snapshot = {
-        "generated_at": now.isoformat(),
+        "generated_at": to_utc_iso(now),
         "review": {"due_review_count": 6},
         "learning": {},
         "risk_flags": {"review_debt_high": True},
@@ -72,7 +73,7 @@ def _policy_checks(now: datetime) -> dict[str, Any]:
         event,
         {
             **snapshot,
-            "coach": {"today_nudge_count": 0, "last_nudge_at": (now - timedelta(minutes=10)).isoformat()},
+            "coach": {"today_nudge_count": 0, "last_nudge_at": to_utc_iso(now - timedelta(minutes=10))},
         },
         preferences,
         [],
@@ -281,7 +282,7 @@ async def build_synthetic_coach_behavior_report(
         "simulation": {
             "version": SIMULATION_VERSION,
             "mode": "synthetic_policy_and_metric_regression",
-            "generated_at": now.isoformat(),
+            "generated_at": to_utc_iso(now),
             "data_scope": "throwaway database only",
             "important_limit": "模拟数据只能验证链路和策略边界，不能证明对真实用户有效。",
         },

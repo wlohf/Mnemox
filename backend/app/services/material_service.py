@@ -1,6 +1,7 @@
 """资料管理服务层"""
 import hashlib
 import logging
+import asyncio
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,8 +14,10 @@ from app.config import settings
 from app.utils.paths import from_repo_relative
 from app.utils.file_extract import extract_text
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.error_safety import safe_exception_summary
 from app.services.retrieval_projection_service import RetrievalProjectionService
 from app.services.concept_graph_service import forget_material_concepts, sync_material_concepts
+from app.services.knowledge_source_service import delete_source, register_material_source
 
 
 class MaterialService:
@@ -50,7 +53,18 @@ class MaterialService:
         """创建新资料"""
         content_status = "pending"
         if (content is None or content.strip() == "") and file_path:
-            extracted = extract_text(from_repo_relative(file_path))
+            try:
+                extracted = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        extract_text,
+                        from_repo_relative(file_path),
+                        settings.MATERIAL_EXTRACT_MAX_CHARS,
+                    ),
+                    timeout=settings.MATERIAL_EXTRACT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("资料文本提取超时，已跳过: %s", file_path)
+                extracted = None
             if extracted:
                 content = extracted
                 content_status = "extracted"
@@ -74,6 +88,13 @@ class MaterialService:
         )
 
         self.db.add(material)
+        await self.db.flush()
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await register_material_source(
+                self.db,
+                user_id=int(user_id),
+                material_id=int(material.id),
+            )
         await self.db.commit()
         await self.db.refresh(material)
 
@@ -86,7 +107,7 @@ class MaterialService:
             )
             logger.info("资料 id=%s 检索投影状态: %s", material.id, projection.get("status"))
         except Exception as e:
-            logger.warning("同步到 RAG 知识库失败: %s", e)
+            logger.warning("同步到 RAG 知识库失败: %s", safe_exception_summary(e))
 
         graph_material_id = int(material.id)
         try:
@@ -96,7 +117,7 @@ class MaterialService:
         except Exception as exc:
             await self.db.rollback()
             await self.db.refresh(material)
-            logger.warning("资料概念抽取降级 id=%s: %s", graph_material_id, exc)
+            logger.warning("资料概念抽取降级 id=%s: %s", graph_material_id, safe_exception_summary(exc))
 
         return material
 
@@ -120,6 +141,13 @@ class MaterialService:
             material.content = content
             material.content_hash = hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
             material.content_status = "extracted" if content.strip() else "failed"
+        await self.db.flush()
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await register_material_source(
+                self.db,
+                user_id=int(user_id),
+                material_id=int(material.id),
+            )
         await self.db.commit()
         await self.db.refresh(material)
         await self.projections.refresh(material, user_id=int(user_id))
@@ -129,7 +157,7 @@ class MaterialService:
         except Exception as exc:
             await self.db.rollback()
             await self.db.refresh(material)
-            logger.warning("资料概念更新降级 id=%s: %s", material_id, exc)
+            logger.warning("资料概念更新降级 id=%s: %s", material_id, safe_exception_summary(exc))
         return material
 
     async def get_material(self, material_id: int) -> Optional[Material]:
@@ -169,6 +197,13 @@ class MaterialService:
         await forget_material_concepts(
             self.db, material_user_id, material_id, remove_chapter_links=True,
         )
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await delete_source(
+                self.db,
+                user_id=material_user_id,
+                source_type="material",
+                source_record_id=int(material_id),
+            )
         await self.projections.prepare_forget(material_user_id, material_id)
         await self.db.delete(material)
         await self.db.commit()
@@ -178,13 +213,13 @@ class MaterialService:
             if projection.get("status") != "deleted":
                 logger.warning("资料向量删除待重试 id=%s: %s", material_id, projection.get("last_error"))
         except Exception as e:
-            logger.warning("从 RAG 删除资料失败: %s", e)
+            logger.warning("从 RAG 删除资料失败: %s", safe_exception_summary(e))
 
         if abs_file_path and abs_file_path.exists():
             try:
                 abs_file_path.unlink()
             except Exception as e:
-                logger.warning("删除本地文件失败: %s", e)
+                logger.warning("删除本地文件失败: %s", safe_exception_summary(e))
 
         return True
 

@@ -19,6 +19,7 @@ from app.models.progress import MaterialProfile, OutputEvaluation
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 from app.models.user import User
 
 router = APIRouter()
@@ -474,7 +475,7 @@ async def batch_start_learning_pipeline(
             results.append({
                 "material_id": mid,
                 "material_title": material.title,
-                "error": str(e),
+                "error": redact_sensitive_text(e),
                 "goal_id": None,
                 "auto_created_tasks": 0,
                 "tasks": [],
@@ -566,7 +567,11 @@ async def analyze_material_for_progress(
                 db, int(current_user.id), material_id, chapters
             )
         except Exception as exc:
-            logger.warning("概念入图失败 material_id=%s err=%s", material_id, exc)
+            logger.warning(
+                "概念入图失败 material_id=%s err=%s",
+                material_id,
+                safe_exception_summary(exc),
+            )
 
     # Auto-create goal and tasks for the material
     goal_id, auto_tasks = await _auto_create_goal_and_tasks(material_id, db, user_id=current_user.id)

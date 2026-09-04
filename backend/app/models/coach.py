@@ -90,12 +90,16 @@ class CoachPreference(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     proactive_enabled = Column(Boolean, nullable=False, default=False)
     desktop_notifications_enabled = Column(Boolean, nullable=False, default=False)
+    time_zone = Column(String(64), nullable=False, default="UTC", server_default="UTC")
     quiet_hours_start = Column(String(5), nullable=True)
     quiet_hours_end = Column(String(5), nullable=True)
     max_nudges_per_day = Column(Integer, nullable=False, default=3)
     min_minutes_between_nudges = Column(Integer, nullable=False, default=60)
     allowed_channels = Column(JSON, nullable=False, default=list)
     disabled_skill_ids = Column(JSON, nullable=False, default=list)
+    proactive_last_evaluated_at = Column(DateTime, nullable=True)
+    proactive_next_evaluate_at = Column(DateTime, nullable=True, index=True)
+    proactive_failure_count = Column(Integer, nullable=False, default=0)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 

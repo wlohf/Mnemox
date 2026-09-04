@@ -1,7 +1,6 @@
 """Durable coach workflow state without autonomous writes."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -9,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachWorkflow
+from app.utils.utc import to_utc_iso, utc_now_db
 
 
 SUPPORTED_WORKFLOW_TYPES = {
@@ -37,9 +37,9 @@ def coach_workflow_to_dict(row: CoachWorkflow) -> dict[str, Any]:
         "state": row.state or {},
         "pending_draft": row.pending_draft,
         "last_event_id": row.last_event_id,
-        "started_at": row.started_at.isoformat() if row.started_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "started_at": to_utc_iso(row.started_at) if row.started_at else None,
+        "updated_at": to_utc_iso(row.updated_at) if row.updated_at else None,
+        "completed_at": to_utc_iso(row.completed_at) if row.completed_at else None,
     }
 
 
@@ -54,7 +54,7 @@ def _append_history(state: dict[str, Any], action: str, payload: dict[str, Any] 
         {
             "action": action,
             "payload": payload or {},
-            "at": datetime.now().isoformat(),
+            "at": to_utc_iso(utc_now_db()),
         }
     )
     next_state["history"] = history[-50:]
@@ -89,7 +89,7 @@ async def start_coach_workflow(
         existing.last_event_id = event_id or existing.last_event_id
         existing.pending_draft = pending_draft if pending_draft is not None else existing.pending_draft
         existing.state = _append_history(existing.state or {}, "reused", {"event_id": event_id})
-        existing.updated_at = datetime.now()
+        existing.updated_at = utc_now_db()
         await db.flush()
         await db.refresh(existing)
         return coach_workflow_to_dict(existing)
@@ -163,7 +163,7 @@ async def advance_coach_workflow(
     row.status = next_status
     row.pending_draft = pending_draft if pending_draft is not None else row.pending_draft
     row.state = _append_history(row.state or {}, action, payload)
-    row.updated_at = datetime.now()
+    row.updated_at = utc_now_db()
     if next_status in TERMINAL_STATUSES:
         row.completed_at = row.updated_at
     await db.flush()

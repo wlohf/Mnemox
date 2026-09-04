@@ -18,7 +18,9 @@ from app.models.goal import Goal, Task
 from app.models.pomodoro import Pomodoro
 from app.models.question import WrongQuestion, ReviewSchedule
 from app.models.user import User
+from app.services.coach_experiment_service import build_coach_experiment_report
 from app.services.north_star_metrics_service import build_north_star_metrics
+from app.utils.error_safety import redact_sensitive_text
 
 router = APIRouter()
 
@@ -91,7 +93,18 @@ async def get_north_star_metrics(
             time_zone=time_zone,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
+
+
+@router.get("/coach-experiment")
+async def get_coach_experiment_report(
+    days: int = Query(28, ge=7, le=90, description="观察窗口（7-90 天）"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the current learner's observation-only Coach experiment trace."""
+
+    return await build_coach_experiment_report(db, int(current_user.id), days=days)
 
 
 # ════════════════════════════════════════════

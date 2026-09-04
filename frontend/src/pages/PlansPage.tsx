@@ -15,7 +15,8 @@ import {
 import dayjs, { Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { apiFetch, getApiErrorMessage } from '../services/apiClient'
+import { getApiErrorMessage } from '../services/apiClient'
+import { listPlans, savePlan, type PlanItem } from '../services/planApi'
 import { generateDailyPlan } from '../services/learningApi'
 import { generateFeynmanProbe, type FeynmanProbeResult } from '../services/feynmanProbeApi'
 import { confirmCoachNudgeDraft, getCoachNudgeDraft, type CoachNudgeDraft } from '../services/coachApi'
@@ -26,10 +27,7 @@ dayjs.extend(isoWeek)
 
 const { Text, Paragraph } = Typography
 
-interface Plan {
-  date: string
-  content: string
-}
+type Plan = PlanItem
 
 interface ChecklistItem {
   id: string
@@ -116,7 +114,7 @@ export function PlansPage() {
       const defaultStart = today.subtract(90, 'day')
       const start = selected.isBefore(defaultStart, 'day') ? selected : defaultStart
       const end = selected.isAfter(today, 'day') ? selected : today
-      const data = await apiFetch<Plan[]>(`/api/plans/?start=${start.format('YYYY-MM-DD')}&end=${end.format('YYYY-MM-DD')}`)
+      const data = await listPlans(start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'))
       setPlans((data || []).sort((a, b) => b.date.localeCompare(a.date)))
     } finally {
       setLoading(false)
@@ -183,11 +181,7 @@ export function PlansPage() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      const saved = await apiFetch<Plan>(`/api/plans/${activeDate}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: editContent }),
-      })
+      const saved = await savePlan(activeDate, editContent)
       const nextPlan = saved || { date: activeDate, content: editContent }
       upsertPlan(nextPlan)
       setEditContent(nextPlan.content)

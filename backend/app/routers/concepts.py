@@ -10,11 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.material import Chapter, Material
 from app.models.user import User
 from app.services.association_coach_service import create_association_recall_nudge
 from app.services.association_service import find_associations
+from app.utils.ai_errors import format_ai_provider_error
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 from app.services.concept_service import (
     backfill_wrong_question_concepts,
     extract_chapter_concepts_llm,
@@ -83,6 +86,32 @@ async def extract_material_concepts(
     user_id = int(current_user.id)
     await get_owned_row(db, Material, material_id, user_id, not_found_detail="资料不存在")
 
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_extraction_service import (
+            create_extraction_run,
+            serialize_extraction_run,
+        )
+        from app.services.knowledge_source_service import register_material_source
+
+        revision = await register_material_source(
+            db,
+            user_id=user_id,
+            material_id=int(material_id),
+        )
+        extractor_type = "llm" if settings.KNOWLEDGE_LLM_EXTRACTION_ENABLED else "deterministic"
+        run = await create_extraction_run(
+            db,
+            user_id=user_id,
+            source_revision_id=int(revision.id),
+            extractor_type=extractor_type,
+        )
+        return {
+            "material_id": int(material_id),
+            "status": "queued" if run.status in {"queued", "failed"} else str(run.status),
+            "extraction_run": serialize_extraction_run(run),
+            "llm_enabled": bool(settings.KNOWLEDGE_LLM_EXTRACTION_ENABLED),
+        }
+
     chapter_result = await db.execute(
         select(Chapter)
         .where(Chapter.material_id == material_id)
@@ -98,7 +127,10 @@ async def extract_material_concepts(
             db=db, scenario="material_analyze", user_id=user_id
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"AI Provider 不可用：{exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"AI Provider 不可用：{format_ai_provider_error(exc)}",
+        ) from exc
 
     total = {"concepts": 0, "edges": 0}
     failed_chapters: list[str] = []
@@ -109,7 +141,10 @@ async def extract_material_concepts(
             total["edges"] += stats["edges"]
         except Exception as exc:
             logger.warning(
-                "章节概念抽取失败 material_id=%s chapter_id=%s err=%s", material_id, chapter.id, exc
+                "章节概念抽取失败 material_id=%s chapter_id=%s err=%s",
+                material_id,
+                chapter.id,
+                safe_exception_summary(exc),
             )
             failed_chapters.append(str(chapter.title or chapter.id))
 
@@ -162,8 +197,7 @@ async def associate_text(
         logger.warning(
             "联想结果已生成，但 Coach 归因写入失败 user_id=%s err=%s",
             current_user.id,
-            exc,
-            exc_info=True,
+            safe_exception_summary(exc),
         )
     return {
         "associations": associations,
@@ -204,7 +238,10 @@ class ConceptEdgeRequest(BaseModel):
 
 
 def _graph_error(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=404 if isinstance(exc, LookupError) else 409, detail=str(exc))
+    return HTTPException(
+        status_code=404 if isinstance(exc, LookupError) else 409,
+        detail=redact_sensitive_text(exc),
+    )
 
 
 @router.post("")

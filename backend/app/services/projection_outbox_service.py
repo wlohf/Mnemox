@@ -23,6 +23,11 @@ from app.models.learner_model import (
 )
 from app.models.learning_event import LearningEvent
 from app.services.learner_model_service import record_evidence, record_review_result_evidence
+from app.utils.error_safety import (
+    safe_error_diagnostic,
+    safe_exception_summary,
+)
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 OUTBOX_MODEL_VERSION = "projection-outbox-v1"
 REPLAY_PAGE_SIZE = 200
@@ -39,11 +44,11 @@ POSTGRES_PROJECTION_LOCK_NAMESPACE = 0x4D4E4F58
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return utc_now_db()
 
 
 def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
+    return to_utc_iso(value) if value else None
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -53,12 +58,21 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo else parsed
+        return to_db_utc(parsed)
     except (TypeError, ValueError):
         return None
 
 
 def outbox_to_dict(row: ProjectionOutbox) -> dict[str, Any]:
+    diagnostic = (
+        safe_error_diagnostic(
+            row.last_error,
+            code="projection_outbox.processing_failed",
+            max_chars=2000,
+        )
+        if row.last_error
+        else None
+    )
     return {
         "id": row.id,
         "user_id": row.user_id,
@@ -76,7 +90,9 @@ def outbox_to_dict(row: ProjectionOutbox) -> dict[str, Any]:
         "locked_at": _iso(row.locked_at),
         "processed_at": _iso(row.processed_at),
         "dead_lettered_at": _iso(row.dead_lettered_at),
-        "last_error": row.last_error,
+        "last_error": diagnostic.summary if diagnostic else None,
+        "last_error_code": diagnostic.code if diagnostic else None,
+        "last_error_fingerprint": diagnostic.fingerprint if diagnostic else None,
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
     }
@@ -288,12 +304,23 @@ async def reconcile_outbox_terminal_failures(
 
 def _dead_letter_task_to_dict(row: ProjectionOutbox) -> dict[str, Any]:
     """Return a user-safe DLQ item without payload or internal exception text."""
+    diagnostic = (
+        safe_error_diagnostic(
+            row.last_error,
+            code="projection_outbox.processing_failed",
+            max_chars=2000,
+        )
+        if row.last_error
+        else None
+    )
     return {
         "id": row.id,
         "concept_id": row.concept_id,
         "projection_type": row.projection_type,
         "status": row.status,
         "attempts": row.attempts,
+        "error_code": diagnostic.code if diagnostic else None,
+        "error_fingerprint": diagnostic.fingerprint if diagnostic else None,
         "occurred_at": _iso(row.occurred_at),
         "dead_lettered_at": _iso(row.dead_lettered_at),
         "updated_at": _iso(row.updated_at),
@@ -1093,7 +1120,7 @@ async def process_outbox(
                 processed += 1
             except Exception as exc:
                 row.status = "failed"
-                row.last_error = str(exc)[:2000]
+                row.last_error = safe_exception_summary(exc, max_chars=2000)
                 if int(row.attempts or 0) >= safe_max_attempts:
                     row.dead_lettered_at = current
                     row.available_at = current

@@ -9,6 +9,8 @@ import { ProactiveReviewChecksCard } from '../components/agent/ProactiveReviewCh
 import { WeeklyLearningReportCard } from '../components/agent/WeeklyLearningReportCard'
 import {
   controlAgentProfileItem,
+  cancelAgentJob,
+  confirmAgentKernelAction,
   executeAgentAction,
   getAgentActionDraft,
   getAgentBrief,
@@ -20,8 +22,12 @@ import {
   getWeeklyLearningReport,
   ignoreAgentMemoryCandidate,
   listAgentMemoryCandidates,
+  prepareAgentKernel,
+  prepareAgentKernelAction,
   recordAgentActionFeedback,
   runAgentMemoryLearning,
+  runPreparedAgentKernel,
+  streamAgentJobEvents,
   triggerAgentTask,
   confirmAgentMemoryCandidate,
   type AgentAction,
@@ -30,6 +36,7 @@ import {
   type AgentCoreProfile,
   type AgentGoalContext,
   type AgentGoalContextItem,
+  type AgentKernelActionDraftResponse,
   type AgentMemoryCandidate,
   type AgentNegativeReasonCode,
   type AgentPersonalizationItem,
@@ -55,7 +62,12 @@ import {
   type AssociationRecallResponse,
   type ConceptAssociation,
 } from '../services/associationApi'
-import { getNorthStarMetrics, type NorthStarMetricsReport } from '../services/analyticsApi'
+import {
+  getCoachExperimentReport,
+  getNorthStarMetrics,
+  type CoachExperimentReport,
+  type NorthStarMetricsReport,
+} from '../services/analyticsApi'
 
 const { Paragraph, Text } = Typography
 
@@ -88,6 +100,50 @@ function riskColor(risk?: AgentBrief['risk_level']) {
   if (risk === 'high') return 'red'
   if (risk === 'medium') return 'orange'
   return 'green'
+}
+
+function activeKernelJobIdFromRuntime(runtime: AgentRuntimeInfo | null): string | null {
+  const active = (runtime?.task_queue || []).find(
+    (job) => job.agent === 'kernel' && ['pending', 'running', 'cancelling'].includes(String(job.status || '')),
+  )
+  return active?.id ? String(active.id) : null
+}
+
+function kernelActionsFromJob(job: Record<string, unknown>): AgentAction[] {
+  const result = job.result && typeof job.result === 'object'
+    ? job.result as Record<string, unknown>
+    : {}
+  const actions = Array.isArray(result.next_actions) ? result.next_actions : []
+  return actions.filter((item): item is AgentAction => Boolean(
+    item
+    && typeof item === 'object'
+    && typeof (item as Record<string, unknown>).id === 'string'
+    && typeof (item as Record<string, unknown>).title === 'string',
+  ))
+}
+
+function kernelUsesRulesFallback(job: Record<string, unknown>): boolean {
+  const result = job.result && typeof job.result === 'object'
+    ? job.result as Record<string, unknown>
+    : {}
+  const fallback = result.fallback && typeof result.fallback === 'object'
+    ? result.fallback as Record<string, unknown>
+    : {}
+  return result.status === 'fallback' && fallback.source === 'rules'
+}
+
+function kernelActionExecution(
+  job: Record<string, unknown>,
+  actionId: string,
+): Record<string, unknown> | null {
+  const result = job.result && typeof job.result === 'object'
+    ? job.result as Record<string, unknown>
+    : {}
+  const executions = result.action_executions && typeof result.action_executions === 'object'
+    ? result.action_executions as Record<string, unknown>
+    : {}
+  const execution = executions[actionId]
+  return execution && typeof execution === 'object' ? execution as Record<string, unknown> : null
 }
 
 function routeWithCoachAttempt(route: string, attempt: CoachActionAttempt, nudgeId: string) {
@@ -182,11 +238,19 @@ export function AgentPage() {
   const [draft, setDraft] = useState<AgentActionDraftResponse | null>(null)
   const [executeLoading, setExecuteLoading] = useState(false)
   const [runtime, setRuntime] = useState<AgentRuntimeInfo | null>(null)
+  const [kernelLoading, setKernelLoading] = useState<string | null>(null)
+  const [activeKernelJobId, setActiveKernelJobId] = useState<string | null>(null)
+  const [kernelTraceJobId, setKernelTraceJobId] = useState<string | null>(null)
+  const [kernelTrace, setKernelTrace] = useState<Array<Record<string, unknown>>>([])
+  const [kernelActionDraft, setKernelActionDraft] = useState<AgentKernelActionDraftResponse | null>(null)
+  const [kernelActionLoading, setKernelActionLoading] = useState<string | null>(null)
+  const kernelStreamAbortRef = useRef<AbortController | null>(null)
   const [proactiveRuntime, setProactiveRuntime] = useState<AgentProactiveRuntimeStatus | null>(null)
   const [proactiveSaving, setProactiveSaving] = useState(false)
   const [weeklyReport, setWeeklyReport] = useState<WeeklyLearningReport | null>(null)
   const [weeklyReportLoading, setWeeklyReportLoading] = useState(false)
   const [northStarMetrics, setNorthStarMetrics] = useState<NorthStarMetricsReport | null>(null)
+  const [coachExperiment, setCoachExperiment] = useState<CoachExperimentReport | null>(null)
   const [goalContext, setGoalContext] = useState<AgentGoalContext | null>(null)
   const [coachNudges, setCoachNudges] = useState<CoachNudge[]>([])
   const [coachReplay, setCoachReplay] = useState<CoachNudgeReplay | null>(null)
@@ -207,7 +271,10 @@ export function AgentPage() {
 
   const loadRuntime = async () => {
     const data = await getAgentStatus()
-    if (data) setRuntime(data)
+    if (data) {
+      setRuntime(data)
+      setActiveKernelJobId(activeKernelJobIdFromRuntime(data))
+    }
   }
 
   const loadProactiveRuntime = async () => {
@@ -229,8 +296,12 @@ export function AgentPage() {
 
   const loadNorthStarMetrics = async () => {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-    const report = await getNorthStarMetrics(28, timeZone)
+    const [report, experiment] = await Promise.all([
+      getNorthStarMetrics(28, timeZone),
+      getCoachExperimentReport(28),
+    ])
     setNorthStarMetrics(report)
+    setCoachExperiment(experiment)
   }
 
   const loadCoachNudges = async () => {
@@ -251,7 +322,7 @@ export function AgentPage() {
 
   const load = async (llm = useLlm) => {
     setLoading(true)
-    const [data, runtimeData, proactiveRuntimeData, nudgesData, goalData, candidatesData, profileData, metricsData] = await Promise.all([
+    const [data, runtimeData, proactiveRuntimeData, nudgesData, goalData, candidatesData, profileData, metricsData, experimentData] = await Promise.all([
       getAgentBrief(llm),
       getAgentStatus(),
       getAgentProactiveRuntimeStatus(),
@@ -260,15 +331,20 @@ export function AgentPage() {
       listAgentMemoryCandidates(),
       getAgentCoreProfile(),
       getNorthStarMetrics(28, Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
+      getCoachExperimentReport(28),
     ])
     setLoading(false)
-    if (runtimeData) setRuntime(runtimeData)
+    if (runtimeData) {
+      setRuntime(runtimeData)
+      setActiveKernelJobId(activeKernelJobIdFromRuntime(runtimeData))
+    }
     if (proactiveRuntimeData) setProactiveRuntime(proactiveRuntimeData)
     if (nudgesData) setCoachNudges(nudgesData)
     if (goalData) setGoalContext(goalData)
     setMemoryCandidates(candidatesData || [])
     setCoreProfile(profileData)
     setNorthStarMetrics(metricsData)
+    setCoachExperiment(experimentData)
     if (!data) {
       message.error('加载 Agent 简报失败')
       return
@@ -278,6 +354,7 @@ export function AgentPage() {
 
   useEffect(() => {
     void load(false)
+    return () => kernelStreamAbortRef.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -347,6 +424,133 @@ export function AgentPage() {
     message.success(result.result.summary)
     await loadRuntime()
     if (agent !== 'chat') await load()
+  }
+
+  const runKernel = async (resumeFromJobId?: string) => {
+    setKernelLoading(resumeFromJobId || 'new')
+    const prepared = await prepareAgentKernel(resumeFromJobId)
+    const jobId = String(prepared?.job?.id || '')
+    if (!jobId) {
+      setKernelLoading(null)
+      message.error('AgentKernel 任务准备失败，请稍后重试')
+      return
+    }
+    setActiveKernelJobId(jobId)
+    await loadRuntime()
+    const streamPromise = watchKernelJob(jobId)
+    const result = await runPreparedAgentKernel(jobId)
+    setKernelLoading(null)
+    if (!result) {
+      message.error('AgentKernel 运行未完成；任务记录已保留，请刷新查看状态')
+      await loadRuntime()
+      return
+    }
+    if (result.status === 'completed') {
+      message.success(result.strategy || 'AgentKernel 已完成证据检索与行动建议')
+    } else if (result.status === 'fallback' && result.fallback?.source === 'rules') {
+      message.info('证据型 Kernel 暂未完成，已提供稳定规则简报；你可以先执行其中一步，或稍后从记录继续')
+    } else if (result.status === 'unavailable') {
+      message.warning('当前未配置可用的 Agent 模型；运行记录已保留，可稍后继续')
+    } else if (result.status === 'cancelled') {
+      message.info('AgentKernel 已取消，没有执行写入')
+    } else if (result.error === 'daily_cost_budget_exceeded') {
+      message.warning('今日 AgentKernel 预算已用完，没有继续调用模型；预算按 UTC 每日重置，现有运行记录仍可回放')
+    } else if (result.error === 'cost_budget_exceeded') {
+      message.warning('本次 AgentKernel 运行已达到成本上限，没有继续调用模型；checkpoint 和运行记录已保留')
+    } else {
+      message.warning('AgentKernel 未完成；运行记录已保留，可沿用原目标安全重试')
+    }
+    await streamPromise
+    await loadRuntime()
+  }
+
+  const watchKernelJob = async (jobId: string) => {
+    kernelStreamAbortRef.current?.abort()
+    const controller = new AbortController()
+    kernelStreamAbortRef.current = controller
+    setKernelTraceJobId(jobId)
+    setKernelTrace([])
+
+    const outcome = await streamAgentJobEvents(jobId, {
+      onSnapshot: (job) => {
+        if (['pending', 'running', 'cancelling'].includes(String(job.status || ''))) {
+          setActiveKernelJobId(jobId)
+        }
+      },
+      onLog: (log) => {
+        const logId = String(log.id || '')
+        setKernelTrace((current) => (
+          logId && current.some((item) => String(item.id || '') === logId)
+            ? current
+            : [...current, log].slice(-40)
+        ))
+      },
+      onTerminal: () => setActiveKernelJobId((current) => current === jobId ? null : current),
+      onTimeout: () => message.info('实时跟踪窗口已结束；任务仍会保留，可稍后重新打开回放'),
+      onError: () => message.warning('实时步骤暂时不可用；任务执行和持久化不受影响'),
+    }, controller.signal)
+
+    if (kernelStreamAbortRef.current === controller) kernelStreamAbortRef.current = null
+    if (outcome === 'terminal') await loadRuntime()
+    return outcome
+  }
+
+  const cancelRuntimeJob = async (jobId: string) => {
+    const result = await cancelAgentJob(jobId)
+    if (!result) {
+      message.error('取消请求失败')
+      return
+    }
+    message.info(result.changed ? '已请求取消，当前只读步骤结束后停止' : '该运行已在取消或已经结束')
+    await loadRuntime()
+  }
+
+  const executePreparedKernelAction = async (prepared: AgentKernelActionDraftResponse) => {
+    setExecuteLoading(true)
+    const result = await confirmAgentKernelAction(
+      prepared.job_id,
+      prepared.action.id,
+      prepared.draft_id,
+    )
+    setExecuteLoading(false)
+    if (!result) {
+      message.error('行动确认失败；没有写入任务，请刷新后重试')
+      return
+    }
+    setKernelActionDraft(null)
+    if (result.idempotent) {
+      message.info('这条行动已经确认过，没有重复创建')
+    } else if (result.status === 'created') {
+      message.success('已按确认草案创建任务')
+    } else if (result.status === 'skipped_duplicate') {
+      message.info('同名今日任务已存在，没有重复创建')
+    } else {
+      message.success('已记录行动，正在打开执行页面')
+    }
+    await loadRuntime()
+    if (result.route) navigate(result.route)
+  }
+
+  const openKernelActionDraft = async (jobId: string, action: AgentAction) => {
+    const loadingKey = `${jobId}:${action.id}`
+    setKernelActionLoading(loadingKey)
+    const prepared = await prepareAgentKernelAction(jobId, action.id)
+    setKernelActionLoading(null)
+    if (!prepared) {
+      message.error('Kernel 行动草案暂不可用；可继续使用上方稳定行动建议')
+      return
+    }
+    if (prepared.status === 'completed' && prepared.execution_result) {
+      message.info('这条行动已经确认过，没有重复执行')
+      await loadRuntime()
+      if (prepared.execution_result.route) navigate(prepared.execution_result.route)
+      return
+    }
+    if (!prepared.requires_confirmation) {
+      await executePreparedKernelAction(prepared)
+      return
+    }
+    setKernelActionDraft(prepared)
   }
 
   const saveProactiveReviewChecks = async (enabled: boolean) => {
@@ -1219,6 +1423,7 @@ export function AgentPage() {
 
         <NorthStarMetricsCard
           report={northStarMetrics}
+          experiment={coachExperiment}
           onRefresh={() => void loadNorthStarMetrics()}
         />
 
@@ -1246,6 +1451,26 @@ export function AgentPage() {
               <Space direction="vertical" size={12} style={{ width: '100%' }}>
                 <Space wrap>
                   <Tag color={runtime?.status === 'running' ? 'processing' : 'default'}>状态：{runtime?.status || 'idle'}</Tag>
+                  {runtime?.kernel_daily_budget && (
+                    <Tag color={runtime.kernel_daily_budget.remaining_model_calls <= 0 ? 'warning' : 'default'}>
+                      今日 Kernel 调用：{runtime.kernel_daily_budget.model_calls}/{runtime.kernel_daily_budget.model_call_limit}
+                    </Tag>
+                  )}
+                  {runtime?.kernel_daily_budget && (
+                    <Tag color={runtime.kernel_daily_budget.remaining_estimated_tokens <= 0 ? 'warning' : 'default'}>
+                      估算 Token：{runtime.kernel_daily_budget.estimated_tokens.toLocaleString('zh-CN')}/{runtime.kernel_daily_budget.estimated_token_limit.toLocaleString('zh-CN')}
+                    </Tag>
+                  )}
+                  {Boolean(runtime?.kernel_daily_budget?.actual_usage_calls) && (
+                    <Tag color="blue">
+                      供应商 Token：{Number(runtime?.kernel_daily_budget?.actual_tokens || 0).toLocaleString('zh-CN')}
+                    </Tag>
+                  )}
+                  {Boolean(runtime?.kernel_daily_budget?.configured_cost_usd) && (
+                    <Tag color="green">
+                      配置单价参考成本：${Number(runtime?.kernel_daily_budget?.configured_cost_usd || 0).toFixed(6)}
+                    </Tag>
+                  )}
                   {(runtime?.agents || []).map((agent) => (
                     <Button
                       key={agent.name}
@@ -1256,7 +1481,61 @@ export function AgentPage() {
                       触发 {agent.display_name}
                     </Button>
                   ))}
+                  <Button
+                    size="small"
+                    type="primary"
+                    ghost
+                    loading={kernelLoading === 'new'}
+                    disabled={Boolean(activeKernelJobId)}
+                    onClick={() => void runKernel()}
+                  >
+                    运行证据型 AgentKernel
+                  </Button>
+                  {activeKernelJobId && (
+                    <Button danger size="small" onClick={() => void cancelRuntimeJob(activeKernelJobId)}>
+                      取消当前运行
+                    </Button>
+                  )}
                 </Space>
+                {kernelTraceJobId && (
+                  <List
+                    size="small"
+                    bordered
+                    header={(
+                      <Space wrap>
+                        <Text strong>AgentKernel 实时步骤 / 持久回放</Text>
+                        <Tag>{kernelTraceJobId.slice(0, 12)}</Tag>
+                      </Space>
+                    )}
+                    dataSource={kernelTrace}
+                    locale={{ emptyText: '任务已连接，等待第一个持久化步骤…' }}
+                    renderItem={(log) => {
+                      const metadata = log.metadata && typeof log.metadata === 'object'
+                        ? log.metadata as Record<string, unknown>
+                        : {}
+                      const step = metadata.step && typeof metadata.step === 'object'
+                        ? metadata.step as Record<string, unknown>
+                        : {}
+                      return (
+                        <List.Item>
+                          <Space direction="vertical" size={2}>
+                            <Space wrap>
+                              <Tag color={log.status === 'failed' ? 'red' : log.status === 'finish' ? 'green' : ['cancelled', 'interrupted'].includes(String(log.status || '')) ? 'orange' : 'blue'}>
+                                {String(log.status || '-')}
+                              </Tag>
+                              {Boolean(step.tool) && <Tag>{String(step.tool)}</Tag>}
+                              <Text type="secondary">{String(log.created_at || '')}</Text>
+                            </Space>
+                            <Text>{String(log.message || '')}</Text>
+                            {Boolean(step.observation_preview) && (
+                              <Text type="secondary">证据摘要：{String(step.observation_preview)}</Text>
+                            )}
+                          </Space>
+                        </List.Item>
+                      )
+                    }}
+                  />
+                )}
                 <Row gutter={[12, 12]}>
                   <Col xs={24} md={12}>
                     <List
@@ -1266,14 +1545,61 @@ export function AgentPage() {
                       dataSource={runtime?.task_queue || []}
                       locale={{ emptyText: '暂无任务' }}
                       renderItem={(job) => (
-                        <List.Item>
+                        <List.Item
+                          actions={[
+                            ...(job.agent === 'kernel'
+                              ? [<Button key="trace" size="small" onClick={() => void watchKernelJob(String(job.id || ''))}>{['pending', 'running', 'cancelling'].includes(String(job.status || '')) ? '跟踪' : '回放'}</Button>]
+                              : []),
+                            ...(job.agent === 'kernel' && ['pending', 'running', 'cancelling'].includes(String(job.status || ''))
+                              ? [<Button key="cancel" size="small" danger onClick={() => void cancelRuntimeJob(String(job.id || ''))}>取消</Button>]
+                              : []),
+                            ...(job.agent === 'kernel' && ['failed', 'cancelled'].includes(String(job.status || ''))
+                              ? [<Button key="resume" size="small" loading={kernelLoading === String(job.id || '')} onClick={() => void runKernel(String(job.id || ''))}>{job.recoverable === true ? `从 step ${Number(job.checkpoint_step || 0)} 继续` : '重新运行'}</Button>]
+                              : []),
+                          ]}
+                        >
                           <Space direction="vertical" size={2}>
                             <Space wrap>
                               <Tag>{String(job.agent || '-')}</Tag>
                               <Tag color={job.status === 'failed' ? 'red' : job.status === 'completed' ? 'green' : 'blue'}>{String(job.status || '-')}</Tag>
                               <Text type="secondary">{String(job.task || '')}</Text>
+                              {job.recoverable === true && <Tag color="gold">checkpoint 已保存</Tag>}
                             </Space>
                             {Boolean(job.summary) && <Text>{String(job.summary)}</Text>}
+                            {job.agent === 'kernel' && (job.status === 'completed' || kernelUsesRulesFallback(job)) && kernelActionsFromJob(job).length > 0 && (
+                              <List
+                                size="small"
+                                dataSource={kernelActionsFromJob(job)}
+                                header={kernelUsesRulesFallback(job)
+                                  ? '规则降级建议（可先执行，也可稍后继续 Kernel）'
+                                  : 'Kernel 建议（确认后才会写入任务）'}
+                                renderItem={(action) => {
+                                  const execution = kernelActionExecution(job, action.id)
+                                  const loadingKey = `${String(job.id || '')}:${action.id}`
+                                  return (
+                                    <List.Item
+                                      actions={[
+                                        <Button
+                                          key="prepare"
+                                          size="small"
+                                          type="link"
+                                          disabled={Boolean(execution)}
+                                          loading={kernelActionLoading === loadingKey}
+                                          onClick={() => void openKernelActionDraft(String(job.id || ''), action)}
+                                        >
+                                          {execution ? (execution.status === 'created' ? '已创建任务' : '已确认') : '准备行动'}
+                                        </Button>,
+                                      ]}
+                                    >
+                                      <Space direction="vertical" size={0}>
+                                        <Text>{action.title}</Text>
+                                        <Text type="secondary">{action.reason}</Text>
+                                      </Space>
+                                    </List.Item>
+                                  )
+                                }}
+                              />
+                            )}
                           </Space>
                         </List.Item>
                       )}
@@ -1291,7 +1617,7 @@ export function AgentPage() {
                           <Space direction="vertical" size={2}>
                             <Space wrap>
                               <Tag>{String(log.agent || '-')}</Tag>
-                              <Tag color={log.status === 'failed' ? 'red' : log.status === 'completed' ? 'green' : 'blue'}>{String(log.status || '-')}</Tag>
+                              <Tag color={log.status === 'failed' ? 'red' : log.status === 'completed' ? 'green' : ['cancelled', 'interrupted'].includes(String(log.status || '')) ? 'orange' : 'blue'}>{String(log.status || '-')}</Tag>
                               <Text type="secondary">{String(log.created_at || '')}</Text>
                             </Space>
                             <Text>{String(log.message || '')}</Text>
@@ -1326,6 +1652,37 @@ export function AgentPage() {
                 {draft.draft.estimated_minutes && <Paragraph><Text strong>预计时长：</Text>{draft.draft.estimated_minutes} 分钟</Paragraph>}
               </Card>
               <Paragraph type="secondary">Agent 只会在你确认后写入任务；如果状态已变化，请先刷新感知。</Paragraph>
+            </Space>
+          )}
+        </Modal>
+
+        <Modal
+          title="确认 AgentKernel 行动草案"
+          open={!!kernelActionDraft}
+          onCancel={() => setKernelActionDraft(null)}
+          onOk={() => kernelActionDraft && void executePreparedKernelAction(kernelActionDraft)}
+          confirmLoading={executeLoading}
+          okText="确认创建"
+          cancelText="取消"
+        >
+          {kernelActionDraft && (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Alert
+                type="info"
+                showIcon
+                message={kernelActionDraft.action.title}
+                description={kernelActionDraft.action.reason}
+              />
+              <Card size="small">
+                <Paragraph><Text strong>来源任务：</Text>{kernelActionDraft.job_id}</Paragraph>
+                <Paragraph><Text strong>操作：</Text>创建今日任务</Paragraph>
+                {kernelActionDraft.draft.goal_title && <Paragraph><Text strong>所属目标：</Text>{kernelActionDraft.draft.goal_title}</Paragraph>}
+                {kernelActionDraft.draft.title && <Paragraph><Text strong>任务标题：</Text>{kernelActionDraft.draft.title}</Paragraph>}
+                {kernelActionDraft.draft.description && <Paragraph><Text strong>说明：</Text>{kernelActionDraft.draft.description}</Paragraph>}
+                {kernelActionDraft.draft.planned_date && <Paragraph><Text strong>计划日期：</Text>{kernelActionDraft.draft.planned_date}</Paragraph>}
+                {kernelActionDraft.draft.estimated_minutes && <Paragraph><Text strong>预计时长：</Text>{kernelActionDraft.draft.estimated_minutes} 分钟</Paragraph>}
+              </Card>
+              <Paragraph type="secondary">确认凭据已持久化；重复点击不会重复创建任务。目标状态发生变化时，服务端会拒绝旧草案。</Paragraph>
             </Space>
           )}
         </Modal>

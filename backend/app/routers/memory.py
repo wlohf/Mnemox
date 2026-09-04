@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.services.memory_declaration_service import (
     delete_memory_declarations,
@@ -16,6 +17,10 @@ from app.services.memory_declaration_service import (
     list_memory_declarations,
     record_manual_memory_declaration,
     sync_memory_declaration_review_status,
+)
+from app.services.graphiti_temporal_service import (
+    GraphitiTemporalService,
+    GraphitiTemporalUnavailable,
 )
 from app.services.memory_service import list_memories, list_summaries, get_relevant_memories
 from app.models.memory import MemoryDeclaration, UserMemory
@@ -52,6 +57,18 @@ class MemoryCorrectionRequest(BaseModel):
     expires_at: datetime | None = None
 
 
+class TemporalGraphQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    fact_key: str | None = Field(default=None, max_length=200)
+    as_of: datetime | None = None
+    limit: int = Field(default=10, ge=1, le=25)
+
+
+def _require_graphiti_temporal() -> None:
+    if not settings.GRAPHITI_ENABLED:
+        raise HTTPException(status_code=409, detail="Graphiti Temporal Slice 尚未启用")
+
+
 def _memory_response(memory: UserMemory) -> dict:
     return {
         "id": memory.id,
@@ -64,6 +81,76 @@ def _memory_response(memory: UserMemory) -> dict:
         "is_locked": memory.is_locked,
         "expires_at": memory.expires_at.isoformat() if memory.expires_at else None,
     }
+
+
+@router.get("/temporal-graph/status")
+async def get_temporal_graph_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_graphiti_temporal()
+    service: GraphitiTemporalService | None = None
+    try:
+        service = GraphitiTemporalService(db)
+        status = await service.status(user_id=int(current_user.id))
+    except GraphitiTemporalUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Graphiti Temporal Slice 当前不可用",
+        ) from exc
+    finally:
+        if service is not None:
+            await service.close()
+    if not bool(status.get("ok")):
+        raise HTTPException(status_code=503, detail="Graphiti Temporal Slice 当前不可用")
+    return status
+
+
+@router.post("/temporal-graph/rebuild")
+async def rebuild_temporal_graph(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_graphiti_temporal()
+    service: GraphitiTemporalService | None = None
+    try:
+        service = GraphitiTemporalService(db)
+        return await service.rebuild_user(user_id=int(current_user.id))
+    except GraphitiTemporalUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Graphiti Temporal Slice 当前不可用",
+        ) from exc
+    finally:
+        if service is not None:
+            await service.close()
+
+
+@router.post("/temporal-graph/query")
+async def query_temporal_graph(
+    body: TemporalGraphQueryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_graphiti_temporal()
+    service: GraphitiTemporalService | None = None
+    try:
+        service = GraphitiTemporalService(db)
+        return await service.query(
+            user_id=int(current_user.id),
+            query=body.query,
+            fact_key=body.fact_key,
+            as_of=body.as_of,
+            limit=body.limit,
+        )
+    except GraphitiTemporalUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Graphiti Temporal Slice 当前不可用",
+        ) from exc
+    finally:
+        if service is not None:
+            await service.close()
 
 
 @router.get("/memories")

@@ -16,6 +16,7 @@ from sqlalchemy.sql import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.config import settings
 from app.models.chat import ChatConversation
 from app.models.goal import Goal, Task
 from app.models.note import Note, NoteLink
@@ -25,7 +26,10 @@ from app.ai.factory import AIProviderFactory
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.learning_event_service import record_learning_event
+from app.services.knowledge_source_service import delete_source, register_note_source
+from app.utils.error_safety import safe_exception_summary
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.pydantic_compat import provided_model_fields
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -57,7 +61,7 @@ class NoteUpdate(BaseModel):
     links: Optional[List[NoteLinkIn]] = None
 
     def provided_fields(self) -> set[str]:
-        return self.model_fields_set if hasattr(self, "model_fields_set") else self.__fields_set__
+        return provided_model_fields(self)
 
 
 class NoteAIAssistRequest(BaseModel):
@@ -75,7 +79,7 @@ class NoteActionRequest(BaseModel):
     links: Optional[List[NoteLinkIn]] = None
 
     def provided_fields(self) -> set[str]:
-        return self.model_fields_set if hasattr(self, "model_fields_set") else self.__fields_set__
+        return provided_model_fields(self)
 
 
 class NoteSuggestRequest(BaseModel):
@@ -405,7 +409,7 @@ def _safe_tags(raw: Optional[str]) -> List[str]:
         if isinstance(arr, list):
             return [str(x).strip() for x in arr if str(x).strip()][:12]
     except Exception as e:
-        logger.warning("解析笔记标签失败，raw=%s, err=%s", raw, e)
+        logger.warning("解析笔记标签失败: %s", safe_exception_summary(e))
     return []
 
 
@@ -479,6 +483,8 @@ async def create_note(
         db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
 
     await db.flush()
+    if settings.KNOWLEDGE_V2_ENABLED:
+        await register_note_source(db, user_id=int(current_user.id), note_id=int(note.id))
     await record_learning_event(
         db,
         int(current_user.id),
@@ -507,7 +513,7 @@ async def create_note(
             exclude_note_id=int(note.id),
         )
     except Exception as exc:
-        logger.warning("笔记联想失败 note_id=%s err=%s", note.id, exc)
+        logger.warning("笔记联想失败 note_id=%s err=%s", note.id, safe_exception_summary(exc))
 
     item = _to_item(saved)
     item["associations"] = associations
@@ -551,12 +557,18 @@ async def _update_note_locked(
 
     await db.flush()
     if body.title is not None or body.content is not None:
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await register_note_source(db, user_id=user_id, note_id=int(note.id))
         try:
             from app.services.association_service import attach_note_to_concepts
 
             await attach_note_to_concepts(db, user_id, note)
         except Exception as exc:
-            logger.warning("更新笔记后重新挂接概念失败 note_id=%s err=%s", note.id, exc)
+            logger.warning(
+                "更新笔记后重新挂接概念失败 note_id=%s err=%s",
+                note.id,
+                safe_exception_summary(exc),
+            )
     await record_learning_event(
         db,
         user_id,
@@ -623,7 +635,12 @@ async def assist_note_with_ai(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"AI 笔记辅助不可用：{e}") from e
     except Exception as e:
-        logger.exception("AI 笔记辅助失败，note_id=%s, action=%s", note_id, action)
+        logger.warning(
+            "AI 笔记辅助失败，note_id=%s, action=%s, err=%s",
+            note_id,
+            action,
+            safe_exception_summary(e),
+        )
         raise HTTPException(status_code=502, detail="AI 笔记辅助生成失败，请稍后重试") from e
 
     suggestion = (suggestion or "").strip()
@@ -706,6 +723,13 @@ async def _delete_note_locked(
         note_id=int(note.id),
         dedupe_key=f"note.deleted:{note.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
     )
+    if settings.KNOWLEDGE_V2_ENABLED:
+        await delete_source(
+            db,
+            user_id=int(current_user.id),
+            source_type="note",
+            source_record_id=int(note.id),
+        )
     await db.delete(note)
     if _uses_sqlite(db):
         await db.commit()

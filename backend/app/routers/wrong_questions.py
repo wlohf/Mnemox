@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.material import Material, Chapter
+from app.config import settings
+from app.services.knowledge_source_service import register_material_source
 from app.models.concept import ConceptLink, ConceptSourceEvidence
 from app.models.question import Question, WrongQuestion, ReviewSchedule
 from app.auth import get_current_user
@@ -67,6 +69,8 @@ async def _ensure_default_chapter(db: AsyncSession, user_id: int) -> int:
         )
         db.add(material)
         await db.flush()
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await register_material_source(db, user_id=int(user_id), material_id=int(material.id))
 
     chapter = Chapter(
         material_id=material.id,

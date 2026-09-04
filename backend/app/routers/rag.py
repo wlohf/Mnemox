@@ -1,5 +1,7 @@
 """RAG 知识库诊断路由。"""
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,12 +10,21 @@ from typing import Optional, List
 
 from app.config import settings
 from app.ai.rag_service import create_embedding_model, get_rag_service, load_rag_settings, save_rag_settings
+from app.utils.outbound_url import validate_ai_provider_url
 from app.database import get_db
 from app.models.material import Material
 from app.models.chat import ChatProjectMaterial, ChatProject
 from app.auth import get_current_user
 from app.models.user import User
-from app.services.retrieval_projection_service import RetrievalProjectionService
+from app.services.retrieval_projection_service import (
+    RetrievalProjectionService,
+    serialized_retrieval_configuration_change,
+)
+from app.services.knowledge_projection_service import (
+    invalidate_knowledge_embedding_configuration,
+)
+from app.utils.ai_errors import format_ai_provider_error
+from app.utils.error_safety import redact_sensitive_text
 
 
 router = APIRouter()
@@ -26,6 +37,20 @@ def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "****"
     return key[:3] + "****" + key[-4:]
+
+
+def _require_rag_settings_manager(current_user: User) -> None:
+    """Keep process-wide embedding settings out of ordinary user control."""
+    is_public = settings.ENVIRONMENT.lower() in {"prod", "production"} or bool(os.environ.get("DB_PASSWORD"))
+    if not is_public:
+        return
+    allowed = {
+        item.strip().casefold()
+        for item in settings.RAG_SETTINGS_ADMIN_USERNAMES.split(",")
+        if item.strip()
+    }
+    if current_user.username.casefold() not in allowed:
+        raise HTTPException(status_code=403, detail="仅部署管理员可以修改全局 RAG 配置")
 
 
 def _coerce_rag_number(value, fallback, cast_type):
@@ -103,6 +128,8 @@ async def get_rag_settings_endpoint(
         "similarity_threshold": status.get("similarity_threshold", settings.RAG_SIMILARITY_THRESHOLD),
         "embedding_enabled": status.get("embedding_enabled", False),
         "last_error": status.get("last_error", ""),
+        "last_error_code": status.get("last_error_code"),
+        "last_error_fingerprint": status.get("last_error_fingerprint"),
         "last_retrieval_status": status.get("last_retrieval_status", {}),
         "fallback_active": status.get("fallback_active", False),
         "projection_summary": await RetrievalProjectionService(db, rag=rag).status_summary(
@@ -118,6 +145,7 @@ async def update_rag_settings(
     current_user: User = Depends(get_current_user),
 ):
     """更新 RAG embedding 配置并热重载服务。"""
+    _require_rag_settings_manager(current_user)
     current = load_rag_settings()
 
     if body.api_key is not None and body.api_key != "":
@@ -136,26 +164,39 @@ async def update_rag_settings(
         current["similarity_threshold"] = body.similarity_threshold
 
     current = _validate_rag_runtime_settings(current)
-    save_rag_settings(current)
 
     # 热重载 RAG 服务
     api_key = current.get("api_key") or settings.OPENAI_API_KEY
     base_url = current.get("base_url") or settings.OPENAI_BASE_URL
+    if api_key:
+        try:
+            base_url = await validate_ai_provider_url(base_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
+        current["base_url"] = base_url
     model = current.get("model") or settings.RAG_EMBEDDING_MODEL
-
     rag = get_rag_service()
-    await rag.reinitialize(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        chunk_size=current.get("chunk_size"),
-        chunk_overlap=current.get("chunk_overlap"),
-        top_k=current.get("top_k"),
-        similarity_threshold=current.get("similarity_threshold"),
-    )
-    status = await rag.get_status(int(current_user.id))
-    status_message = (status.get("last_retrieval_status") or {}).get("message", "")
-    stale_count = await RetrievalProjectionService(db, rag=rag).mark_configuration_stale()
+    async with serialized_retrieval_configuration_change(db):
+        save_rag_settings(current)
+        await rag.reinitialize(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            chunk_size=current.get("chunk_size"),
+            chunk_overlap=current.get("chunk_overlap"),
+            top_k=current.get("top_k"),
+            similarity_threshold=current.get("similarity_threshold"),
+        )
+        status = await rag.get_status(int(current_user.id))
+        status_message = (status.get("last_retrieval_status") or {}).get("message", "")
+        stale_count = await RetrievalProjectionService(db, rag=rag).mark_configuration_stale(
+            configuration_lock_held=True
+        )
+        knowledge_change = (
+            await invalidate_knowledge_embedding_configuration(db)
+            if settings.KNOWLEDGE_V2_ENABLED
+            else {"users": 0, "stale_projections": 0, "rebuilds_enqueued": 0}
+        )
 
     return {
         "ok": True,
@@ -164,6 +205,8 @@ async def update_rag_settings(
         "model": model,
         "requires_reindex": "重新索引" in status_message or stale_count > 0,
         "stale_projections": stale_count,
+        "stale_knowledge_projections": knowledge_change["stale_projections"],
+        "knowledge_rebuilds_enqueued": knowledge_change["rebuilds_enqueued"],
         "message": status_message,
         "total_chunks": status.get("total_chunks", 0),
     }
@@ -174,6 +217,7 @@ async def test_rag_embedding(
     current_user: User = Depends(get_current_user),
 ):
     """使用当前配置测试 embedding 连接。"""
+    _require_rag_settings_manager(current_user)
     file_cfg = load_rag_settings()
     api_key = file_cfg.get("api_key") or settings.OPENAI_API_KEY
     base_url = file_cfg.get("base_url") or settings.OPENAI_BASE_URL
@@ -181,6 +225,16 @@ async def test_rag_embedding(
 
     if not api_key:
         return {"success": False, "message": "未配置 API Key", "capability": "embedding", "model": model}
+
+    try:
+        base_url = await validate_ai_provider_url(base_url)
+    except ValueError as exc:
+        return {
+            "success": False,
+            "message": redact_sensitive_text(exc),
+            "capability": "embedding",
+            "model": model,
+        }
 
     import asyncio
 
@@ -197,7 +251,12 @@ async def test_rag_embedding(
         dim = await asyncio.to_thread(_test)
         return {"success": True, "message": f"Embedding 连接成功！维度: {dim}", "capability": "embedding", "model": model}
     except Exception as e:
-        return {"success": False, "message": f"Embedding 连接失败: {str(e)}", "capability": "embedding", "model": model}
+        return {
+            "success": False,
+            "message": f"Embedding 连接失败: {format_ai_provider_error(e)}",
+            "capability": "embedding",
+            "model": model,
+        }
 
 
 @router.get("/health")
@@ -223,6 +282,8 @@ async def rag_health(
         "embedding_enabled": status.get("embedding_enabled", False),
         "fallback_active": status.get("fallback_active", False),
         "last_error": status.get("last_error", ""),
+        "last_error_code": status.get("last_error_code"),
+        "last_error_fingerprint": status.get("last_error_fingerprint"),
         "last_retrieval_status": status.get("last_retrieval_status", {}),
         "message": status.get("message", ""),
         "projection_summary": await RetrievalProjectionService(db, rag=rag).status_summary(
@@ -264,7 +325,7 @@ async def retry_retrieval_projection(
     try:
         return await service.retry(int(current_user.id), material_id)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/reindex/{material_id}")

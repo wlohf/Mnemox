@@ -1,14 +1,19 @@
-import { Button, Card, Col, Row, Space, Typography } from 'antd'
-import type { NorthStarMetricsReport } from '../../services/analyticsApi'
+import { Button, Card, Col, Row, Space, Tag, Typography } from 'antd'
+import type { CoachExperimentReport, NorthStarMetricsReport } from '../../services/analyticsApi'
 
 const { Text } = Typography
 
 interface NorthStarMetricsCardProps {
   report: NorthStarMetricsReport | null
+  experiment: CoachExperimentReport | null
   onRefresh: () => void
 }
 
-export function NorthStarMetricsCard({ report, onRefresh }: NorthStarMetricsCardProps) {
+export function NorthStarMetricsCard({ report, experiment, onRefresh }: NorthStarMetricsCardProps) {
+  const assignedVariant = experiment?.variants.find(
+    (item) => item.variant === experiment.assignment?.variant,
+  )
+  const variantLabel = experiment?.assignment?.variant === 'control' ? 'A' : 'B'
   return (
     <Card size="small" title="学习行为反馈" extra={<Button size="small" onClick={onRefresh}>刷新数据</Button>}>
       {report ? (
@@ -36,6 +41,18 @@ export function NorthStarMetricsCard({ report, onRefresh }: NorthStarMetricsCard
             </Col>
           </Row>
           <Text type="secondary">只统计已经过观察期的原始学习事件；它用于看趋势，不会把相关性当作 Coach 的因果效果。</Text>
+          {experiment?.enabled && (
+            <Space direction="vertical" size={4} style={{ width: '100%', borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+              <Space wrap>
+                <Text strong>策略学习观察</Text>
+                <Tag color="blue">A/A</Tag>
+                <Tag>本账号分组 {variantLabel}</Tag>
+                <Tag>成熟曝光 {assignedVariant?.mature_exposure_count ?? 0}</Tag>
+                <Tag>归因中 {assignedVariant?.pending_attribution_count ?? 0}</Tag>
+              </Space>
+              <Text type="secondary">两组当前执行完全相同的 Coach 策略，只校验分桶和 7 天归因链路；不会自动调整建议。</Text>
+            </Space>
+          )}
         </Space>
       ) : (
         <Text type="secondary">暂无足够的已记录学习事件。完成几次学习、复习或 Coach 行动后，这里会逐步出现趋势。</Text>

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.utils.utc import utc_now_iso
 
 
 @dataclass
@@ -38,7 +39,3 @@ class BaseAgent:
 
 def new_job_id() -> str:
     return uuid4().hex[:12]
-
-
-def utc_now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"

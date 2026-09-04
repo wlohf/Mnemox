@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachEvent, CoachNudge, CoachSkillStats
+from app.utils.utc import to_utc_iso, utc_now_db
 
 
 POSITIVE_OUTCOMES = {"helpful", "accepted", "completed"}
@@ -53,10 +54,10 @@ def coach_skill_stats_to_dict(row: CoachSkillStats) -> dict[str, Any]:
         "not_my_style_count": row.not_my_style_count,
         "recent_score": row.recent_score,
         "lifetime_score": row.lifetime_score,
-        "last_shown_at": row.last_shown_at.isoformat() if row.last_shown_at else None,
-        "last_positive_at": row.last_positive_at.isoformat() if row.last_positive_at else None,
-        "last_negative_at": row.last_negative_at.isoformat() if row.last_negative_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "last_shown_at": to_utc_iso(row.last_shown_at) if row.last_shown_at else None,
+        "last_positive_at": to_utc_iso(row.last_positive_at) if row.last_positive_at else None,
+        "last_negative_at": to_utc_iso(row.last_negative_at) if row.last_negative_at else None,
+        "updated_at": to_utc_iso(row.updated_at) if row.updated_at else None,
     }
 
 
@@ -109,7 +110,7 @@ def _apply_score(row: CoachSkillStats, delta: float, now: datetime) -> None:
 async def record_skill_shown(db: AsyncSession, user_id: int, nudge: CoachNudge) -> dict[str, Any]:
     """Count the first actual display of a coach nudge."""
 
-    now = datetime.now()
+    now = utc_now_db()
     stats = await _get_or_create_stats(
         db,
         user_id,
@@ -133,7 +134,7 @@ async def record_skill_feedback(
     """Aggregate feedback outcomes into durable policy learning signals."""
 
     outcome = str(outcome or "").strip()
-    now = datetime.now()
+    now = utc_now_db()
     stats = await _get_or_create_stats(
         db,
         user_id,

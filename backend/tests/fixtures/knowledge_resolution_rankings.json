@@ -1,0 +1,38 @@
+{
+  "version": "knowledge-resolution-stage3-recorded-v1",
+  "description": "Recorded synthetic embedding candidate rankings for the Stage 0 implicit-concept cases. This validates ranking, threshold, negative-case, and tenant-filter contracts without a provider call; it is not a real-provider quality claim.",
+  "annotation_provenance": "synthetic-human-authored-and-reviewed",
+  "privacy": {"contains_real_user_data": false},
+  "semantic_top5_recall_threshold": 0.9,
+  "rankings": [
+    {"case_id": "implicit-zh-opportunity-cost", "ranked_concept_ids": [101, 107, 105, 109, 102]},
+    {"case_id": "implicit-en-opportunity-cost", "ranked_concept_ids": [107, 101, 105, 104, 109]},
+    {"case_id": "implicit-zh-bayesian", "ranked_concept_ids": [102, 112, 106, 110, 101]},
+    {"case_id": "implicit-en-bayesian", "ranked_concept_ids": [112, 106, 102, 101, 110]},
+    {"case_id": "implicit-zh-retrieval", "ranked_concept_ids": [103, 104, 111, 110, 102]},
+    {"case_id": "implicit-en-retrieval", "ranked_concept_ids": [104, 111, 103, 110, 101]},
+    {"case_id": "implicit-zh-spacing", "ranked_concept_ids": [104, 103, 111, 105, 110]},
+    {"case_id": "implicit-en-spacing", "ranked_concept_ids": [103, 111, 105, 104, 110]},
+    {"case_id": "implicit-zh-compound", "ranked_concept_ids": [105, 107, 106, 101, 109]},
+    {"case_id": "implicit-en-compound", "ranked_concept_ids": [107, 106, 101, 105, 109]},
+    {"case_id": "implicit-zh-feedback", "ranked_concept_ids": [106, 105, 112, 109, 102]},
+    {"case_id": "implicit-en-feedback", "ranked_concept_ids": [105, 112, 106, 109, 102]},
+    {"case_id": "implicit-zh-diminishing", "ranked_concept_ids": [107, 101, 105, 109, 106]},
+    {"case_id": "implicit-en-diminishing", "ranked_concept_ids": [101, 105, 109, 107, 106]},
+    {"case_id": "implicit-zh-least-privilege", "ranked_concept_ids": [108, 109, 112, 110, 106]},
+    {"case_id": "implicit-en-least-privilege", "ranked_concept_ids": [109, 112, 108, 110, 106]},
+    {"case_id": "implicit-zh-bottleneck", "ranked_concept_ids": [109, 107, 106, 105, 108]},
+    {"case_id": "implicit-en-bottleneck", "ranked_concept_ids": [107, 106, 105, 109, 108]},
+    {"case_id": "implicit-zh-cognitive-load", "ranked_concept_ids": [110, 103, 111, 104, 108]},
+    {"case_id": "implicit-en-cognitive-load", "ranked_concept_ids": [103, 111, 110, 104, 108]},
+    {"case_id": "implicit-zh-concept-drift", "ranked_concept_ids": [112, 106, 102, 108, 111]},
+    {"case_id": "implicit-en-concept-drift", "ranked_concept_ids": [106, 102, 108, 112, 111]},
+    {"case_id": "implicit-zh-forgetting", "ranked_concept_ids": [111, 104, 103, 110, 112]},
+    {"case_id": "implicit-en-forgetting", "ranked_concept_ids": [104, 103, 110, 112, 111]},
+    {"case_id": "negative-unrelated-zh", "ranked_concept_ids": []},
+    {"case_id": "negative-unrelated-en", "ranked_concept_ids": []},
+    {"case_id": "negative-shared-word", "ranked_concept_ids": []},
+    {"case_id": "negative-unsupported-causal", "ranked_concept_ids": []}
+  ]
+}
+

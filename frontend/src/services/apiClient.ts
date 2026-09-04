@@ -62,11 +62,14 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
 }
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  // Browser sessions are now HttpOnly cookies. Deliberately never expose the
+  // token value to application JavaScript; this also clears the legacy token
+  // left by older versions on the first authenticated interaction.
+  return null
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token)
+export function setToken(_token: string): void {
+  localStorage.removeItem(TOKEN_KEY)
 }
 
 export function clearToken(): void {
@@ -74,10 +77,13 @@ export function clearToken(): void {
 }
 
 export function withAuthQuery(url: string): string {
-  const token = getToken()
-  if (!token || !url.startsWith('/api/')) return url
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}token=${encodeURIComponent(token)}`
+  if (!url.startsWith('/api/')) return url
+  // Old image URLs may still contain a JWT query parameter. The browser now
+  // sends the HttpOnly session cookie, so remove it before rendering or
+  // saving another URL and avoid leaking credentials through logs/history.
+  const parsed = new URL(url, window.location.origin)
+  parsed.searchParams.delete('token')
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }
 
 // ── Network status tracking ──
@@ -99,12 +105,7 @@ export async function apiFetch<T = any>(
   url: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = getToken()
   const headers = new Headers(options.headers || {})
-
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
 
   // Set Content-Type for non-FormData requests
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
@@ -113,8 +114,9 @@ export async function apiFetch<T = any>(
 
   let res: Response
   try {
-    // Disable auto-redirect so we can handle 307 manually and preserve auth header
-    res = await fetch(url, { ...options, headers, redirect: 'follow' })
+    // Keep the fetch redirect behavior explicit while the browser attaches
+    // the same-origin HttpOnly session cookie automatically.
+    res = await fetch(url, { ...options, headers, redirect: 'follow', credentials: 'same-origin' })
   } catch (err) {
     // TypeError from fetch usually means network failure
     if (err instanceof TypeError) {
@@ -135,7 +137,7 @@ export async function apiFetch<T = any>(
   // Successful fetch means network is reachable
   _networkOnline = true
 
-  if (res.status === 401 && token) {
+  if (res.status === 401) {
     // Only clear token and redirect once, not for every concurrent request
     if (!_redirecting) {
       _redirecting = true

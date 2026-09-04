@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const authApiMock = vi.hoisted(() => ({
   login: vi.fn(),
   getMe: vi.fn(),
+  logoutSession: vi.fn().mockResolvedValue(undefined),
 }))
 
 const apiClientMock = vi.hoisted(() => ({
@@ -79,6 +80,7 @@ describe('authStore desktop saved login', () => {
     useAuthStore.getState().logout()
 
     expect(apiClientMock.clearToken).toHaveBeenCalled()
+    expect(authApiMock.logoutSession).toHaveBeenCalled()
     expect(desktopAuthMock.clearSavedLogin).not.toHaveBeenCalled()
   })
 
@@ -86,6 +88,7 @@ describe('authStore desktop saved login', () => {
     useAuthStore.getState().logout({ clearSavedPassword: true })
 
     expect(apiClientMock.clearToken).toHaveBeenCalled()
+    expect(authApiMock.logoutSession).toHaveBeenCalled()
     expect(desktopAuthMock.clearSavedLogin).toHaveBeenCalled()
   })
 })

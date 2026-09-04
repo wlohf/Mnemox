@@ -72,8 +72,11 @@ class RAGServiceStatusTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_vector_delete_failure_is_reported_to_recoverable_lifecycle(self):
         class BrokenCollection:
+            def count(self):
+                return 0
+
             def delete(self, **_kwargs):
-                raise RuntimeError("vector delete unavailable")
+                raise RuntimeError("vector delete unavailable api_key=rag-status-secret")
 
         rag = RAGService()
         rag._initialized = True
@@ -82,6 +85,11 @@ class RAGServiceStatusTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "vector delete unavailable"):
             await rag.remove_material(7, user_id=3)
         self.assertIn("vector delete unavailable", rag._last_error)
+        status = await rag.get_status(user_id=3)
+        self.assertEqual(status["last_error_code"], "rag.operation_failed")
+        self.assertRegex(status["last_error_fingerprint"], r"^[0-9a-f]{16}$")
+        self.assertIn("[REDACTED]", status["last_error"])
+        self.assertNotIn("rag-status-secret", status["last_error"])
 
 
 class RAGSettingsPersistenceTests(unittest.TestCase):

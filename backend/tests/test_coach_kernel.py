@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
-from app.models.coach import CoachActionAttempt, CoachNudge, CoachSkillStats
+from app.models.coach import CoachActionAttempt, CoachNudge, CoachPreference, CoachSkillStats
 from app.models.agent import AgentExecutionLog, AgentJob
 from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
@@ -105,6 +106,20 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
         titles = [item["title"] for item in snapshot["tasks"]["today_tasks"]]
         self.assertEqual(titles, ["Owner task"])
         self.assertEqual(snapshot["review"]["due_review_count"], 0)
+
+    async def test_snapshot_uses_the_learners_local_calendar_day(self):
+        user_id = await self._create_user("snapshot-time-zone")
+        async with self.sessionmaker() as session:
+            snapshot = await build_learning_snapshot(
+                session,
+                user_id,
+                include_memories=False,
+                now=datetime(2026, 9, 1, 16, 30, 0),
+                time_zone="Asia/Shanghai",
+            )
+
+        self.assertEqual(snapshot["date"], "2026-09-02")
+        self.assertEqual(snapshot["time_zone"], "Asia/Shanghai")
 
     async def test_event_dedupe_prevents_polling_spam(self):
         user_id = await self._create_user("dedupe")
@@ -238,8 +253,20 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
             log = logs.scalar_one()
         self.assertEqual(job.agent, "runtime")
         self.assertEqual(job.task, "review_debt_rescue")
+        self.assertEqual(job.scenario, "review_debt_rescue_v1")
+        self.assertEqual(job.attempt_count, 1)
+        self.assertIsNotNone(job.finished_at)
         self.assertEqual(log.status, "completed")
         self.assertEqual(log.extra_metadata["scenario"], "review_debt_rescue_v1")
+
+        # The poller may wake every 30 seconds, but the durable per-user
+        # schedule prevents the same first batch of users from being scanned
+        # repeatedly or starving later users.
+        repeated = await worker.run_once()
+        self.assertEqual(repeated, {"scanned": 0, "nudges_created": 0, "failed": 0})
+        async with self.sessionmaker() as session:
+            jobs = await session.execute(select(AgentJob).where(AgentJob.user_id == user_id))
+        self.assertEqual(len(jobs.scalars().all()), 1)
 
     async def test_runtime_worker_records_a_safe_retry_notice_after_one_user_failure(self):
         user_id = await self._create_user("runtime-retry")
@@ -266,7 +293,104 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
             log = logs.scalar_one()
         self.assertEqual(log.status, "retrying")
         self.assertNotIn("synthetic failure", log.message)
-        self.assertEqual(log.extra_metadata["retry"], "next_poll")
+        self.assertEqual(log.extra_metadata["retry"], "scheduled")
+        self.assertEqual(log.extra_metadata["retry_in_seconds"], 900)
+        async with self.sessionmaker() as session:
+            jobs = await session.execute(select(AgentJob).where(AgentJob.user_id == user_id))
+            job = jobs.scalar_one()
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.attempt_count, 1)
+        self.assertEqual(job.result["retry_in_seconds"], 900)
+        snapshot = worker.snapshot()
+        self.assertEqual(snapshot["last_error_code"], "agent_runtime.worker_failed")
+        self.assertRegex(snapshot["last_error_fingerprint"], r"^[0-9a-f]{16}$")
+        self.assertNotIn("last_error", worker.health_snapshot())
+
+    async def test_runtime_worker_defers_startup_catch_up_until_local_quiet_hours_end(self):
+        user_id = await self._create_user("runtime-quiet-hours")
+        async with self.sessionmaker() as session:
+            preferences = await update_coach_preferences(
+                session,
+                user_id,
+                {
+                    "proactive_enabled": True,
+                    "time_zone": "Asia/Shanghai",
+                    "quiet_hours_start": "22:00",
+                    "quiet_hours_end": "07:00",
+                },
+            )
+            await session.commit()
+        self.assertEqual(preferences["time_zone"], "Asia/Shanghai")
+
+        worker = AgentRuntimeWorker(self.sessionmaker, poll_interval_seconds=30, batch_size=10)
+        # 15:00 UTC is 23:00 in Shanghai. A missing next-evaluation timestamp
+        # is a startup catch-up candidate, but quiet hours defer it to 07:00.
+        totals = await worker.run_once(now=datetime(2026, 9, 1, 15, 0, 0))
+
+        self.assertEqual(totals, {"scanned": 0, "nudges_created": 0, "failed": 0})
+        self.assertEqual(worker.snapshot()["quiet_hours_deferred"], 1)
+        async with self.sessionmaker() as session:
+            preference = await session.get(CoachPreference, user_id)
+            jobs = (
+                await session.scalars(select(AgentJob).where(AgentJob.user_id == user_id))
+            ).all()
+        self.assertEqual(preference.proactive_next_evaluate_at, datetime(2026, 9, 1, 23, 0, 0))
+        self.assertEqual(jobs, [])
+
+    async def test_runtime_worker_times_out_one_user_and_schedules_safe_retry(self):
+        user_id = await self._create_user("runtime-timeout")
+        async with self.sessionmaker() as session:
+            await update_coach_preferences(
+                session,
+                user_id,
+                {"proactive_enabled": True, "allowed_channels": ["agent_panel"]},
+            )
+            await session.commit()
+
+        async def slow_cycle(*_args, **_kwargs):
+            await asyncio.sleep(0.1)
+            return {"status": "skipped", "reason": "should_not_complete", "nudge": None}
+
+        worker = AgentRuntimeWorker(
+            self.sessionmaker,
+            poll_interval_seconds=30,
+            batch_size=10,
+            user_timeout_seconds=0.02,
+        )
+        with patch(
+            "app.services.agent_runtime_worker.run_proactive_review_debt_cycle",
+            new=slow_cycle,
+        ):
+            totals = await worker.run_once(now=datetime(2026, 9, 1, 12, 0, 0))
+
+        self.assertEqual(totals, {"scanned": 1, "nudges_created": 0, "failed": 1})
+        self.assertEqual(worker.snapshot()["timed_out_users"], 1)
+        async with self.sessionmaker() as session:
+            jobs = (
+                await session.scalars(select(AgentJob).where(AgentJob.user_id == user_id))
+            ).all()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].status, "failed")
+        self.assertEqual(jobs[0].result["retry_in_seconds"], 900)
+
+    async def test_coach_preferences_validate_time_zone_and_quiet_hour_format(self):
+        user_id = await self._create_user("coach-time-zone")
+        async with self.sessionmaker() as session:
+            preferences = await update_coach_preferences(
+                session,
+                user_id,
+                {
+                    "time_zone": "America/New_York",
+                    "quiet_hours_start": "21:30",
+                    "quiet_hours_end": "06:45",
+                },
+            )
+            self.assertEqual(preferences["time_zone"], "America/New_York")
+            self.assertEqual(preferences["quiet_hours_start"], "21:30")
+            with self.assertRaises(ValueError):
+                await update_coach_preferences(session, user_id, {"time_zone": "not/a-zone"})
+            with self.assertRaises(ValueError):
+                await update_coach_preferences(session, user_id, {"quiet_hours_start": "25:00"})
 
     def test_policy_respects_cooldown_daily_cap_and_disabled_skill(self):
         event = {"event_type": "pomodoro.interrupted", "source": "pomodoro", "severity": "info", "payload": {}}
@@ -359,6 +483,19 @@ class CoachKernelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(quiet["should_intervene"])
         self.assertEqual(quiet["reason"], "quiet_hours")
+
+        shanghai_snapshot = {
+            **snapshot,
+            "generated_at": datetime(2026, 9, 1, 14, 30, 0).isoformat(),
+        }
+        local_quiet = evaluate_coach_policy(
+            {**event, "channel": "desktop_notification"},
+            shanghai_snapshot,
+            {**desktop_prefs, "time_zone": "Asia/Shanghai"},
+            [],
+        )
+        self.assertFalse(local_quiet["should_intervene"])
+        self.assertEqual(local_quiet["reason"], "quiet_hours")
 
     async def test_low_motivation_skill_returns_deterministic_fallback(self):
         ctx = CoachSkillContext(

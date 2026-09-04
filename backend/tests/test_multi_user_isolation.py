@@ -316,6 +316,8 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
             ).scalars().all()
             self.assertEqual(len(markers), 1)
             self.assertEqual(markers[0].user_id, owner.id)
+            self.assertIsNone(markers[0].last_seen_at.tzinfo)
+            self.assertTrue(str(markers[0].memory_value).endswith("Z"))
 
     async def test_agent_daily_plan_execute_cannot_modify_other_users_plan(self):
         owner = await self._create_user("plan_owner")

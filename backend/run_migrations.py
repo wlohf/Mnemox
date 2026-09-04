@@ -112,6 +112,18 @@ HEAD_ONLY_TABLES = frozenset(
         "memory_declarations",
         "retrieval_projections",
         "retrieval_projection_chunks",
+        "agent_action_confirmations",
+        "knowledge_sources",
+        "knowledge_source_revisions",
+        "knowledge_units",
+        "claims",
+        "claim_evidence",
+        "claim_relations",
+        "knowledge_extraction_runs",
+        "entity_resolution_candidates",
+        "claim_concept_links",
+        "knowledge_embedding_projections",
+        "knowledge_projection_outbox",
     }
 )
 HEAD_ONLY_COLUMNS = {

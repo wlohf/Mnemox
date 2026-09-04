@@ -1,13 +1,12 @@
 """Review agent: organize due Anki cards and wrong-question review schedules."""
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import select
 
 from app.agents.base import AgentRunContext, AgentResult, BaseAgent
 from app.models.anki import AnkiCard
 from app.models.question import ReviewSchedule, WrongQuestion
+from app.utils.utc import utc_now_db
 
 
 class ReviewAgent(BaseAgent):
@@ -16,7 +15,7 @@ class ReviewAgent(BaseAgent):
     description = "基于简化遗忘曲线调度 Anki 卡片和错题复习"
 
     async def run(self, ctx: AgentRunContext) -> AgentResult:
-        now = datetime.now()
+        now = utc_now_db()
         db = ctx.db
         anki_result = await db.execute(
             select(AnkiCard)

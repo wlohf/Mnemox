@@ -3,28 +3,18 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Card, Button, List, Space, message, Tag, Segmented, Radio, Input, Spin, Alert } from 'antd'
 import { CheckCircleOutlined, ArrowRightOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { listReviewTasks, completeReviewTask, deleteReviewTask, type ReviewTaskItem } from '../services/reviewApi'
-import { apiFetch, getApiErrorMessage } from '../services/apiClient'
+import {
+  listReviewTasks,
+  completeReviewTask,
+  deleteReviewTask,
+  getReviewContent,
+  submitReviewAnswers,
+  type ReviewContent,
+  type ReviewResult,
+  type ReviewTaskItem,
+} from '../services/reviewApi'
+import { getApiErrorMessage } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
-
-interface ReviewContent {
-  summary: string[]
-  questions: Array<{
-    id: number
-    type: 'choice' | 'short_answer'
-    question: string
-    options?: string[]
-    correct_answer?: string
-    reference_answer?: string
-  }>
-}
-
-interface ReviewResult {
-  score: number
-  quality: number
-  feedback: string
-  next_review_date: string
-}
 
 type ReviewStep = 'list' | 'summary' | 'questions' | 'result'
 
@@ -78,7 +68,7 @@ export function ReviewPage() {
     setLoading(true)
 
     try {
-      const content = await apiFetch<ReviewContent>(`/api/review/${task.task_id}/content`)
+      const content = await getReviewContent(task.task_id)
       setReviewContent(content)
       setUserAnswers({})
       setReviewResult(null)
@@ -100,9 +90,9 @@ export function ReviewPage() {
 
     setSubmitting(true)
     try {
-      const result = await apiFetch<ReviewResult>(`/api/review/${selectedTask.task_id}/submit`, {
-        method: 'POST',
-        body: JSON.stringify({ answers, coach_action_attempt_id: coachAttemptId ?? null }),
+      const result = await submitReviewAnswers(selectedTask.task_id, {
+        answers,
+        coach_action_attempt_id: coachAttemptId ?? null,
       })
       setReviewResult(result)
       setCurrentStep('result')

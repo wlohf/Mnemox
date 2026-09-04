@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachEvent
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 def _event_to_dict(event: CoachEvent) -> dict[str, Any]:
@@ -21,8 +22,8 @@ def _event_to_dict(event: CoachEvent) -> dict[str, Any]:
         "severity": event.severity,
         "payload": event.payload or {},
         "dedupe_key": event.dedupe_key,
-        "occurred_at": event.occurred_at.isoformat() if event.occurred_at else None,
-        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "occurred_at": to_utc_iso(event.occurred_at) if event.occurred_at else None,
+        "created_at": to_utc_iso(event.created_at) if event.created_at else None,
     }
 
 
@@ -40,7 +41,7 @@ async def record_coach_event(
 ) -> dict[str, Any]:
     """Record a normalized event, returning an existing recent one for a dedupe key."""
 
-    now = occurred_at or datetime.now()
+    now = to_db_utc(occurred_at) if occurred_at is not None else utc_now_db()
     event_type = str(event_type or "").strip()[:100]
     source = str(source or "unknown").strip()[:50] or "unknown"
     severity = str(severity or "info").strip()[:20] or "info"

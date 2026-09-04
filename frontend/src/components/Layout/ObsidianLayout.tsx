@@ -101,7 +101,10 @@ import {
   type MotivationQuote,
   type MotivationSettings,
 } from '../../services/motivationApi'
-import { apiFetch, getApiErrorMessage, withAuthQuery } from '../../services/apiClient'
+import { getApiErrorMessage, withAuthQuery } from '../../services/apiClient'
+import { deleteMaterial as deleteMaterialApi, getMaterial, listMaterials, searchMaterials, uploadMaterial } from '../../services/materialApi'
+import { listPlans, savePlan } from '../../services/planApi'
+import { getRagHealth } from '../../services/ragApi'
 import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { SyncConflictModal } from '../SyncConflictModal'
@@ -149,6 +152,7 @@ const StatsModal = lazy(() => import('./StatsModal').then(m => ({ default: m.Sta
 const MotivationModal = lazy(() => import('./MotivationModal').then(m => ({ default: m.MotivationModal })))
 const ProjectSettingsModal = lazy(() => import('../ProjectSettingsModal').then(m => ({ default: m.ProjectSettingsModal })))
 const OnboardingModal = lazy(() => import('../OnboardingModal').then(m => ({ default: m.OnboardingModal })))
+const KnowledgeResolutionDrawer = lazy(() => import('../KnowledgeResolutionDrawer'))
 
 const LEGACY_ONBOARDING_DISMISSED_PREFIX = 'mnemox_onboarding_dismissed_'
 
@@ -168,6 +172,13 @@ interface Material {
   file_path?: string
   project_ids?: number[]
   retrieval_projection?: RetrievalProjectionStatus | null
+  knowledge_extraction?: {
+    status: 'not_started' | 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled'
+    pending_claim_count: number
+    pending_resolution_count: number
+    deterministic_status: string
+    llm_status: string
+  } | null
 }
 
 interface ProjectSearchResult {
@@ -434,6 +445,10 @@ export function ObsidianLayout() {
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('layout_left_collapsed') === 'true')
   const [leftExpandTarget, setLeftExpandTarget] = useState<'default' | 'search' | 'categories' | 'history' | null>(null)
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false)
+  const [knowledgeResolutionMaterial, setKnowledgeResolutionMaterial] = useState<{
+    id: number
+    name: string
+  } | null>(null)
   const [rightCollapsed, setRightCollapsed] = useState(() => readLocalRightSidebarLayoutPreference().collapsed)
 
   // Draggable panel splitter state
@@ -488,15 +503,16 @@ export function ObsidianLayout() {
   const loadMaterials = useCallback(async () => {
     setMaterialsLoading(true)
     try {
-      const arr = await apiFetch<any[]>('/api/materials/?skip=0&limit=100')
-      const mapped: Material[] = (arr || []).map((m: any) => ({
+      const arr = await listMaterials(100)
+      const mapped: Material[] = (arr || []).map((m) => ({
         id: m.id,
         name: m.title,
         uploadTime: (m.created_at || '').slice(0, 10) || dayjs().format('YYYY-MM-DD'),
-        file_type: m.file_type,
-        file_path: m.file_path,
+        file_type: m.file_type || undefined,
+        file_path: m.file_path || undefined,
         project_ids: m.project_ids || [],
         retrieval_projection: m.retrieval_projection || null,
+        knowledge_extraction: m.knowledge_extraction || null,
       }))
       setMaterials(mapped.reverse())
     } catch {
@@ -534,7 +550,7 @@ export function ObsidianLayout() {
     }
     setProjectSearchLoading(true)
     try {
-      const data = await apiFetch<any[]>(`/api/materials/search?query=${encodeURIComponent(q)}&project_id=${activeProjectId}`)
+      const data = await searchMaterials(q, { projectId: activeProjectId })
       setProjectSearchResults(data || [])
     } catch (e: any) {
       message.error(e?.message || '搜索失败')
@@ -813,15 +829,7 @@ export function ObsidianLayout() {
       ])
 
       window.setTimeout(() => {
-        void apiFetch<{
-          enabled: boolean
-          rag_online: boolean
-          total_chunks: number
-          embedding_enabled?: boolean
-          fallback_active?: boolean
-          last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
-          message: string
-        }>('/api/rag/health').then(setRagStatus).catch(() => undefined)
+        void getRagHealth().then(setRagStatus).catch(() => undefined)
         void loadWeeklyPlans()
         void loadWrongQuestions()
         void loadReviewOverview()
@@ -1242,16 +1250,7 @@ export function ObsidianLayout() {
         // The chat is another RAG entry point. Refresh the same per-user
         // status shown in the material sidebar so a keyword fallback is never
         // hidden after a seemingly normal answer.
-        void apiFetch<{
-          enabled: boolean
-          rag_online: boolean
-          total_chunks: number
-          embedding_enabled?: boolean
-          fallback_active?: boolean
-          last_retrieval_status?: { message?: string; mode?: string; ok?: boolean }
-          message?: string
-          projection_summary?: RetrievalProjectionSummary
-        }>('/api/rag/health').then(setRagStatus).catch(() => undefined)
+        void getRagHealth().then(setRagStatus).catch(() => undefined)
       },
       (error) => {
         message.error(error)
@@ -1956,52 +1955,38 @@ export function ObsidianLayout() {
 
   // 上传资料
   const handleUpload = async (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('title', file.name)
-    formData.append('sync_to_rag', syncToRAG ? 'true' : 'false')
-
     try {
-      const response = await apiFetch('/api/materials/upload', {
-        method: 'POST',
-        body: formData,
+      const data = await uploadMaterial(file, { syncToRag: syncToRAG })
+      const isDuplicate = Boolean(data.duplicate)
+      const fileExt = file.name.split('.').pop()?.toLowerCase() || ''
+      const newMaterial: Material = {
+        id: data.id,
+        name: data.title || file.name,
+        uploadTime: (data.created_at || '').slice(0, 10) || dayjs().format('YYYY-MM-DD'),
+        file_type: data.file_type || fileExt,
+        file_path: data.file_path || undefined,
+        project_ids: data.project_ids || [],
+        retrieval_projection: data.retrieval_projection || null,
+        knowledge_extraction: data.knowledge_extraction || null,
+      }
+      if (activeProjectId) {
+        try {
+          await addProjectMaterial(activeProjectId, newMaterial.id)
+          newMaterial.project_ids = Array.from(new Set([...(newMaterial.project_ids || []), activeProjectId]))
+          const detail = await getProject(activeProjectId)
+          setActiveProjectMaterialIds(detail?.material_ids || [])
+        } catch {
+          // ignore
+        }
+      }
+      setMaterials((prev) => {
+        if (prev.some((m) => m.id === newMaterial.id)) return prev
+        return [newMaterial, ...prev]
       })
-
-      if (response.ok) {
-        const data = await response.json()
-        const isDuplicate = Boolean(data?.duplicate)
-        const fileExt = file.name.split('.').pop()?.toLowerCase() || ''
-        const newMaterial: Material = {
-          id: data.id || Date.now(),
-          name: data.title || file.name,
-          uploadTime: dayjs().format('YYYY-MM-DD'),
-          file_type: fileExt,
-          file_path: data.file_path,
-          project_ids: data.project_ids || [],
-          retrieval_projection: data.retrieval_projection || null,
-        }
-        if (activeProjectId) {
-          try {
-            await addProjectMaterial(activeProjectId, newMaterial.id)
-            newMaterial.project_ids = Array.from(new Set([...(newMaterial.project_ids || []), activeProjectId]))
-            const detail = await getProject(activeProjectId)
-            setActiveProjectMaterialIds(detail?.material_ids || [])
-          } catch {
-            // ignore
-          }
-        }
-        setMaterials((prev) => {
-          if (prev.some((m) => m.id === newMaterial.id)) return prev
-          return [newMaterial, ...prev]
-        })
-        if (isDuplicate) {
-          message.info(`已存在：${file.name}（已复用资料库）`)
-        } else {
-          message.success(`已上传：${file.name}`)
-        }
+      if (isDuplicate) {
+        message.info(`已存在：${file.name}（已复用资料库）`)
       } else {
-        const err = await response.json().catch(() => null)
-        message.error(err?.detail || '上传失败')
+        message.success(`已上传：${file.name}`)
       }
     } catch (error) {
       message.error('上传失败：无法连接后端（请确认后端已启动）')
@@ -2017,13 +2002,8 @@ export function ObsidianLayout() {
 
     try {
       // 尝试从后端获取内容
-      const response = await apiFetch(`/api/materials/${material.id}`)
-      if (response.ok) {
-        const data = await response.json()
-        setPreviewContent(data.content || '暂无内容预览')
-      } else {
-        setPreviewContent('暂无内容预览，请确保后端服务已启动')
-      }
+      const data = await getMaterial(material.id)
+      setPreviewContent(data.content || '暂无内容预览')
     } catch (error) {
       // 本地模拟
       if (material.file_type === 'pdf') {
@@ -2038,7 +2018,7 @@ export function ObsidianLayout() {
   // 删除资料
   const deleteMaterial = async (id: number) => {
     try {
-      await apiFetch(`/api/materials/${id}`, { method: 'DELETE' })
+      await deleteMaterialApi(id)
 
       setMaterials((prev) => prev.filter((m) => m.id !== id))
       setSelectedMaterialIds((prev) => {
@@ -2062,8 +2042,8 @@ export function ObsidianLayout() {
     const startStr = start.format('YYYY-MM-DD')
     const endStr = end.format('YYYY-MM-DD')
     try {
-      const arr = await apiFetch<any[]>(`/api/plans/?start=${startStr}&end=${endStr}`)
-      const list: DailyPlan[] = (arr || []).map((p: any) => ({ date: p.date, content: p.content || '' }))
+      const arr = await listPlans(startStr, endStr)
+      const list: DailyPlan[] = (arr || []).map((p) => ({ date: p.date, content: p.content || '' }))
       setWeeklyPlans(list)
       // 合并到缓存，使日历上的小绿点即时显示
       setDailyPlans((prev) => {
@@ -2165,11 +2145,7 @@ export function ObsidianLayout() {
         }
 
         setDailyPlans((prev) => ({ ...prev, [today]: nextContent }))
-        const saved = await apiFetch<DailyPlan>(`/api/plans/${today}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: nextContent }),
-        })
+        const saved = await savePlan(today, nextContent)
         setDailyPlans((prev) => ({ ...prev, [today]: saved?.content ?? nextContent }))
       }
     } catch (error) {
@@ -2662,6 +2638,51 @@ export function ObsidianLayout() {
                                                 : '关键词检索'}
                                         </Tag>
                                       </Tooltip>
+                                    )}
+                                    {item.knowledge_extraction && (
+                                      <Tooltip title={`规则：${item.knowledge_extraction.deterministic_status} · LLM：${item.knowledge_extraction.llm_status}`}>
+                                        <Tag
+                                          color={
+                                            item.knowledge_extraction.status === 'succeeded'
+                                              ? 'green'
+                                              : item.knowledge_extraction.status === 'failed'
+                                                ? 'red'
+                                                : item.knowledge_extraction.status === 'partial'
+                                                  ? 'orange'
+                                                  : 'blue'
+                                          }
+                                          style={{ width: 'fit-content', fontSize: 10, lineHeight: '16px' }}
+                                        >
+                                          {item.knowledge_extraction.status === 'running'
+                                            ? '知识抽取中'
+                                            : item.knowledge_extraction.status === 'queued'
+                                              ? '知识抽取排队中'
+                                              : item.knowledge_extraction.status === 'partial'
+                                                ? `部分完成 · 待审核 ${item.knowledge_extraction.pending_claim_count}`
+                                                : item.knowledge_extraction.status === 'failed'
+                                                  ? '知识抽取失败'
+                                                  : `待审核 Claim ${item.knowledge_extraction.pending_claim_count}`}
+                                        </Tag>
+                                      </Tooltip>
+                                    )}
+                                    {(item.knowledge_extraction?.pending_resolution_count || 0) > 0 && (
+                                      <Button
+                                        type="link"
+                                        size="small"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          setKnowledgeResolutionMaterial({ id: item.id, name: item.name })
+                                        }}
+                                        style={{
+                                          width: 'fit-content',
+                                          height: 20,
+                                          padding: 0,
+                                          fontSize: 11,
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        待解析概念 {item.knowledge_extraction?.pending_resolution_count}
+                                      </Button>
                                     )}
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                                       {projectNames.length > 0 ? (
@@ -4261,6 +4282,17 @@ export function ObsidianLayout() {
         }}
         onOpenMaterials={openOnboardingMaterials}
       />
+      {knowledgeResolutionMaterial && (
+        <Suspense fallback={null}>
+          <KnowledgeResolutionDrawer
+            open
+            materialId={knowledgeResolutionMaterial.id}
+            materialTitle={knowledgeResolutionMaterial.name}
+            onClose={() => setKnowledgeResolutionMaterial(null)}
+            onResolved={loadMaterials}
+          />
+        </Suspense>
+      )}
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
       <SyncConflictModal open={syncConflictsOpen} onClose={() => setSyncConflictsOpen(false)} />
       <ProjectSettingsModal

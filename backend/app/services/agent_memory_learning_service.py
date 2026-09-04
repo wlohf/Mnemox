@@ -17,12 +17,13 @@ from app.services.agent_long_memory_service import (
     rebuild_core_profile,
     upsert_agent_memory,
 )
+from app.utils.utc import to_utc_iso, utc_now_db
 
 CHECKPOINT_KEY = "agent_memory_learning_checkpoint"
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return utc_now_db()
 
 
 def _json_loads(value: str | None, fallback: Any) -> Any:
@@ -41,6 +42,8 @@ def _json_dumps(value: Any) -> str:
 def _to_iso(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return to_utc_iso(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
@@ -95,7 +98,7 @@ async def _set_learning_checkpoint(
     payload = {
         "last_event_id": int(last_event_id or 0),
         "last_event_at": last_event_at,
-        "updated_at": _now().isoformat(),
+        "updated_at": to_utc_iso(_now()),
     }
     return await upsert_agent_memory(
         db,

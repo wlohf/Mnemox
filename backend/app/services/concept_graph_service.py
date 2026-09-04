@@ -17,8 +17,10 @@ from app.models.concept import (
 )
 from app.models.learner_model import LearnerEvidence, ProjectionOutbox, UserConceptState
 from app.models.material import Chapter, Material
+from app.models.knowledge import ClaimConceptLink, EntityResolutionCandidate
 from app.models.question import WrongQuestion
 from app.models.retrieval import RetrievalProjection
+from app.config import settings
 from app.services.concept_service import (
     MAX_NAME_LENGTH,
     REVIEW_STATUSES,
@@ -42,6 +44,42 @@ _ARROW = re.compile(rf"(?P<first>{_TERM}?)\s*(?:→|->)\s*(?P<second>{_TERM})(?=
 _PREREQUISITE = re.compile(
     rf"(?P<first>{_TERM}?)\s*(?:是|为)\s*(?P<second>{_TERM}?)\s*(?:的)?先修(?:知识|概念|条件)?"
 )
+
+
+async def _enqueue_concept_projection(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    concept_id: int,
+) -> None:
+    if not settings.KNOWLEDGE_V2_ENABLED:
+        return
+    from app.services.knowledge_projection_service import enqueue_knowledge_object_projection
+
+    await enqueue_knowledge_object_projection(
+        db,
+        user_id=int(user_id),
+        object_type="concept",
+        object_id=int(concept_id),
+    )
+
+
+async def _enqueue_concept_projection_delete(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    concept_id: int,
+) -> None:
+    if not settings.KNOWLEDGE_V2_ENABLED:
+        return
+    from app.services.knowledge_projection_service import enqueue_knowledge_projection_delete
+
+    await enqueue_knowledge_projection_delete(
+        db,
+        user_id=int(user_id),
+        object_type="concept",
+        object_id=int(concept_id),
+    )
 
 
 async def _owned_concept(db: AsyncSession, user_id: int, concept_id: int) -> Concept:
@@ -108,6 +146,11 @@ async def add_concept_alias(
     await db.flush()
     if audit:
         await _audit(db, user_id, int(concept.id), "alias_added", payload={"alias": clean_alias, "source": source})
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=int(concept.id),
+    )
     return {"id": int(row.id), "alias": row.alias, "concept_id": int(concept.id), "created": True}
 
 
@@ -149,6 +192,11 @@ async def rename_concept(
         await add_concept_alias(db, user_id, int(concept.id), previous_name, source="rename", audit=False)
     await _audit(
         db, user_id, int(concept.id), "renamed", payload={"previous_name": previous_name, "name": clean_name},
+    )
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=int(concept.id),
     )
     return await get_concept_detail(db, user_id, int(concept.id))
 
@@ -292,6 +340,26 @@ async def sync_material_concepts(db: AsyncSession, user_id: int, material: Mater
     """Extract bounded local candidates without any model call or network access."""
     if int(material.user_id) != int(user_id):
         raise LookupError("资料不存在")
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_extraction_service import get_material_extraction_summary
+        from app.services.knowledge_source_service import register_material_source
+
+        await register_material_source(
+            db,
+            user_id=int(user_id),
+            material_id=int(material.id),
+        )
+        summary = await get_material_extraction_summary(
+            db,
+            user_id=int(user_id),
+            material_id=int(material.id),
+        )
+        return {
+            "material_id": int(material.id),
+            "status": summary["status"],
+            "pending_claim_count": summary["pending_claim_count"],
+            "extraction": summary,
+        }
     version = await _source_version(db, user_id, int(material.id))
     source_rows = list((
         await db.execute(
@@ -510,6 +578,11 @@ async def review_concept(
         db, user_id, int(concept.id), "reviewed",
         payload={"previous_status": previous, "review_status": review_status},
     )
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=int(concept.id),
+    )
     return await get_concept_detail(db, user_id, int(concept.id))
 
 
@@ -578,6 +651,14 @@ async def review_concept_relation(
         db, user_id, int(edge.to_concept_id), "relation_reviewed",
         payload={"edge_id": int(edge.id), "review_status": review_status},
     )
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_projection_service import enqueue_neo4j_user_rebuild
+
+        await enqueue_neo4j_user_rebuild(
+            db,
+            user_id=int(user_id),
+            force=True,
+        )
     return {"id": int(edge.id), "review_status": edge.review_status}
 
 
@@ -593,7 +674,16 @@ async def merge_concepts(
         raise ValueError("不能将概念与自身合并")
     source_name = source.name
     target_id, source_id = int(target.id), int(source.id)
-    migrated = {"aliases": 0, "links": 0, "edges": 0, "source_evidence": 0, "learner_evidence": 0, "wrong_questions": 0}
+    migrated = {
+        "aliases": 0,
+        "links": 0,
+        "edges": 0,
+        "source_evidence": 0,
+        "learner_evidence": 0,
+        "wrong_questions": 0,
+        "claim_links": 0,
+        "resolution_candidates": 0,
+    }
 
     aliases = list((
         await db.execute(select(ConceptAlias).where(ConceptAlias.user_id == int(user_id), ConceptAlias.concept_id == source_id))
@@ -696,6 +786,53 @@ async def merge_concepts(
     for row in wrong_rows:
         row.concept_id = target_id
         migrated["wrong_questions"] += 1
+    claim_links = list(
+        (
+            await db.scalars(
+                select(ClaimConceptLink).where(
+                    ClaimConceptLink.user_id == int(user_id),
+                    ClaimConceptLink.concept_id == source_id,
+                )
+            )
+        ).all()
+    )
+    for row in claim_links:
+        duplicate = await db.scalar(
+            select(ClaimConceptLink).where(
+                ClaimConceptLink.user_id == int(user_id),
+                ClaimConceptLink.claim_id == int(row.claim_id),
+                ClaimConceptLink.concept_id == target_id,
+                ClaimConceptLink.relation_type == row.relation_type,
+            )
+        )
+        if duplicate is not None:
+            duplicate.confidence = max(float(duplicate.confidence), float(row.confidence))
+            if duplicate.review_status != "confirmed" and row.review_status == "confirmed":
+                duplicate.review_status = "confirmed"
+            await db.delete(row)
+        else:
+            row.concept_id = target_id
+            migrated["claim_links"] += 1
+        await db.flush()
+    candidates = list(
+        (
+            await db.scalars(
+                select(EntityResolutionCandidate).where(
+                    EntityResolutionCandidate.user_id == int(user_id),
+                    or_(
+                        EntityResolutionCandidate.candidate_concept_id == source_id,
+                        EntityResolutionCandidate.resolved_concept_id == source_id,
+                    ),
+                )
+            )
+        ).all()
+    )
+    for row in candidates:
+        if row.candidate_concept_id == source_id:
+            row.candidate_concept_id = target_id
+        if row.resolved_concept_id == source_id:
+            row.resolved_concept_id = target_id
+        migrated["resolution_candidates"] += 1
     outbox_rows = (
         await db.execute(
             select(ProjectionOutbox).where(ProjectionOutbox.user_id == int(user_id), ProjectionOutbox.concept_id == source_id)
@@ -725,6 +862,16 @@ async def merge_concepts(
     await _audit(
         db, user_id, target_id, "merged",
         payload={"source_concept_id": source_id, "source_name": source_name, "migrated": migrated},
+    )
+    await _enqueue_concept_projection_delete(
+        db,
+        user_id=int(user_id),
+        concept_id=source_id,
+    )
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=target_id,
     )
     detail = await get_concept_detail(db, user_id, target_id)
     detail["merge"] = {"source_concept_id": source_id, "migrated": migrated}
@@ -777,6 +924,16 @@ async def split_concept(
         db, user_id, int(target.id), "split_created",
         payload={"source_concept_id": int(source.id), "moved": moved},
     )
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=int(source.id),
+    )
+    await _enqueue_concept_projection(
+        db,
+        user_id=int(user_id),
+        concept_id=int(target.id),
+    )
     detail = await get_concept_detail(db, user_id, int(target.id))
     detail["split"] = {"source_concept_id": int(source.id), "moved": moved}
     return detail
@@ -795,6 +952,11 @@ async def delete_concept(db: AsyncSession, user_id: int, concept_id: int) -> dic
     await _audit(db, user_id, None, "deleted", payload={"concept_id": identifier, "name": name})
     await db.delete(concept)
     await db.flush()
+    await _enqueue_concept_projection_delete(
+        db,
+        user_id=int(user_id),
+        concept_id=identifier,
+    )
     return {"deleted": True, "concept_id": identifier, "name": name}
 
 

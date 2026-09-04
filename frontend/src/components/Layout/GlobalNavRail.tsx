@@ -64,6 +64,7 @@ export const GLOBAL_NAV_GROUPS: GlobalNavGroup[] = [
       { key: '/wrong-questions', icon: <QuestionCircleOutlined />, label: '错题本', advanced: true },
       { key: '/notes', icon: <FileTextOutlined />, label: '笔记' },
       { key: '/anki', icon: <CreditCardOutlined />, label: 'Anki卡片', advanced: true },
+      { key: '/knowledge-lab', icon: <ExperimentOutlined />, label: 'Knowledge Lab', advanced: true },
     ],
   },
   {

@@ -1,7 +1,7 @@
 """Coach action/nudge persistence."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -9,9 +9,11 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.coach import CoachNudge
+from app.services.coach_experiment_service import build_coach_experiment_assignment
 from app.services.coach_learning_service import record_skill_shown
 from app.services.coach_skills.base import CoachSkillResult
 from app.services.learning_event_service import CanonicalEventType, record_coach_nudge_event
+from app.utils.utc import to_utc_iso, utc_now_db
 
 
 def coach_nudge_to_dict(row: CoachNudge, *, action_attempt: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -30,9 +32,9 @@ def coach_nudge_to_dict(row: CoachNudge, *, action_attempt: dict[str, Any] | Non
         "draft": row.draft,
         "explainability": row.explainability,
         "status": row.status,
-        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "expires_at": to_utc_iso(row.expires_at) if row.expires_at else None,
+        "created_at": to_utc_iso(row.created_at) if row.created_at else None,
+        "updated_at": to_utc_iso(row.updated_at) if row.updated_at else None,
     }
     if action_attempt is not None:
         result["action_attempt"] = action_attempt
@@ -49,6 +51,7 @@ async def create_coach_nudge(
     result: CoachSkillResult,
     nudge_id: str | None = None,
 ) -> dict[str, Any]:
+    experiment = build_coach_experiment_assignment(user_id)
     nudge = CoachNudge(
         id=str(nudge_id or f"cn_{uuid4().hex[:24]}")[:40],
         user_id=user_id,
@@ -68,9 +71,10 @@ async def create_coach_nudge(
                 "reason": policy.get("reason"),
                 "evidence": policy.get("evidence") or [],
             },
+            **({"experiment": experiment} if experiment is not None else {}),
         },
         status="pending",
-        expires_at=datetime.now() + timedelta(hours=24),
+        expires_at=utc_now_db() + timedelta(hours=24),
     )
     db.add(nudge)
     await db.flush()
@@ -111,7 +115,7 @@ async def mark_coach_nudge_shown(db: AsyncSession, user_id: int, nudge_id: str) 
     from app.services.coach_action_attempt_service import expire_due_coach_nudges
 
     await expire_due_coach_nudges(db, user_id)
-    now = datetime.now()
+    now = utc_now_db()
     transition = await db.execute(
         update(CoachNudge)
         .where(

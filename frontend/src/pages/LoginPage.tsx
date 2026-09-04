@@ -217,7 +217,7 @@ export function LoginPage() {
             name="password"
             rules={[
               { required: true, message: '请输入密码' },
-              { min: 6, message: '密码至少 6 位' },
+              { min: 12, message: '密码至少 12 位' },
             ]}
           >
             <Input.Password

@@ -39,12 +39,6 @@ def _now() -> datetime:
     return datetime.fromisoformat(_load_fixture()["defaults"]["now"])
 
 
-class FixedEvalDate(date):
-    @classmethod
-    def today(cls) -> date:
-        return _today()
-
-
 def _assert_contains(testcase: unittest.TestCase, haystack: list[str], needles: list[str] | None) -> None:
     for needle in needles or []:
         testcase.assertIn(needle, haystack)
@@ -114,11 +108,11 @@ class AgentEvalCasesTests(unittest.IsolatedAsyncioTestCase):
             user_id, key_maps = await self._seed_case(session, case["id"], case.get("seed") or {})
             evaluator = case["evaluator"]
             if evaluator == "write_draft":
-                with patch("app.services.agent_service.date", FixedEvalDate):
+                with patch("app.services.agent_service.utc_today", return_value=_today()):
                     result = await build_agent_write_draft(session, user_id, case["message"])
                 self._assert_write_draft(case, result)
             elif evaluator == "write_execute":
-                with patch("app.services.agent_service.date", FixedEvalDate):
+                with patch("app.services.agent_service.utc_today", return_value=_today()):
                     draft = await build_agent_write_draft(session, user_id, case["message"])
                     result = await execute_agent_write_draft(session, user_id, draft["intent"], draft["draft"])
                 await session.commit()
@@ -131,7 +125,7 @@ class AgentEvalCasesTests(unittest.IsolatedAsyncioTestCase):
                 result = await build_goal_context(session, user_id, goal_id=goal_id, now=_now())
                 self._assert_goal_context(case, result)
             elif evaluator == "chat_tool":
-                with patch("app.agents.chat_agent.date", FixedEvalDate):
+                with patch("app.agents.chat_agent.utc_today", return_value=_today()):
                     result = await ChatAgent().call_tool(
                         AgentRunContext(db=session, user_id=user_id),
                         tool=case["tool"],

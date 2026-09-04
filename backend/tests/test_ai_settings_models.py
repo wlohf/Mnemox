@@ -5,12 +5,15 @@ import httpx
 
 from app.models.ai_settings import AIProviderSetting
 from app.routers.ai_settings import (
+    ProviderCreate,
+    ProviderUpdate,
     _connection_value,
     _fetch_model_catalog,
     _get_effective_values,
     _merge_available_models,
     _parse_available_models,
 )
+from pydantic import ValidationError
 
 
 class _StaticResponseClient:
@@ -29,6 +32,19 @@ class _StaticResponseClient:
 
 
 class AISettingsModelCatalogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_pricing_accepts_free_and_rejects_invalid_values(self):
+        free = ProviderUpdate(
+            input_price_per_million=0,
+            output_price_per_million=0,
+        )
+        self.assertEqual(free.input_price_per_million, 0)
+
+        with self.assertRaises(ValidationError):
+            ProviderCreate(
+                display_name="Invalid pricing",
+                input_price_per_million=-0.01,
+            )
+
     async def test_model_search_falls_back_to_configured_model_when_catalog_missing(self):
         response = httpx.Response(404)
 

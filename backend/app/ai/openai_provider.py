@@ -67,12 +67,18 @@ class OpenAIProvider(AIProvider):
         base_url: Optional[str] = None,
         max_context_tokens: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
+        input_price_per_million: Optional[float] = None,
+        output_price_per_million: Optional[float] = None,
+        provider_name: Optional[str] = None,
     ):
         super().__init__(
             api_key,
             model,
             max_context_tokens=max_context_tokens,
             max_output_tokens=max_output_tokens,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+            provider_name=provider_name,
         )
         self.base_url = (base_url or "").rstrip("/")
         kwargs: Dict[str, Any] = {"api_key": api_key}
@@ -87,6 +93,58 @@ class OpenAIProvider(AIProvider):
         # Official OpenAI uses hosted Responses API search. OpenAI-compatible
         # relays can use the app's local search function through chat tools.
         return True
+
+    def supports_structured_output(self) -> bool:
+        """Official OpenAI supports JSON Schema; compatible relays are unknown."""
+        return self._uses_official_openai_api()
+
+    async def chat_structured(
+        self,
+        messages: List[Dict[str, Any]],
+        response_model: Any,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.1,
+    ) -> Any:
+        if not self.supports_structured_output():
+            raise NotImplementedError("structured output is unavailable for compatible endpoints")
+        self.clear_last_usage()
+        if system_prompt:
+            messages = [{"role": "system", "content": system_prompt}] + messages
+        normalized_messages = self._normalize_messages(messages)
+        schema = response_model.model_json_schema()
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=cast(Any, normalized_messages),
+            temperature=temperature,
+            max_tokens=self.max_output_tokens,
+            response_format=cast(
+                Any,
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "knowledge_extraction_result",
+                        "strict": True,
+                        "schema": schema,
+                    },
+                },
+            ),
+        )
+        usage = self._get_attr_or_key(response, "usage", {}) or {}
+        self.record_last_usage(
+            input_tokens=self._get_attr_or_key(
+                usage,
+                "prompt_tokens",
+                self._get_attr_or_key(usage, "input_tokens", 0),
+            ),
+            output_tokens=self._get_attr_or_key(
+                usage,
+                "completion_tokens",
+                self._get_attr_or_key(usage, "output_tokens", 0),
+            ),
+            total_tokens=self._get_attr_or_key(usage, "total_tokens", 0),
+        )
+        content = response.choices[0].message.content or "{}"
+        return response_model.model_validate_json(content)
 
     def _supports_image_input(self) -> bool:
         model_name = (self.model or "").lower()
@@ -686,6 +744,7 @@ class OpenAIProvider(AIProvider):
         temperature: float = 0.7
     ) -> str:
         """同步对话"""
+        self.clear_last_usage()
         # 如果有系统提示词，添加到消息列表开头
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + messages
@@ -698,7 +757,20 @@ class OpenAIProvider(AIProvider):
             temperature=temperature,
             max_tokens=self.max_output_tokens,
         )
-        
+        usage = self._get_attr_or_key(response, "usage", {}) or {}
+        self.record_last_usage(
+            input_tokens=self._get_attr_or_key(
+                usage,
+                "prompt_tokens",
+                self._get_attr_or_key(usage, "input_tokens", 0),
+            ),
+            output_tokens=self._get_attr_or_key(
+                usage,
+                "completion_tokens",
+                self._get_attr_or_key(usage, "output_tokens", 0),
+            ),
+            total_tokens=self._get_attr_or_key(usage, "total_tokens", 0),
+        )
         return response.choices[0].message.content or ""
     
     async def chat_stream(

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learning_event import EventCategory, LearningEvent
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 EVENT_SCHEMA_VERSION = 1
@@ -80,6 +81,8 @@ def _event_category_for(event_type: str) -> str:
 def _to_iso(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return to_utc_iso(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
@@ -160,7 +163,7 @@ async def record_learning_event(
     normalized_type = normalize_learning_event_type(event_type)[:50]
     clean_source = str(source or "unknown").strip()[:50] or "unknown"
     clean_dedupe = str(dedupe_key or "").strip()[:160] or None
-    timestamp = occurred_at or datetime.now()
+    timestamp = to_db_utc(occurred_at) if occurred_at is not None else utc_now_db()
 
     if clean_dedupe:
         existing = await _find_deduped_event(
@@ -259,6 +262,30 @@ async def record_coach_nudge_event(
         "actionable": bool(suggested_action),
         "requires_confirmation": bool(_event_value(nudge, "requires_confirmation", False)),
     }
+    explainability = _event_value(nudge, "explainability", {}) or {}
+    experiment = explainability.get("experiment") if isinstance(explainability, dict) else None
+    if isinstance(experiment, dict):
+        try:
+            assignment_version = int(experiment.get("assignment_version") or 0)
+            bucket = int(experiment.get("bucket"))
+        except (TypeError, ValueError):
+            assignment_version = 0
+            bucket = -1
+        safe_experiment = {
+            "experiment_id": str(experiment.get("experiment_id") or "")[:80],
+            "assignment_version": assignment_version,
+            "bucket": bucket,
+            "variant": str(experiment.get("variant") or "")[:20],
+            "mode": str(experiment.get("mode") or "")[:40],
+            "policy_applied": experiment.get("policy_applied") is True,
+        }
+        if (
+            safe_experiment["experiment_id"]
+            and safe_experiment["variant"] in {"control", "shadow"}
+            and assignment_version > 0
+            and 0 <= bucket < 10_000
+        ):
+            payload["experiment"] = safe_experiment
     if outcome:
         payload["outcome"] = str(outcome)[:40]
     if attribution:
