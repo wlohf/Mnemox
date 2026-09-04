@@ -8,6 +8,7 @@ from typing import Optional, List
 import re
 import json
 import httpx
+import math
 
 from app.database import get_db
 from app.models.ai_settings import AIProviderSetting
@@ -32,6 +33,14 @@ router = APIRouter()
 
 # ---- Pydantic schemas ----
 
+def _validated_price_per_million(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    price = float(value)
+    if not math.isfinite(price) or price < 0 or price > 1_000_000:
+        raise ValueError("Token 单价必须是 0 到 1000000 之间的有限数值")
+    return round(price, 6)
+
 class ProviderOut(BaseModel):
     provider_name: str
     display_name: str
@@ -41,6 +50,8 @@ class ProviderOut(BaseModel):
     available_models: List[str] = []
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    input_price_per_million: Optional[float] = None
+    output_price_per_million: Optional[float] = None
     is_active: bool
     enabled: bool
 
@@ -52,7 +63,14 @@ class ProviderUpdate(BaseModel):
     available_models: Optional[List[str]] = None
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    input_price_per_million: Optional[float] = None
+    output_price_per_million: Optional[float] = None
     enabled: Optional[bool] = None
+
+    @field_validator("input_price_per_million", "output_price_per_million")
+    @classmethod
+    def validate_price_per_million(cls, value: Optional[float]) -> Optional[float]:
+        return _validated_price_per_million(value)
 
 
 class ProviderCreate(BaseModel):
@@ -65,7 +83,14 @@ class ProviderCreate(BaseModel):
     available_models: Optional[List[str]] = None
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    input_price_per_million: Optional[float] = None
+    output_price_per_million: Optional[float] = None
     enabled: Optional[bool] = True
+
+    @field_validator("input_price_per_million", "output_price_per_million")
+    @classmethod
+    def validate_price_per_million(cls, value: Optional[float]) -> Optional[float]:
+        return _validated_price_per_million(value)
 
 
 class SetActiveRequest(BaseModel):
@@ -291,6 +316,8 @@ def _to_out(row: AIProviderSetting) -> ProviderOut:
         available_models=available_models,
         max_context_tokens=row.max_context_tokens,
         max_output_tokens=row.max_output_tokens,
+        input_price_per_million=row.input_price_per_million,
+        output_price_per_million=row.output_price_per_million,
         is_active=bool(row.is_active),
         enabled=bool(row.enabled),
     )
@@ -616,6 +643,8 @@ async def create_provider(
         available_models=_dump_available_models(body.available_models or [], body.model or ""),
         max_context_tokens=_clamp_token_limit(body.max_context_tokens),
         max_output_tokens=_clamp_token_limit(body.max_output_tokens, high=32000),
+        input_price_per_million=body.input_price_per_million,
+        output_price_per_million=body.output_price_per_million,
         is_active=False,
         enabled=body.enabled if body.enabled is not None else True,
     )
@@ -660,6 +689,10 @@ async def update_provider(
         row.max_context_tokens = _clamp_token_limit(body.max_context_tokens)
     if "max_output_tokens" in body.model_fields_set:
         row.max_output_tokens = _clamp_token_limit(body.max_output_tokens, high=32000)
+    if "input_price_per_million" in body.model_fields_set:
+        row.input_price_per_million = body.input_price_per_million
+    if "output_price_per_million" in body.model_fields_set:
+        row.output_price_per_million = body.output_price_per_million
     if body.enabled is not None:
         row.enabled = body.enabled
 

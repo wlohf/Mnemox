@@ -438,6 +438,8 @@ async def build_learning_paths(
         path_payloads.append(
             {
                 "depth": int(path.depth),
+                # Recompute from Canonical SQL rather than trusting the
+                # projection property for the product-facing score.
                 "score": round(float(canonical_score), 6),
                 "nodes": path_nodes,
                 "edges": path_edges,

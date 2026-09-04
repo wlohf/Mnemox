@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.frontend_static import register_frontend_static
 from app.main import _resolve_frontend_dist_dir
+from app.middleware.security import SecurityHeadersMiddleware
 
 
 class FrontendStaticTests(unittest.TestCase):
@@ -20,6 +21,7 @@ class FrontendStaticTests(unittest.TestCase):
             (dist / "assets" / "app.js").write_text("console.log('ok')", encoding="utf-8")
 
             app = FastAPI()
+            app.add_middleware(SecurityHeadersMiddleware)
 
             @app.get("/api/ping")
             async def ping():
@@ -34,6 +36,9 @@ class FrontendStaticTests(unittest.TestCase):
             self.assertIn("root", client.get("/notes/123").text)
             self.assertEqual(client.get("/manifest.json").json(), {"name": "Mnemox"})
             self.assertEqual(client.get("/assets/app.js").text, "console.log('ok')")
+            csp = client.get("/notes/123").headers["content-security-policy"]
+            self.assertIn("style-src 'self' 'unsafe-inline'", csp)
+            self.assertIn("font-src 'self' data:", csp)
 
     def test_register_frontend_static_is_disabled_when_index_is_missing(self):
         app = FastAPI()

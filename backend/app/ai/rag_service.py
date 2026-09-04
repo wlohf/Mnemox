@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 import httpx
 
 from app.config import settings
+from app.utils.error_safety import safe_error_diagnostic, safe_exception_summary
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils.outbound_url import validate_ai_provider_url
 from app.utils.paths import get_chromadb_dir, get_data_dir
@@ -33,7 +34,7 @@ def load_rag_settings() -> Dict[str, Any]:
                     data["api_key"] = decrypt_secret(data.get("api_key"))
                 return data
         except Exception as e:
-            logger.warning("读取 RAG 配置文件失败: %s", e)
+            logger.warning("读取 RAG 配置文件失败: %s", safe_exception_summary(e))
     return {}
 
 
@@ -216,7 +217,7 @@ class RAGService:
         except Exception as exc:
             text = str(exc).lower()
             if "does not exist" not in text and "not found" not in text:
-                logger.warning("清空 RAG Chroma collection 时遇到异常: %s", exc)
+                logger.warning("清空 RAG Chroma collection 时遇到异常: %s", safe_exception_summary(exc))
         self._collection = self._chroma_client.get_or_create_collection(
             name=settings.RAG_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
@@ -485,17 +486,20 @@ class RAGService:
         except Exception as exc:
             if self._looks_like_dimension_mismatch(exc):
                 reset_message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引所有资料。"
-                logger.warning("RAG 索引遇到向量维度不匹配，准备清空旧索引后重试: %s", exc)
+                logger.warning(
+                    "RAG 索引遇到向量维度不匹配，准备清空旧索引后重试: %s",
+                    safe_exception_summary(exc),
+                )
                 await self.reset_index(reset_message, user_id=user_id)
                 try:
                     count = await asyncio.to_thread(_index)
                 except Exception as retry_exc:
-                    self._last_error = str(retry_exc)[:500]
-                    logger.warning("资料 '%s' (id=%d) 索引重试失败: %s", title, material_id, retry_exc)
+                    self._last_error = safe_exception_summary(retry_exc)
+                    logger.warning("资料 '%s' (id=%d) 索引重试失败: %s", title, material_id, self._last_error)
                     return 0
             else:
-                self._last_error = str(exc)[:500]
-                logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, exc)
+                self._last_error = safe_exception_summary(exc)
+                logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, self._last_error)
                 return 0
         if count <= 0:
             return 0
@@ -526,8 +530,8 @@ class RAGService:
         try:
             await asyncio.to_thread(_remove)
         except Exception as exc:
-            self._last_error = str(exc)[:500]
-            logger.warning("删除资料 chunk 失败 (material_id=%s): %s", material_id, exc)
+            self._last_error = safe_exception_summary(exc)
+            logger.warning("删除资料 chunk 失败 (material_id=%s): %s", material_id, self._last_error)
             raise
 
     # ------------------------------------------------------------------
@@ -615,11 +619,14 @@ class RAGService:
             if self._looks_like_dimension_mismatch(exc):
                 message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引资料后再使用语义检索。"
                 await self.reset_index(message, user_id=user_id)
-                logger.warning("RAG 检索遇到向量维度不匹配，已清空旧索引并返回 fallback: %s", exc)
+                logger.warning(
+                    "RAG 检索遇到向量维度不匹配，已清空旧索引并返回 fallback: %s",
+                    safe_exception_summary(exc),
+                )
                 return []
-            self._last_error = str(exc)[:500]
+            self._last_error = safe_exception_summary(exc)
             self._set_retrieval_status({"ok": False, "mode": "fallback", "message": f"RAG 检索失败，已回退到普通资料上下文: {self._last_error}"}, user_id)
-            logger.warning("RAG 检索失败，已返回空结果: %s", exc)
+            logger.warning("RAG 检索失败，已返回空结果: %s", self._last_error)
             return []
 
     async def retrieve_for_material(
@@ -642,13 +649,23 @@ class RAGService:
         user_id 仅用于读取该用户最近一次检索状态，避免多用户页面互相显示状态。
         """
         retrieval_status = self._get_retrieval_status(user_id)
+        diagnostic = (
+            safe_error_diagnostic(
+                self._last_error,
+                code="rag.operation_failed",
+            )
+            if self._last_error
+            else None
+        )
         if not self._initialized:
             return {
                 "enabled": settings.RAG_ENABLED,
                 "initialized": False,
                 "total_chunks": 0,
                 "embedding_enabled": False,
-                "last_error": self._last_error,
+                "last_error": diagnostic.summary if diagnostic else "",
+                "last_error_code": diagnostic.code if diagnostic else None,
+                "last_error_fingerprint": diagnostic.fingerprint if diagnostic else None,
                 "last_retrieval_status": retrieval_status,
                 "fallback_active": retrieval_status.get("mode") == "fallback",
                 "message": "RAG 服务未初始化，将使用普通资料上下文 fallback",
@@ -670,7 +687,9 @@ class RAGService:
             "top_k": getattr(self, '_top_k', settings.RAG_TOP_K),
             "similarity_threshold": getattr(self, '_similarity_threshold', settings.RAG_SIMILARITY_THRESHOLD),
             "embedding_enabled": self._embed_model is not None,
-            "last_error": self._last_error,
+            "last_error": diagnostic.summary if diagnostic else "",
+            "last_error_code": diagnostic.code if diagnostic else None,
+            "last_error_fingerprint": diagnostic.fingerprint if diagnostic else None,
             "last_retrieval_status": retrieval_status,
             "fallback_active": retrieval_status.get("mode") == "fallback" or self._embed_model is None,
             "message": (
@@ -694,7 +713,11 @@ class RAGService:
                 )
                 return len(results["ids"]) if results and results["ids"] else 0
             except Exception as e:
-                logger.warning("获取资料 chunk 数量失败 (material_id=%s): %s", material_id, e)
+                logger.warning(
+                    "获取资料 chunk 数量失败 (material_id=%s): %s",
+                    material_id,
+                    safe_exception_summary(e),
+                )
                 return 0
 
         return await asyncio.to_thread(_count)

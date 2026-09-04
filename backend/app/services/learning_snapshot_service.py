@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import desc, func, or_, select
@@ -16,14 +16,18 @@ from app.models.note import Note
 from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.services.memory_service import get_relevant_memories
+from app.services.coach_time_service import local_day_utc_bounds, normalize_coach_time_zone
+from app.services.profile_service import get_profile
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
-from app.services.profile_service import get_or_compute_profile
 
 
 def _to_iso(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return to_utc_iso(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
@@ -39,7 +43,9 @@ def _json_loads(value: str | None, fallback: Any) -> Any:
 
 
 async def _collect_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
-    profile_obj = await get_or_compute_profile(db, user_id)
+    # Snapshot assembly is a read model. Profile refresh is an explicit
+    # projection write owned by the profile endpoint or post-Pomodoro worker.
+    profile_obj = await get_profile(db, user_id)
     if not profile_obj:
         return {}
     return {
@@ -55,7 +61,13 @@ async def _collect_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
     }
 
 
-async def _collect_task_state(db: AsyncSession, user_id: int, today: date) -> dict[str, Any]:
+async def _collect_task_state(
+    db: AsyncSession,
+    user_id: int,
+    today: date,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> dict[str, Any]:
     result = await db.execute(
         select(Task, Goal.title.label("goal_title"))
         .join(Goal, Goal.id == Task.goal_id)
@@ -80,7 +92,7 @@ async def _collect_task_state(db: AsyncSession, user_id: int, today: date) -> di
             "status": task.status,
             "route": "/goals",
         }
-        if task.completed_at and task.completed_at.date() == today:
+        if task.completed_at and day_start_utc <= task.completed_at < day_end_utc:
             completed_today.append(item)
         if task.status == "completed":
             continue
@@ -214,14 +226,19 @@ async def _collect_review_state(db: AsyncSession, user_id: int, now: datetime) -
     return {"due_review_count": due_count, "due_review_items": items}
 
 
-async def _collect_pomodoro_state(db: AsyncSession, user_id: int, today: date, now: datetime) -> dict[str, Any]:
-    today_start = datetime.combine(today, time.min)
-    today_end = datetime.combine(today, time.max)
+async def _collect_pomodoro_state(
+    db: AsyncSession,
+    user_id: int,
+    today: date,
+    now: datetime,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> dict[str, Any]:
     today_result = await db.execute(
         select(Pomodoro).where(
             Pomodoro.user_id == user_id,
-            Pomodoro.started_at >= today_start,
-            Pomodoro.started_at <= today_end,
+            Pomodoro.started_at >= day_start_utc,
+            Pomodoro.started_at < day_end_utc,
         )
     )
     today_pomodoros = today_result.scalars().all()
@@ -277,13 +294,18 @@ async def _collect_weakness_state(db: AsyncSession, user_id: int) -> dict[str, A
     }
 
 
-async def _collect_memory_state(db: AsyncSession, user_id: int, include_memories: bool) -> dict[str, Any]:
+async def _collect_memory_state(
+    db: AsyncSession,
+    user_id: int,
+    include_memories: bool,
+    now: datetime,
+) -> dict[str, Any]:
     count_result = await db.execute(
         select(func.count(UserMemory.id)).where(
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > now),
         )
     )
     memories: list[dict[str, Any]] = []
@@ -318,12 +340,18 @@ async def _collect_recent_notes(db: AsyncSession, user_id: int, include_recent_n
     ]
 
 
-async def _collect_coach_state(db: AsyncSession, user_id: int, now: datetime) -> dict[str, Any]:
-    today_start = datetime.combine(now.date(), time.min)
+async def _collect_coach_state(
+    db: AsyncSession,
+    user_id: int,
+    now: datetime,
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+) -> dict[str, Any]:
     nudges_today_result = await db.execute(
         select(func.count(CoachNudge.id)).where(
             CoachNudge.user_id == user_id,
-            CoachNudge.created_at >= today_start,
+            CoachNudge.created_at >= day_start_utc,
+            CoachNudge.created_at < day_end_utc,
             CoachNudge.status.in_(["pending", "shown", "accepted", "completed", "snoozed"]),
         )
     )
@@ -362,26 +390,46 @@ async def build_learning_snapshot(
     user_id: int,
     *,
     now: datetime | None = None,
+    include_profile: bool = True,
     include_recent_notes: bool = True,
     include_memories: bool = True,
+    time_zone: str = "UTC",
 ) -> dict[str, Any]:
     """Aggregate the current user's learning state into one reusable object."""
 
-    current = now or datetime.now()
-    today = current.date()
+    current = to_db_utc(now) if now is not None else utc_now_db()
+    clean_time_zone = normalize_coach_time_zone(time_zone)
+    today, day_start_utc, day_end_utc = local_day_utc_bounds(
+        current,
+        time_zone=clean_time_zone,
+    )
     snapshot: dict[str, Any] = {
         "user_id": user_id,
         "date": today.isoformat(),
-        "generated_at": current.isoformat(),
-        "profile": await _collect_profile(db, user_id),
-        "tasks": await _collect_task_state(db, user_id, today),
+        "time_zone": clean_time_zone,
+        "generated_at": to_utc_iso(current),
+        "profile": await _collect_profile(db, user_id) if include_profile else {},
+        "tasks": await _collect_task_state(db, user_id, today, day_start_utc, day_end_utc),
         "daily_plan": await _collect_daily_plan_state(db, user_id, today),
         "review": await _collect_review_state(db, user_id, current),
-        "learning": await _collect_pomodoro_state(db, user_id, today, current),
+        "learning": await _collect_pomodoro_state(
+            db,
+            user_id,
+            today,
+            current,
+            day_start_utc,
+            day_end_utc,
+        ),
         "weaknesses": await _collect_weakness_state(db, user_id),
-        "memory": await _collect_memory_state(db, user_id, include_memories),
+        "memory": await _collect_memory_state(db, user_id, include_memories, current),
         "recent_notes": await _collect_recent_notes(db, user_id, include_recent_notes),
-        "coach": await _collect_coach_state(db, user_id, current),
+        "coach": await _collect_coach_state(
+            db,
+            user_id,
+            current,
+            day_start_utc,
+            day_end_utc,
+        ),
     }
     snapshot["risk_flags"] = _compute_risk_flags(snapshot)
     return snapshot

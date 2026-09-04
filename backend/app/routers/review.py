@@ -24,6 +24,7 @@ from app.services.learning_event_service import (
 from app.services.coach_action_attempt_service import bind_coach_attempt_to_domain_event
 from app.services.projection_outbox_service import process_event_projection
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ async def _link_coach_review_attempt(
             outcome="completed",
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
 
 async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: int) -> list[ReviewSchedule]:
@@ -660,7 +661,7 @@ async def get_review_content(
             "questions": data.get("questions", []),
         }
     except Exception as e:
-        logger.warning("AI 复习内容生成失败: %s", e)
+        logger.warning("AI 复习内容生成失败: %s", safe_exception_summary(e))
         # Fallback if AI fails
         return {
             "summary": [
@@ -774,7 +775,7 @@ async def submit_review_answers(
         feedback = data.get("feedback", "")
         
     except Exception as e:
-        logger.warning("AI 复习答案评估失败: %s", e)
+        logger.warning("AI 复习答案评估失败: %s", safe_exception_summary(e))
         # Fallback scoring
         score = 60
         quality = 3

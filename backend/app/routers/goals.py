@@ -15,6 +15,7 @@ from app.models.material import Material, Chapter
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.learning_event_service import record_learning_event
+from app.utils.pydantic_compat import provided_model_fields
 
 
 async def _ensure_user_chapter(db: AsyncSession, chapter_id: int, user_id: int) -> Chapter:
@@ -187,7 +188,7 @@ async def update_task(
         await _ensure_user_chapter(db, body.chapter_id, int(current_user.id))
         task.chapter_id = body.chapter_id
 
-    fields_set = getattr(body, "model_fields_set", getattr(body, "__fields_set__", set()))
+    fields_set = provided_model_fields(body)
     if "parent_task_id" in fields_set:
         if body.parent_task_id is None:
             task.parent_task_id = None
@@ -744,4 +745,3 @@ async def _generate_weekly_tasks(goal: Goal, db: AsyncSession, week_start: date)
             await db.flush()
     
     return tasks
-

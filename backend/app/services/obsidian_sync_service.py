@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.note import Note
+from app.services.knowledge_source_service import delete_source, register_note_source
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,7 @@ def _read_vault_markdown(vault: Path, file_path: Path) -> str:
 
 
 def _failure_summary(source_path: str, exc: Exception) -> dict[str, str]:
-    reason = str(exc) if isinstance(exc, VaultFileError) else "文件读取失败"
+    reason = redact_sensitive_text(exc) if isinstance(exc, VaultFileError) else "文件读取失败"
     return {"source_path": source_path, "reason": reason}
 
 
@@ -159,7 +161,7 @@ async def _attach_notes_to_concepts(
 
             await attach_note_to_concepts(db, user_id, note)
         except Exception as exc:
-            logger.warning("vault 笔记挂图失败 note_id=%s err=%s", note.id, exc)
+            logger.warning("vault 笔记挂图失败 note_id=%s err=%s", note.id, safe_exception_summary(exc))
 
 
 async def sync_vault(
@@ -201,6 +203,7 @@ async def sync_vault(
         "failures": [],
     }
     changed_notes: list[Note] = []
+    missing_notes: list[Note] = []
     seen_file_ids: set[str] = set()
 
     for file_path, source_path in _iter_markdown_files(vault):
@@ -238,6 +241,7 @@ async def sync_vault(
                 stats["created"] += 1
                 changed_notes.append(note)
             else:
+                was_missing = note.source_sync_state == _SYNC_MISSING
                 previous_path = str(note.source_path or "")
                 if previous_path != source_path:
                     note.source_path = source_path
@@ -295,10 +299,12 @@ async def sync_vault(
                     note.source_sync_state = _SYNC_ACTIVE
                     _clear_conflict(note)
                     stats["skipped"] += 1
+                    if was_missing:
+                        changed_notes.append(note)
         except Exception as exc:
             stats["failed"] += 1
             stats["failures"].append(_failure_summary(source_path, exc))
-            logger.warning("vault 文件同步失败 path=%s err=%s", source_path, exc)
+            logger.warning("vault 文件同步失败 path=%s err=%s", source_path, safe_exception_summary(exc))
 
     # A partial or failed scan cannot distinguish an unseen file from a deleted
     # file, so retain the last known state until a complete scan succeeds.
@@ -307,8 +313,20 @@ async def sync_vault(
             if file_id not in seen_file_ids and note.source_sync_state not in {_SYNC_MISSING, _SYNC_CONFLICT}:
                 note.source_sync_state = _SYNC_MISSING
                 stats["missing"] += 1
+                missing_notes.append(note)
 
     await _attach_notes_to_concepts(db, user_id, changed_notes)
+
+    if settings.KNOWLEDGE_V2_ENABLED:
+        for note in changed_notes:
+            await register_note_source(db, user_id=int(user_id), note_id=int(note.id))
+        for note in missing_notes:
+            await delete_source(
+                db,
+                user_id=int(user_id),
+                source_type="note",
+                source_record_id=int(note.id),
+            )
 
     await db.flush()
     return stats
@@ -355,6 +373,8 @@ async def resolve_vault_conflict(
     note.source_sync_state = _SYNC_ACTIVE
     _clear_conflict(note)
     await db.flush()
+    if settings.KNOWLEDGE_V2_ENABLED:
+        await register_note_source(db, user_id=int(user_id), note_id=int(note.id))
     return {
         "ok": True,
         "note_id": int(note.id),

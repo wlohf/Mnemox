@@ -23,6 +23,7 @@ from app.services.learner_model_service import (
 )
 from app.services.learning_event_service import record_learning_event
 from app.services.learning_recommendation_service import list_learning_recommendations
+from app.utils.error_safety import redact_sensitive_text
 from app.services.projection_outbox_service import (
     list_dead_letter_tasks,
     process_outbox,
@@ -113,7 +114,7 @@ async def concept_state(
     try:
         return await get_concept_state(db, int(current_user.id), concept_id)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.get("/recommendations")
@@ -227,7 +228,10 @@ async def add_concept_evidence(
             observed_at=body.observed_at, payload=payload,
         )
     except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=404 if isinstance(exc, LookupError) else 422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404 if isinstance(exc, LookupError) else 422,
+            detail=redact_sensitive_text(exc),
+        ) from exc
 
 
 @router.post("/concepts/{concept_id}/override")
@@ -247,9 +251,9 @@ async def set_concept_override(
             retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.delete("/concepts/{concept_id}/override")
@@ -270,9 +274,9 @@ async def clear_concept_override(
             retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/concepts/{concept_id}/recompute")
@@ -291,7 +295,7 @@ async def recompute_concept(
             persist=as_of is None,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/replay")
@@ -312,9 +316,9 @@ async def replay(
             retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/recompute")
@@ -406,4 +410,4 @@ async def retry_outbox_failed_task(
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="投影任务不存在") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=redact_sensitive_text(exc)) from exc

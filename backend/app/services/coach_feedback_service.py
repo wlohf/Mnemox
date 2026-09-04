@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import or_, select, update
@@ -12,6 +12,7 @@ from app.models.coach import CoachNudge
 from app.models.memory import UserMemory
 from app.services.coach_learning_service import record_skill_feedback
 from app.services.learning_event_service import CanonicalEventType, record_coach_nudge_event
+from app.utils.utc import to_utc_iso, utc_now_db
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
 
@@ -82,7 +83,7 @@ async def record_coach_feedback(
     if outcome not in COACH_FEEDBACK_OUTCOMES:
         raise ValueError("不支持的反馈类型")
 
-    now = datetime.now()
+    now = utc_now_db()
     target_status = _feedback_status(outcome)
     if outcome in IDEMPOTENT_FEEDBACK_OUTCOMES:
         allowed_statuses_by_outcome = {
@@ -135,7 +136,7 @@ async def record_coach_feedback(
         "title": nudge.title,
         "outcome": outcome,
         "notes": (notes or "")[:500],
-        "recorded_at": now.isoformat(),
+        "recorded_at": to_utc_iso(now),
     }
     if attribution:
         payload["attribution"] = {
@@ -145,7 +146,7 @@ async def record_coach_feedback(
             and value is not None
         }
     if outcome in SNOOZE_DURATIONS:
-        payload["snooze_until"] = (now + SNOOZE_DURATIONS[outcome]).isoformat()
+        payload["snooze_until"] = to_utc_iso(now + SNOOZE_DURATIONS[outcome])
     memory = UserMemory(
         user_id=user_id,
         memory_key=f"coach_feedback_{now.strftime('%Y%m%d_%H%M%S%f')}_{nudge.skill_id}"[:100],
@@ -212,7 +213,7 @@ async def list_recent_coach_feedback(db: AsyncSession, user_id: int, limit: int 
             UserMemory.category == "coach_feedback",
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
         .limit(max(1, min(int(limit or 30), 100)))
@@ -225,6 +226,6 @@ async def list_recent_coach_feedback(db: AsyncSession, user_id: int, limit: int 
             payload = {}
         if isinstance(payload, dict):
             payload.setdefault("memory_key", row.memory_key)
-            payload.setdefault("recorded_at", row.last_seen_at.isoformat() if row.last_seen_at else None)
+            payload.setdefault("recorded_at", to_utc_iso(row.last_seen_at) if row.last_seen_at else None)
             items.append(payload)
     return items

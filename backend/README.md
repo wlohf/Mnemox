@@ -32,7 +32,7 @@ OPENAI_API_KEY=your_api_key_here
 python run_migrations.py
 ```
 
-SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260827_15`，SQLite lightweight migration 还覆盖账号会话版本与持久登录节流字段。仓库根目录的 `rehearse_postgres_release.sh` 会在不升级源库的前提下完成备份、一次性恢复、当前 head 升级、schema drift 与稳定数据量核对；正式 PostgreSQL 仍须在发布窗口显式升级和验收。
+SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260903_21`，SQLite lightweight migration 还覆盖账号会话版本、持久登录节流、AgentRuntime 生命周期、Provider Token 单价、Coach IANA 时区、Mnemox V2 Canonical Claim、durable extraction run、Entity Resolution 和知识投影四表。仓库根目录的 `rehearse_postgres_release.sh` 会在不升级源库的前提下完成备份、一次性恢复、当前 head 升级、schema drift 与稳定数据量核对；本地 PostgreSQL 16 历史 dump 恢复演练已通过，正式 PostgreSQL 仍须在发布窗口显式升级和验收。
 
 ### 资料检索质量验收
 
@@ -46,6 +46,24 @@ python evaluate_retrieval.py --backend hybrid --min-recall-at-5 0.75 --summary-o
 pip install -r requirements-spike.txt
 python evaluate_retrieval.py --backend all --include-qdrant --summary-only
 ```
+
+### Mnemox V2 Stage 0～3
+
+以下命令只运行现有 Association V1 的临时 SQLite 离线评测，不调用外部模型，也不启用 Claim 或 Association V2：
+
+```bash
+python evaluate_knowledge.py --min-explicit-recall-at-5 0.95 --summary-only
+```
+
+固定语料位于 `tests/fixtures/knowledge_extraction_eval_cases.json` 与 `tests/fixtures/association_v2_eval_cases.json`。Stage 1 已增加 Source/Revision/Unit/Claim/Evidence SQL 模型；Stage 2 又增加严格共享 Schema、确定性/LLM extractor、Evidence Grounding 与 durable extraction run。`KNOWLEDGE_V2_ENABLED=true` 时，Material/Note 写入登记来源版本并创建本地确定性 run；只有同时打开 `KNOWLEDGE_LLM_EXTRACTION_ENABLED` 才创建 LLM run。所有自动 Claim 均为 `pending`，无法定位 Evidence 的候选不会写入。
+
+Stage 3 新增 exact/alias/既有人工决定优先的 Entity Resolution、pending 词法/向量候选、confirmed ClaimConceptLink、Concept/Claim/Material Unit/Note Unit 的知识专用 Chroma 投影及 compact outbox。知识 embedding consumer 还要求 `KNOWLEDGE_EMBEDDING_ENABLED=true`；关闭或不可用时 exact/alias 和 SQL 审核继续工作。记录式合成 ranking 门禁可离线运行：
+
+```bash
+python evaluate_entity_resolution.py --summary-only
+```
+
+它不调用真实 provider，不替代真实语料抽验。Association V2、ClaimRelation、SqlGraphStore、Neo4j/Graphiti 仍没有产品运行时依赖。
 
 ### 4. 启动服务
 
@@ -149,7 +167,7 @@ print(response)
 - 错题：列表、创建、更新、复习、删除、复习计划联动
 - 笔记/记忆/画像：笔记 CRUD、AI 辅助、记忆管理、用户画像
 - Analytics/EDA/干预：进度、掌握度、行为分析、主动干预
-- Agent/Anki：Agent 任务与反馈、Anki 卡片与复习
+- Agent/Anki：Agent 任务与反馈、按本地自然周生成带来源版本的 copy-only 知识巩固草案、Anki 卡片与复习
 - 学习者模型：概念状态与解释、证据分页、人工修正/撤销、单概念/批量重算、投影重放与 outbox 处理
 - AI 设置：提供商读取、更新、激活、连通性测试
 

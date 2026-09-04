@@ -12,8 +12,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services.graph_shadow_service import neo4j_projection_lag_summary
+from app.services.graph_projection_status_service import neo4j_projection_lag_summary
 from app.services.graph_store.factory import create_graph_store
+from app.services.graph_store.rollout_store import (
+    neo4j_projection_caught_up,
+    neo4j_rollout_decision,
+)
 
 
 async def graph_runtime_status(db: AsyncSession, *, user_id: int) -> dict[str, Any]:
@@ -49,28 +53,40 @@ async def graph_runtime_status(db: AsyncSession, *, user_id: int) -> dict[str, A
             "projection": None,
         }
 
-    projection = await neo4j_projection_lag_summary(db, user_id=int(user_id))
-    counts = projection.get("status_counts") or {}
-    pending = int(counts.get("pending", 0) or 0)
-    processing = int(counts.get("processing", 0) or 0)
-    failed = int(counts.get("failed", 0) or 0)
-    dead_letter = int(projection.get("dead_letter_count", 0) or 0)
-    projection_caught_up = pending == 0 and processing == 0 and failed == 0 and dead_letter == 0
+    rollout = neo4j_rollout_decision(user_id=int(user_id))
+    try:
+        projection = await neo4j_projection_lag_summary(db, user_id=int(user_id))
+    except Exception as exc:
+        return {
+            "selected_backend": selected_backend,
+            "effective_backend": "sql" if serving_healthy else "unavailable",
+            "projection_required": True,
+            "primary_ready": False,
+            "serving_ready": serving_healthy,
+            "rollout": rollout,
+            "health": health,
+            "projection": {
+                "caught_up": False,
+                "error_type": exc.__class__.__name__,
+            },
+        }
+
+    projection_caught_up, blocking = neo4j_projection_caught_up(projection)
+    primary_ready = primary_healthy and projection_caught_up
+    neo4j_read_enabled = bool(rollout["selected"]) and primary_ready
 
     return {
         "selected_backend": selected_backend,
+        "effective_backend": "neo4j" if neo4j_read_enabled else ("sql" if serving_healthy else "unavailable"),
         "projection_required": True,
-        "primary_ready": primary_healthy and projection_caught_up,
+        "primary_ready": primary_ready,
         "serving_ready": serving_healthy,
+        "neo4j_read_enabled": neo4j_read_enabled,
+        "rollout": rollout,
         "health": health,
         "projection": {
             **projection,
             "caught_up": projection_caught_up,
-            "blocking_counts": {
-                "pending": pending,
-                "processing": processing,
-                "failed": failed,
-                "dead_letter": dead_letter,
-            },
+            "blocking_counts": blocking,
         },
     }

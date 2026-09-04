@@ -10,7 +10,7 @@ import hashlib
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession

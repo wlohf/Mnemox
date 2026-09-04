@@ -23,6 +23,7 @@ from app.services.note_quote_service import (
     record_note_quote_usage,
     recently_used_hashes,
 )
+from app.utils.error_safety import safe_exception_summary
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -417,7 +418,7 @@ async def generate_quote(
     try:
         used_hashes = await recently_used_hashes(db, user_id)
     except Exception as e:
-        logger.warning("读取引用冷却记录失败 user_id=%s err=%s", user_id, e)
+        logger.warning("读取引用冷却记录失败 user_id=%s err=%s", user_id, safe_exception_summary(e))
         used_hashes = set()
     snapshot = await collect_motivation_snapshot(db, user_id, today, exclude_note_hashes=used_hashes)
     prompt = build_motivation_prompt(snapshot)
@@ -438,7 +439,11 @@ async def generate_quote(
         if not text:
             raise ValueError("empty motivation quote")
     except Exception as e:
-        logger.warning("AI 激励生成失败，使用本地兜底。user_id=%s err=%s", user_id, e)
+        logger.warning(
+            "AI 激励生成失败，使用本地兜底。user_id=%s err=%s",
+            user_id,
+            safe_exception_summary(e),
+        )
         text = build_fallback_motivation_quote(snapshot)
         author = "系统"
     if not text:
@@ -458,7 +463,11 @@ async def generate_quote(
                 channel="motivation",
             )
         except Exception as e:  # 使用记录失败不影响激励生成
-            logger.warning("激励引用使用记录失败 user_id=%s err=%s", user_id, e)
+            logger.warning(
+                "激励引用使用记录失败 user_id=%s err=%s",
+                user_id,
+                safe_exception_summary(e),
+            )
 
     duplicated = await _find_duplicate_quote_by_content(db, user_id, text)
     if duplicated is not None:

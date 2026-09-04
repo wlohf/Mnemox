@@ -48,6 +48,8 @@ class AIProviderFactory:
         base_url: str = "",
         max_context_tokens: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
+        input_price_per_million: Optional[float] = None,
+        output_price_per_million: Optional[float] = None,
     ) -> AIProvider:
         """根据参数直接创建提供商实例（供 test 接口和数据库查询使用）"""
         kind = AIProviderFactory._resolve_provider_kind(provider_name, base_url, model)
@@ -60,6 +62,9 @@ class AIProviderFactory:
                 base_url=base_url or None,
                 max_context_tokens=max_context_tokens,
                 max_output_tokens=max_output_tokens,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+                provider_name=provider_name,
             )
         elif kind == "claude":
             from app.ai.claude_provider import ClaudeProvider
@@ -69,6 +74,9 @@ class AIProviderFactory:
                 base_url=base_url or None,
                 max_context_tokens=max_context_tokens,
                 max_output_tokens=max_output_tokens,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+                provider_name=provider_name,
             )
         elif kind == "gemini":
             from app.ai.gemini_provider import GeminiProvider
@@ -77,6 +85,9 @@ class AIProviderFactory:
                 model=model,
                 max_context_tokens=max_context_tokens,
                 max_output_tokens=max_output_tokens,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+                provider_name=provider_name,
             )
         else:
             from app.ai.openai_provider import OpenAIProvider
@@ -86,6 +97,9 @@ class AIProviderFactory:
                 base_url=base_url or None,
                 max_context_tokens=max_context_tokens,
                 max_output_tokens=max_output_tokens,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+                provider_name=provider_name,
             )
 
     @staticmethod
@@ -159,6 +173,8 @@ class AIProviderFactory:
                     base_url=safe_base_url,
                     max_context_tokens=row.max_context_tokens,
                     max_output_tokens=row.max_output_tokens,
+                    input_price_per_million=row.input_price_per_million,
+                    output_price_per_million=row.output_price_per_million,
                 )
 
         # 回退到 .env 配置

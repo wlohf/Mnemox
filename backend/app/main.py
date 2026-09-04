@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import init_db, close_db, _is_sqlite
 from app.middleware.security import RateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from app.frontend_static import register_frontend_static
+from app.utils.error_safety import safe_exception_summary
 from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
 
 
@@ -54,6 +55,64 @@ def _agent_runtime_worker_allowed() -> bool:
     return bool(settings.AGENT_RUNTIME_SCHEDULER_ENABLED and not _is_sqlite())
 
 
+def _knowledge_extraction_worker_allowed() -> bool:
+    """The V2 master switch owns both SQLite and PostgreSQL consumers."""
+    return bool(settings.KNOWLEDGE_V2_ENABLED)
+
+
+def create_knowledge_extraction_worker(session_factory):
+    from app.services.knowledge_extraction_worker import KnowledgeExtractionWorker
+
+    return KnowledgeExtractionWorker(
+        session_factory,
+        poll_interval_seconds=settings.KNOWLEDGE_EXTRACTION_WORKER_POLL_INTERVAL_SECONDS,
+        batch_size=settings.KNOWLEDGE_EXTRACTION_WORKER_BATCH_SIZE,
+        max_attempts=settings.KNOWLEDGE_EXTRACTION_MAX_ATTEMPTS,
+        lease_seconds=settings.KNOWLEDGE_EXTRACTION_LEASE_SECONDS,
+        retry_base_seconds=settings.KNOWLEDGE_EXTRACTION_RETRY_BASE_SECONDS,
+    )
+
+
+def _knowledge_projection_worker_allowed() -> bool:
+    """Run the projection worker when any rebuildable knowledge projection is enabled."""
+    sparse_enabled = (
+        str(settings.KNOWLEDGE_SPARSE_BACKEND or "reference").strip().casefold()
+        != "reference"
+    )
+    graph_enabled = bool(
+        str(settings.GRAPH_BACKEND or "sql").strip().casefold() == "neo4j"
+        or settings.NEO4J_GRAPH_SHADOW
+        or settings.NEO4J_GRAPH_ENABLED
+    )
+    return bool(
+        settings.KNOWLEDGE_V2_ENABLED
+        and (settings.KNOWLEDGE_EMBEDDING_ENABLED or sparse_enabled or graph_enabled)
+    )
+
+
+def create_knowledge_projection_worker(session_factory):
+    from app.services.knowledge_projection_worker import KnowledgeProjectionWorker
+
+    return KnowledgeProjectionWorker(
+        session_factory,
+        poll_interval_seconds=settings.KNOWLEDGE_PROJECTION_WORKER_POLL_INTERVAL_SECONDS,
+        batch_size=settings.KNOWLEDGE_PROJECTION_WORKER_BATCH_SIZE,
+        max_attempts=settings.KNOWLEDGE_PROJECTION_MAX_ATTEMPTS,
+        lease_seconds=settings.KNOWLEDGE_PROJECTION_LEASE_SECONDS,
+        retry_base_seconds=settings.KNOWLEDGE_PROJECTION_RETRY_BASE_SECONDS,
+    )
+
+
+def create_agent_job_recovery_worker(session_factory):
+    """Build the lease reaper used by both server and desktop runtimes."""
+    from app.services.agent_job_recovery_service import AgentJobRecoveryWorker
+
+    return AgentJobRecoveryWorker(
+        session_factory,
+        poll_interval_seconds=min(30.0, max(5.0, settings.AGENT_KERNEL_LEASE_SECONDS / 4)),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -66,8 +125,27 @@ async def lifespan(app: FastAPI):
 
     outbox_worker = None
     agent_runtime_worker = None
+    agent_job_recovery_worker = None
+    knowledge_extraction_worker = None
+    knowledge_projection_worker = None
     app.state.projection_outbox_worker = None
     app.state.agent_runtime_worker = None
+    app.state.agent_job_recovery_worker = None
+    app.state.knowledge_extraction_worker = None
+    app.state.knowledge_projection_worker = None
+
+    # A process may have stopped between two durable Kernel steps. Reclaim
+    # only expired leases; a still-live owner keeps renewing its own lease.
+    try:
+        from app.services.agent_job_recovery_service import recover_expired_agent_kernel_jobs
+
+        async with async_session_maker() as session:
+            recovered = await recover_expired_agent_kernel_jobs(session)
+            if recovered:
+                await session.commit()
+                logger.warning("已回收 %d 个租约过期的 AgentKernel 任务", recovered)
+    except Exception as exc:
+        logger.warning("AgentKernel 过期任务回收失败（不影响启动）: %s", safe_exception_summary(exc))
 
     # Decay stale episodic memories
     try:
@@ -78,7 +156,7 @@ async def lifespan(app: FastAPI):
                 await session.commit()
                 logger.info("已衰减 %d 条过期 episodic 记忆", decayed)
     except Exception as e:
-        logger.warning("记忆衰减失败: %s", e)
+        logger.warning("记忆衰减失败: %s", safe_exception_summary(e))
 
     # 初始化 RAG 服务
     if settings.RAG_ENABLED:
@@ -169,24 +247,29 @@ async def lifespan(app: FastAPI):
                                         "RAG 后台索引跳过资料 id=%s title=%r：%s",
                                         mat.id,
                                         mat.title,
-                                        item_error,
-                                        exc_info=settings.DEBUG,
+                                        safe_exception_summary(item_error),
                                     )
                             if failed:
                                 logger.warning("RAG 后台索引完成：成功 %d 份，失败 %d 份", indexed, failed)
                             else:
                                 logger.info("RAG 后台索引完成：成功索引 %d 份资料", indexed)
                     except Exception as e:
-                        logger.warning("RAG 后台索引任务异常（不影响主流程）: %s", e, exc_info=settings.DEBUG)
+                        logger.warning(
+                            "RAG 后台索引任务异常（不影响主流程）: %s",
+                            safe_exception_summary(e),
+                        )
 
                 asyncio.create_task(_bg_index())
         except Exception as e:
-            logger.warning("RAG 服务初始化失败（不影响主流程）: %s", e)
+            logger.warning("RAG 服务初始化失败（不影响主流程）: %s", safe_exception_summary(e))
 
     try:
-        # Start the PostgreSQL worker only after startup maintenance and RAG
+        # Start lifecycle workers only after startup maintenance and RAG
         # initialization have completed. The surrounding finally still closes
         # the DB if setup fails after this point.
+        agent_job_recovery_worker = create_agent_job_recovery_worker(async_session_maker)
+        app.state.agent_job_recovery_worker = agent_job_recovery_worker
+        agent_job_recovery_worker.start()
         if _outbox_worker_allowed():
             outbox_worker = create_projection_outbox_worker(async_session_maker)
             app.state.projection_outbox_worker = outbox_worker
@@ -199,24 +282,70 @@ async def lifespan(app: FastAPI):
                 async_session_maker,
                 poll_interval_seconds=settings.AGENT_RUNTIME_POLL_INTERVAL_SECONDS,
                 batch_size=settings.AGENT_RUNTIME_BATCH_SIZE,
+                user_interval_seconds=settings.AGENT_RUNTIME_USER_INTERVAL_SECONDS,
+                retry_interval_seconds=settings.AGENT_RUNTIME_RETRY_INTERVAL_SECONDS,
+                user_timeout_seconds=settings.AGENT_RUNTIME_USER_TIMEOUT_SECONDS,
             )
             app.state.agent_runtime_worker = agent_runtime_worker
             agent_runtime_worker.start()
             logger.info("agent runtime worker started")
+        if _knowledge_extraction_worker_allowed():
+            knowledge_extraction_worker = create_knowledge_extraction_worker(async_session_maker)
+            app.state.knowledge_extraction_worker = knowledge_extraction_worker
+            knowledge_extraction_worker.start()
+            logger.info("knowledge extraction worker started")
+        if _knowledge_projection_worker_allowed():
+            knowledge_projection_worker = create_knowledge_projection_worker(async_session_maker)
+            app.state.knowledge_projection_worker = knowledge_projection_worker
+            knowledge_projection_worker.start()
+            logger.info(
+                "knowledge projection worker started worker_id=%s",
+                knowledge_projection_worker.worker_id,
+            )
         yield
     finally:
+        if knowledge_projection_worker is not None:
+            try:
+                await knowledge_projection_worker.stop()
+                logger.info("knowledge projection worker stopped")
+            except Exception as exc:
+                logger.warning(
+                    "knowledge projection worker shutdown failed: %s",
+                    safe_exception_summary(exc),
+                )
+        if knowledge_extraction_worker is not None:
+            try:
+                await knowledge_extraction_worker.stop()
+                logger.info("knowledge extraction worker stopped")
+            except Exception as exc:
+                logger.warning("knowledge extraction worker shutdown failed: %s", safe_exception_summary(exc))
+        if agent_job_recovery_worker is not None:
+            try:
+                await agent_job_recovery_worker.stop()
+                logger.info("agent job recovery worker stopped")
+            except Exception as exc:
+                logger.warning("agent job recovery worker shutdown failed: %s", safe_exception_summary(exc))
         if agent_runtime_worker is not None:
             try:
                 await agent_runtime_worker.stop()
                 logger.info("agent runtime worker stopped")
             except Exception as exc:
-                logger.warning("agent runtime worker shutdown failed: %s", exc, exc_info=settings.DEBUG)
+                logger.warning("agent runtime worker shutdown failed: %s", safe_exception_summary(exc))
         if outbox_worker is not None:
             try:
                 await outbox_worker.stop()
                 logger.info("projection outbox worker stopped worker_id=%s", outbox_worker.worker_id)
             except Exception as exc:
-                logger.warning("projection outbox worker shutdown failed: %s", exc, exc_info=settings.DEBUG)
+                logger.warning("projection outbox worker shutdown failed: %s", safe_exception_summary(exc))
+        # Close the optional shared graph runtime before database shutdown. The
+        # module is safe to import without the Neo4j optional dependency because
+        # the driver is loaded lazily only when GRAPH_BACKEND=neo4j is selected.
+        try:
+            from app.services.graph_store.neo4j_store import close_shared_neo4j_executor
+
+            await close_shared_neo4j_executor()
+        except Exception as exc:
+            logger.warning("neo4j graph runtime shutdown failed: %s", safe_exception_summary(exc))
         # 关闭时清理资源
         await close_db()
         logger.info("应用关闭，数据库连接已关闭")
@@ -291,8 +420,32 @@ async def health():
     runtime_enabled = _agent_runtime_worker_allowed()
     runtime_running = bool(runtime_worker is not None and runtime_worker.snapshot().get("running"))
     runtime_snapshot = runtime_worker.health_snapshot() if runtime_worker is not None else {}
+    recovery_worker = getattr(app.state, "agent_job_recovery_worker", None)
+    recovery_snapshot = recovery_worker.snapshot() if recovery_worker is not None else {}
+    extraction_worker = getattr(app.state, "knowledge_extraction_worker", None)
+    extraction_enabled = _knowledge_extraction_worker_allowed()
+    extraction_running = bool(
+        extraction_worker is not None and extraction_worker.snapshot().get("running")
+    )
+    extraction_snapshot = extraction_worker.health_snapshot() if extraction_worker is not None else {}
+    knowledge_projection_worker = getattr(app.state, "knowledge_projection_worker", None)
+    knowledge_projection_enabled = _knowledge_projection_worker_allowed()
+    knowledge_projection_running = bool(
+        knowledge_projection_worker is not None
+        and knowledge_projection_worker.snapshot().get("running")
+    )
+    knowledge_projection_snapshot = (
+        knowledge_projection_worker.health_snapshot()
+        if knowledge_projection_worker is not None
+        else {}
+    )
     return {
-        "status": "ok" if (not worker_enabled or worker_running) and (not runtime_enabled or runtime_running) else "degraded",
+        "status": "ok" if (
+            (not worker_enabled or worker_running)
+            and (not runtime_enabled or runtime_running)
+            and (not extraction_enabled or extraction_running)
+            and (not knowledge_projection_enabled or knowledge_projection_running)
+        ) else "degraded",
         "projection_outbox_worker": {
             "enabled": worker_enabled,
             "running": worker_running,
@@ -308,17 +461,40 @@ async def health():
             **(
                 {
                     key: runtime_snapshot.get(key)
-                    for key in ("started_at", "last_run_at", "last_success_at", "last_error_at", "cycles", "nudges_created", "failed_users", "poll_interval_seconds")
+                    for key in (
+                        "started_at", "last_run_at", "last_success_at", "last_error_at",
+                        "cycles", "nudges_created", "failed_users", "timed_out_users",
+                        "quiet_hours_deferred", "poll_interval_seconds", "user_timeout_seconds",
+                    )
                     if key in runtime_snapshot
                 }
             ),
             **({"disabled_reason": "sqlite_request_time_coach"} if runtime_worker is None and _is_sqlite() else {}),
         },
+        "agent_job_recovery_worker": {
+            "enabled": True,
+            "running": bool(recovery_snapshot.get("running")),
+            **{
+                key: recovery_snapshot.get(key)
+                for key in ("last_run_at", "recovered_jobs", "poll_interval_seconds")
+                if key in recovery_snapshot
+            },
+        },
+        "knowledge_extraction_worker": {
+            "enabled": extraction_enabled,
+            "running": extraction_running,
+            **extraction_snapshot,
+        },
+        "knowledge_projection_worker": {
+            "enabled": knowledge_projection_enabled,
+            "running": knowledge_projection_running,
+            **knowledge_projection_snapshot,
+        },
     }
 
 
 # 引入路由
-from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model, outbox_operations
+from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model, knowledge, outbox_operations
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
@@ -350,6 +526,7 @@ app.include_router(analytics.router, prefix="/api/analytics", tags=["数据分�
 app.include_router(anki.router, prefix="/api/anki", tags=["Anki记忆卡"])
 app.include_router(system.router, prefix="/api/system", tags=["系统"])
 app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"])
+app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Claim 抽取"])
 app.include_router(learner_model.router, prefix="/api/learner-model", tags=["学习者模型"])
 app.include_router(outbox_operations.router, prefix="/internal/outbox")
 

@@ -5,8 +5,11 @@ Coach 可以主动响应事件，但必须先经过用户偏好、免打扰、�
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Any
+
+from app.services.coach_time_service import is_quiet_time
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 DEFAULT_ALLOWED_CHANNELS = ["chat_inline", "in_app_nudge", "agent_panel"]
@@ -19,6 +22,7 @@ def default_coach_preferences() -> dict[str, Any]:
         "enabled": True,
         "proactive_enabled": False,
         "desktop_notifications_enabled": False,
+        "time_zone": "UTC",
         "quiet_hours_start": None,
         "quiet_hours_end": None,
         "max_nudges_per_day": 3,
@@ -32,33 +36,12 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        return value
+        return to_db_utc(value)
     try:
-        return datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return to_db_utc(parsed)
     except Exception:
         return None
-
-
-def _parse_hhmm(value: Any) -> time | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        hour, minute = text.split(":", 1)
-        return time(hour=max(0, min(23, int(hour))), minute=max(0, min(59, int(minute))))
-    except Exception:
-        return None
-
-
-def _is_quiet_time(now: datetime, start: Any, end: Any) -> bool:
-    quiet_start = _parse_hhmm(start)
-    quiet_end = _parse_hhmm(end)
-    if not quiet_start or not quiet_end:
-        return False
-    current = now.time()
-    if quiet_start <= quiet_end:
-        return quiet_start <= current <= quiet_end
-    return current >= quiet_start or current <= quiet_end
 
 
 def _event_skill(event: dict[str, Any], snapshot: dict[str, Any]) -> tuple[str | None, str]:
@@ -205,7 +188,7 @@ def evaluate_coach_policy(
 ) -> dict[str, Any]:
     """Return a deterministic intervention decision before any skill generation."""
 
-    now = _parse_iso_datetime(snapshot.get("generated_at")) or datetime.now()
+    now = _parse_iso_datetime(snapshot.get("generated_at")) or utc_now_db()
     prefs = {**default_coach_preferences(), **(preferences or {})}
     if not prefs.get("enabled", True):
         return {
@@ -256,7 +239,7 @@ def evaluate_coach_policy(
             "priority": "low",
             "skill_id": skill_id,
             "channel": None,
-            "cooldown_until": snoozed_until.isoformat(),
+            "cooldown_until": to_utc_iso(snoozed_until),
             "reason": "snoozed",
             "evidence": [f"{skill_id} 已稍后提醒，直到 {snoozed_until.strftime('%H:%M')}"],
             "requires_confirmation": False,
@@ -267,7 +250,12 @@ def evaluate_coach_policy(
     if channel == "desktop_notification":
         if not prefs.get("desktop_notifications_enabled"):
             channel = "in_app_nudge"
-        elif _is_quiet_time(now, prefs.get("quiet_hours_start"), prefs.get("quiet_hours_end")):
+        elif is_quiet_time(
+            now,
+            time_zone=prefs.get("time_zone"),
+            start=prefs.get("quiet_hours_start"),
+            end=prefs.get("quiet_hours_end"),
+        ):
             return {
                 "should_intervene": False,
                 "intervention_type": "nudge",
@@ -299,7 +287,7 @@ def evaluate_coach_policy(
                 "priority": priority,
                 "skill_id": skill_id,
                 "channel": channel,
-                "cooldown_until": cooldown_until.isoformat(),
+                "cooldown_until": to_utc_iso(cooldown_until),
                 "reason": "cooldown_active",
                 "evidence": [f"距离上次 Coach nudge 未满 {min_minutes} 分钟"],
                 "requires_confirmation": False,

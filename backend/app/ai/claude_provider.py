@@ -16,12 +16,18 @@ class ClaudeProvider(AIProvider):
         base_url: Optional[str] = None,
         max_context_tokens: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
+        input_price_per_million: Optional[float] = None,
+        output_price_per_million: Optional[float] = None,
+        provider_name: Optional[str] = None,
     ):
         super().__init__(
             api_key,
             model,
             max_context_tokens=max_context_tokens,
             max_output_tokens=max_output_tokens,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+            provider_name=provider_name,
         )
         self.base_url = "https://api.anthropic.com"
         if base_url:
@@ -95,6 +101,7 @@ class ClaudeProvider(AIProvider):
         temperature: float = 0.7
     ) -> str:
         """同步对话"""
+        self.clear_last_usage()
         converted_messages = self._convert_messages(messages)
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -120,6 +127,12 @@ class ClaudeProvider(AIProvider):
             for block in content
             if isinstance(block, dict) and block.get("type") == "text"
         ]
+        usage = data.get("usage") or {}
+        self.record_last_usage(
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
         return "".join(texts)
 
     async def chat_stream(

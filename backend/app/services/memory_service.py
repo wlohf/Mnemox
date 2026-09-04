@@ -13,6 +13,7 @@ from app.models.chat import ChatMessage, ChatConversation
 from app.models.memory import ConversationSummary, UserMemory
 from app.services.memory_declaration_service import expire_memory_facts, record_automatic_memory_declaration
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.error_safety import safe_exception_summary
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
 STAGED_REVIEW_STATUS = "staged"
@@ -738,7 +739,11 @@ async def run_conversation_reflection(conversation_id: int, db: AsyncSession, us
             )
             conv_material_ids = [row[0] for row in assoc_result.all()]
     except Exception as e:
-        logger.warning("读取会话关联资料失败 conversation_id=%s err=%s", conversation_id, e)
+        logger.warning(
+            "读取会话关联资料失败 conversation_id=%s err=%s",
+            conversation_id,
+            safe_exception_summary(e),
+        )
 
     # Store memory candidates
     if memory_candidates and isinstance(memory_candidates, list):

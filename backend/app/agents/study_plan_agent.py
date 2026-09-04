@@ -1,7 +1,6 @@
 """Study plan agent: generate small daily actions from existing goals/tasks."""
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 from sqlalchemy import func, select
@@ -9,6 +8,7 @@ from sqlalchemy import func, select
 from app.agents.base import AgentRunContext, AgentResult, BaseAgent
 from app.models.goal import Goal, Task
 from app.models.question import ReviewSchedule, WrongQuestion
+from app.utils.utc import utc_today
 
 
 class StudyPlanAgent(BaseAgent):
@@ -17,7 +17,7 @@ class StudyPlanAgent(BaseAgent):
     description = "根据目标、任务、错题和复习状态生成或调整每日计划"
 
     async def run(self, ctx: AgentRunContext) -> AgentResult:
-        today = date.today()
+        today = utc_today()
         db = ctx.db
         goals_result = await db.execute(
             select(Goal)

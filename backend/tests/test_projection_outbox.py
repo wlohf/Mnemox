@@ -367,7 +367,7 @@ class ProjectionOutboxTests(unittest.IsolatedAsyncioTestCase):
                 user_id,
                 "practice.answer",
                 source="test",
-                payload={"concept_id": concept_id, "score": "not-a-number"},
+                payload={"concept_id": concept_id, "score": "not-a-number api_key=outbox-secret"},
                 occurred_at=self.now,
             )
             row = await session.scalar(
@@ -404,6 +404,8 @@ class ProjectionOutboxTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row.status, "failed")
             self.assertEqual(row.attempts, 3)
             self.assertIn("could not convert string to float", row.last_error)
+            self.assertIn("[REDACTED]", row.last_error)
+            self.assertNotIn("outbox-secret", row.last_error)
 
     async def test_review_event_updates_state_only_after_outbox_consumption(self):
         user_id, concept_id = await self._owner_and_concept("review-outbox")

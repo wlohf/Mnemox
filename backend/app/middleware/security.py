@@ -26,7 +26,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        response.headers.setdefault("Content-Security-Policy", "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "
+            "form-action 'self'; object-src 'none'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
+            "font-src 'self' data:; connect-src 'self' https:; "
+            "worker-src 'self' blob:; manifest-src 'self'",
+        )
         if _is_production():
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         return response

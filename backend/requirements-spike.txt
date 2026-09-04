@@ -1,2 +1,7 @@
-# Optional offline retrieval comparison only. This is not a runtime dependency.
+# Optional evaluation/spike dependencies only. These are not default runtime dependencies.
 qdrant-client>=1.13,<2
+
+# Stage 6 graph shadow candidates. Keep both out of requirements.txt until an
+# independent Go ADR proves operational and product value.
+neo4j>=6.3,<7
+graphiti-core>=0.30.1,<0.31

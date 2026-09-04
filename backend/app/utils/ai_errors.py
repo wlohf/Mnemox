@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from app.utils.error_safety import redact_sensitive_text
+
 
 def _status_code(exc: Exception) -> int | None:
     status = getattr(exc, "status_code", None)
@@ -91,8 +93,8 @@ def format_ai_provider_error(exc: Exception) -> str:
         return "供应商返回的不是有效 JSON。请检查 Base URL 是否填错，或中转站是否返回了网页错误。"
 
     if "api key 未配置" in lower:
-        return text
+        return redact_sensitive_text(text, max_chars=400, fallback="AI 服务请求失败。")
 
     if text:
-        return text
+        return redact_sensitive_text(text, max_chars=400, fallback="AI 服务请求失败。")
     return "AI 服务请求失败。请检查供应商配置后重试。"

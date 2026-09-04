@@ -1,8 +1,9 @@
 """Grounded, deterministic Association V2 over the current SQL Claim graph."""
 from __future__ import annotations
 
+import asyncio
 import logging
-import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
@@ -22,6 +23,7 @@ from app.models.knowledge import (
 from app.services.graph_store.base import GraphHit, GraphStore
 from app.services.graph_store.factory import create_graph_store
 from app.services.knowledge_embedding_service import get_knowledge_embedding_index
+from app.services.sparse_knowledge_index import SparseKnowledgeIndex, create_sparse_knowledge_index
 
 
 logger = logging.getLogger(__name__)
@@ -35,11 +37,17 @@ RANKER_WEIGHTS = {
     "source_diversity": 0.04,
     "personal_relevance": 0.03,
 }
-_WORD_RE = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+", re.IGNORECASE)
-
-
 class ClaimPairJudge(Protocol):
     async def judge(self, *, anchor: dict[str, Any], related: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class AssociationSemanticReranker(Protocol):
+    async def score_pairs(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[dict[str, Any]],
+    ) -> dict[int, float]: ...
 
 
 @dataclass(frozen=True)
@@ -57,30 +65,6 @@ class _Candidate:
     scores: dict[str, float] = field(default_factory=dict)
     paths: list[GraphHit] = field(default_factory=list)
     anchor_concept_ids: set[int] = field(default_factory=set)
-
-
-def _tokens(value: str) -> tuple[str, ...]:
-    output: list[str] = []
-    for token in _WORD_RE.findall(str(value or "").casefold()):
-        output.append(token)
-        if re.fullmatch(r"[\u4e00-\u9fff]+", token) and len(token) > 2:
-            output.extend(token[index : index + 2] for index in range(len(token) - 1))
-    return tuple(dict.fromkeys(item for item in output if len(item) >= 2))
-
-
-def _lexical_score(query: str, document: str) -> float:
-    query_tokens = set(_tokens(query))
-    document_tokens = set(_tokens(document))
-    if not query_tokens or not document_tokens:
-        return 0.0
-    overlap = query_tokens & document_tokens
-    if not overlap:
-        return 0.0
-    score = len(overlap) / max(1, min(len(query_tokens), len(document_tokens)))
-    # One incidental CJK bigram or common English word is not sufficient evidence.
-    if len(overlap) == 1 and len(next(iter(overlap))) <= 3:
-        return 0.0
-    return max(0.0, min(1.0, score))
 
 
 def _put(pool: dict[int, _Candidate], claim_id: int, channel: str, score: float, *, path: GraphHit | None = None, concept_ids: Sequence[int] = ()) -> None:
@@ -177,6 +161,8 @@ async def associate(
     limit: int = 5,
     graph_store: GraphStore | None = None,
     dense_index: Any | None = None,
+    sparse_index: SparseKnowledgeIndex | None = None,
+    semantic_reranker: AssociationSemanticReranker | None = None,
     judge: ClaimPairJudge | None = None,
 ) -> dict[str, Any]:
     """Return evidence-backed associations without committing the request transaction."""
@@ -189,18 +175,39 @@ async def associate(
     representation = await _build_query_representation(db, user_id=user_id, text=query_text, source_type=source_type, source_id=source_id, graph_store=graph)
     pool: dict[int, _Candidate] = {}
     degraded: dict[str, str] = {}
+    graph_shadow_diagnostics: dict[str, Any] = {}
 
     for claim_id, concept_id, confidence in await _concept_claim_ids(db, user_id=user_id, concept_ids=representation.concept_ids):
         if claim_id not in representation.claim_ids:
             _put(pool, claim_id, "exact_score", confidence, concept_ids=(concept_id,))
 
     if representation.claim_ids:
+        graph_hits: list[GraphHit] = []
         try:
             graph_hits = await graph.expand_claims(user_id=user_id, claim_ids=representation.claim_ids, patterns=("direct_claim_relations", "shared_concept_claims"), depth=2, limit=50)
             for hit in graph_hits:
                 _put(pool, hit.object_id, "graph_path_score", hit.confidence * (1.0 if hit.path_type == "direct_claim_relations" else 0.82), path=hit, concept_ids=((hit.metadata.get("concept_id"),) if hit.metadata.get("concept_id") else ()))
         except Exception:
             degraded["graph"] = "unavailable"
+        if graph_hits and settings.NEO4J_GRAPH_SHADOW and graph_store is None:
+            try:
+                from app.services.graph_shadow_service import compare_neo4j_claim_shadow
+
+                graph_shadow_diagnostics["neo4j"] = await compare_neo4j_claim_shadow(
+                    db,
+                    user_id=user_id,
+                    claim_ids=representation.claim_ids,
+                    patterns=("direct_claim_relations", "shared_concept_claims"),
+                    depth=2,
+                    limit=50,
+                    sql_hits=graph_hits,
+                )
+            except Exception as exc:
+                graph_shadow_diagnostics["neo4j"] = {
+                    "backend": "neo4j",
+                    "status": "unavailable",
+                    "error_type": exc.__class__.__name__,
+                }
 
     dense = dense_index
     if dense is None and settings.KNOWLEDGE_EMBEDDING_ENABLED:
@@ -212,15 +219,13 @@ async def associate(
         except Exception:
             degraded["dense"] = "unavailable"
 
-    # Dependency-free sparse reference channel. SQL eligibility and Evidence are
-    # checked before a hit can enter the product pool.
-    visible_rows = await _visible_claim_rows(db, user_id=user_id)
-    for claim, _, _ in visible_rows:
-        if int(claim.id) in representation.claim_ids:
-            continue
-        sparse = _lexical_score(query_text, str(claim.statement))
-        if sparse >= 0.18:
-            _put(pool, int(claim.id), "sparse_score", sparse)
+    sparse = sparse_index or create_sparse_knowledge_index(db)
+    try:
+        for row in await sparse.search(user_id=user_id, text=query_text, top_k=30):
+            if int(row.claim_id) not in representation.claim_ids:
+                _put(pool, int(row.claim_id), "sparse_score", float(row.score))
+    except Exception:
+        degraded["sparse"] = "unavailable"
 
     eligible = {
         int(claim.id): (claim, revision, source)
@@ -244,7 +249,8 @@ async def associate(
     for evidence, unit in evidence_rows:
         evidence_by_claim.setdefault(int(evidence.claim_id), []).append((evidence, unit))
 
-    ranked: list[tuple[float, int, _Candidate]] = []
+    base_scores: dict[int, float] = {}
+    ranked_candidates: dict[int, _Candidate] = {}
     for claim_id, candidate in pool.items():
         if claim_id not in eligible or not evidence_by_claim.get(claim_id):
             continue
@@ -252,7 +258,72 @@ async def associate(
         candidate.scores["evidence_quality"] = evidence_quality
         candidate.scores["source_diversity"] = 1.0
         candidate.scores["personal_relevance"] = 1.0
-        score = sum(RANKER_WEIGHTS[key] * float(candidate.scores.get(key, 0.0)) for key in RANKER_WEIGHTS)
+        base_scores[claim_id] = sum(
+            RANKER_WEIGHTS[key] * float(candidate.scores.get(key, 0.0))
+            for key in RANKER_WEIGHTS
+        )
+        ranked_candidates[claim_id] = candidate
+
+    semantic_scores: dict[int, float] = {}
+    reranker_mode = "feature"
+    reranker_diagnostics: dict[str, Any] = {
+        "mode": "feature",
+        "version": RANKER_VERSION,
+        "latency_ms": 0.0,
+    }
+    if semantic_reranker is not None and ranked_candidates:
+        reranker_started = time.perf_counter()
+        try:
+            raw_scores = await asyncio.wait_for(
+                semantic_reranker.score_pairs(
+                    query=query_text,
+                    candidates=[
+                        {
+                            "claim_id": int(claim_id),
+                            "claim": str(eligible[claim_id][0].statement),
+                            "source_type": str(eligible[claim_id][2].source_type),
+                            "source_id": int(eligible[claim_id][2].source_record_id),
+                        }
+                        for claim_id in sorted(ranked_candidates)
+                    ],
+                ),
+                timeout=float(settings.KNOWLEDGE_RERANKER_TIMEOUT_SECONDS),
+            )
+            semantic_scores = {
+                int(claim_id): max(0.0, min(1.0, float(score)))
+                for claim_id, score in dict(raw_scores or {}).items()
+                if int(claim_id) in ranked_candidates
+            }
+            if semantic_scores:
+                reranker_mode = "semantic"
+                reranker_diagnostics = dict(
+                    getattr(semantic_reranker, "last_diagnostics", {}) or {}
+                )
+                reranker_diagnostics.setdefault("mode", "semantic")
+                reranker_diagnostics.setdefault(
+                    "latency_ms",
+                    round((time.perf_counter() - reranker_started) * 1000.0, 3),
+                )
+        except Exception as exc:
+            degraded["reranker"] = "feature_fallback"
+            reranker_diagnostics = {
+                "mode": "feature_fallback",
+                "latency_ms": round(
+                    (time.perf_counter() - reranker_started) * 1000.0,
+                    3,
+                ),
+                "error_type": exc.__class__.__name__,
+            }
+
+    ranked: list[tuple[float, int, _Candidate]] = []
+    for claim_id, candidate in ranked_candidates.items():
+        base_score = float(base_scores[claim_id])
+        semantic_score = semantic_scores.get(claim_id)
+        if semantic_score is None:
+            score = base_score
+        else:
+            candidate.scores["semantic_rerank"] = semantic_score
+            score = 0.75 * base_score + 0.25 * semantic_score
         ranked.append((round(score, 12), claim_id, candidate))
     ranked.sort(key=lambda row: (-row[0], row[1]))
 
@@ -302,10 +373,30 @@ async def associate(
                 degraded["judge"] = "fallback_confirmed_paths_only"
                 if best_path is None:
                     continue
+        if settings.ASSOCIATION_MULTIHOP_EXPLANATION_ENABLED:
+            try:
+                from app.services.association_explanation_service import build_association_explanation
+
+                explanation = await build_association_explanation(
+                    db,
+                    user_id=user_id,
+                    anchor_concept_ids=representation.concept_ids,
+                    related_claim_id=claim_id,
+                    graph_store=graph,
+                )
+                if explanation is not None:
+                    item["explanation"] = explanation
+            except Exception:
+                # Explanation is optional post-ranking enrichment. It must never
+                # remove or reorder an otherwise valid Association result.
+                degraded["explanation"] = "unavailable"
         seen_evidence.update(row["evidence_key"] for row in related_evidence)
         seen_sources.add(str(source.source_key))
         output.append(item)
         if len(output) >= max_results:
             break
 
-    return {"associations": output, "diagnostics": {"mode": "v2", "degraded_sources": degraded, "candidate_counts": {"unified": len(pool), "eligible": len(eligible), "displayed": len(output)}, "reranker": "feature", "ranker_version": RANKER_VERSION, "graph_backend": "sql"}}
+    sparse_backend = str(getattr(sparse, "name", sparse.__class__.__name__))
+    graph_backend = str(getattr(graph, "backend", "sql"))
+    graph_runtime_diagnostics = dict(getattr(graph, "last_diagnostics", {}) or {})
+    return {"associations": output, "diagnostics": {"mode": "v2", "degraded_sources": degraded, "candidate_counts": {"unified": len(pool), "eligible": len(eligible), "displayed": len(output)}, "reranker": reranker_mode, "reranker_diagnostics": reranker_diagnostics, "ranker_version": RANKER_VERSION, "graph_backend": graph_backend, "graph_runtime": graph_runtime_diagnostics, "graph_shadow": graph_shadow_diagnostics, "sparse_backend": sparse_backend}}

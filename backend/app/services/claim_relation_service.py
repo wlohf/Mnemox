@@ -46,8 +46,14 @@ async def create_claim_relation(
         left, right = right, left
     claims = list((await db.scalars(
         select(Claim)
-        .join(KnowledgeSourceRevision, KnowledgeSourceRevision.id == Claim.source_revision_id)
-        .join(KnowledgeSource, KnowledgeSource.id == KnowledgeSourceRevision.knowledge_source_id)
+        .join(
+            KnowledgeSourceRevision,
+            KnowledgeSourceRevision.id == Claim.source_revision_id,
+        )
+        .join(
+            KnowledgeSource,
+            KnowledgeSource.id == KnowledgeSourceRevision.knowledge_source_id,
+        )
         .where(
             Claim.user_id == user_id,
             Claim.id.in_((left, right)),
@@ -56,11 +62,14 @@ async def create_claim_relation(
             KnowledgeSourceRevision.status == "current",
             KnowledgeSource.user_id == user_id,
             KnowledgeSource.status == "active",
-            exists().where(ClaimEvidence.user_id == user_id, ClaimEvidence.claim_id == Claim.id),
+            exists().where(
+                ClaimEvidence.user_id == user_id,
+                ClaimEvidence.claim_id == Claim.id,
+            ),
         )
     )).all())
     if {int(row.id) for row in claims} != {left, right}:
-        raise PermissionError("Claim 不存在、非 current/active、无证据或不属于当前用户")
+        raise PermissionError("Claim 不存在、非 active、无证据或不属于当前用户")
     status = review_status or ("confirmed" if derivation_type == "manual" else "pending")
     if status not in {"pending", "confirmed", "rejected"}:
         raise ValueError("不支持的审核状态")
@@ -83,4 +92,15 @@ async def create_claim_relation(
     if status == "confirmed":
         row.reviewed_at = utc_now_db()
     await db.flush()
+
+    # ClaimRelation is part of the Neo4j read model even though it does not
+    # change Claim embedding content. Requeue the rebuild-only projection on
+    # every relation mutation so a previously processed rebuild cannot go stale.
+    from app.services.knowledge_projection_service import enqueue_neo4j_user_rebuild
+
+    await enqueue_neo4j_user_rebuild(
+        db,
+        user_id=user_id,
+        force=True,
+    )
     return row

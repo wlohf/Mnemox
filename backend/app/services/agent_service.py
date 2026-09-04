@@ -31,8 +31,11 @@ from app.services.memory_service import get_relevant_memories
 from app.services.learning_snapshot_service import build_learning_snapshot
 from app.services.agent_long_memory_service import get_core_profile
 from app.services.agent_memory_learning_service import run_agent_memory_learning_if_due
+from app.services.knowledge_source_service import register_note_source
 from app.config import settings
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.error_safety import safe_exception_summary
+from app.utils.utc import to_utc_iso, utc_now_db, utc_today
 
 logger = logging.getLogger(__name__)
 CONFIRMED_REVIEW_STATUS = "confirmed"
@@ -64,6 +67,8 @@ def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
 def _to_iso(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return to_utc_iso(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
@@ -509,7 +514,7 @@ async def _collect_memory_state(db: AsyncSession, user_id: int) -> dict[str, Any
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
         )
     )
     return {"memories": memories, "active_memory_count": int(count_result.scalar() or 0)}
@@ -582,7 +587,7 @@ async def _collect_agent_personalization(db: AsyncSession, user_id: int, context
             UserMemory.user_id == user_id,
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
             UserMemory.category == "agent_feedback",
         )
         .order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc())
@@ -785,7 +790,7 @@ async def _collect_agent_personalization(db: AsyncSession, user_id: int, context
         "material_sources": material_sources,
         "controls": {"ignored_items": sorted(ignored_items), "inaccurate_items": sorted(inaccurate_items), "locked_items": sorted(locked_items)},
         "locked_values": locked_values,
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": to_utc_iso(utc_now_db()),
     }
     await _upsert_agent_learning_profile(db, user_id, profile_payload)
     return profile_payload
@@ -876,7 +881,7 @@ async def _get_agent_learning_profile(db: AsyncSession, user_id: int) -> dict[st
             UserMemory.memory_key == "agent_learning_profile",
             UserMemory.status == "active",
             UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+            or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
         )
     )
     row = result.scalar_one_or_none()
@@ -890,7 +895,7 @@ async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload
     key = "agent_learning_profile"
     result = await db.execute(select(UserMemory).where(UserMemory.user_id == user_id, UserMemory.memory_key == key))
     row = result.scalar_one_or_none()
-    now = datetime.now()
+    now = utc_now_db()
     value = json.dumps(payload, ensure_ascii=False)
     if row:
         if row.is_locked == 1:
@@ -1256,6 +1261,7 @@ def _sanitize_llm_actions(items: Any) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         return []
     sanitized: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
     for idx, item in enumerate(items[:5]):
         if not isinstance(item, dict):
             continue
@@ -1269,9 +1275,15 @@ def _sanitize_llm_actions(items: Any) -> list[dict[str, Any]]:
         except Exception:
             estimated = 15
         estimated = int(max(5, min(90, estimated)))
+        raw_action_id = str(item.get("id") or f"llm_action_{idx + 1}")[:60]
+        action_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw_action_id).strip("_")
+        action_id = action_id or f"llm_action_{idx + 1}"
+        if action_id in used_ids:
+            action_id = f"{action_id[:50]}_{idx + 1}"
+        used_ids.add(action_id)
         sanitized.append(
             {
-                "id": str(item.get("id") or f"llm_action_{idx + 1}")[:60],
+                "id": action_id,
                 "title": title,
                 "reason": reason,
                 "action_type": action_type,
@@ -1359,8 +1371,8 @@ async def _apply_llm_planner(
         return rule_actions, None, None, metadata
     except Exception as exc:
         metadata["source"] = "rules_fallback"
-        metadata["error"] = str(exc)[:240]
-        logger.info("Agent LLM planner skipped or failed: %s", exc)
+        metadata["error"] = safe_exception_summary(exc, max_chars=240)
+        logger.info("Agent LLM planner skipped or failed: %s", metadata["error"])
         return rule_actions, None, None, metadata
 
 
@@ -1436,12 +1448,12 @@ def _build_summary(context: dict[str, Any], readiness: float, risk: str, autonom
 
 
 async def build_agent_brief(db: AsyncSession, user_id: int, use_llm: bool = False) -> dict[str, Any]:
-    now = datetime.now()
-    today = date.today()
+    now = utc_now_db()
+    today = utc_today()
     try:
         await run_agent_memory_learning_if_due(db, user_id, now=now, interval_hours=6)
     except Exception as exc:
-        logger.warning("Agent memory checkpoint failed for user_id=%s: %s", user_id, exc)
+        logger.warning("Agent memory checkpoint failed for user_id=%s: %s", user_id, safe_exception_summary(exc))
     context = await build_learning_snapshot(db, user_id, now=now)
     context["core_profile"] = await get_core_profile(db, user_id)
     personalization = await _collect_agent_personalization(db, user_id, context)
@@ -1473,7 +1485,7 @@ async def build_agent_brief(db: AsyncSession, user_id: int, use_llm: bool = Fals
 
     return {
         "date": today.isoformat(),
-        "generated_at": now.isoformat(),
+        "generated_at": to_utc_iso(now),
         "autonomy_level": autonomy,
         "readiness_score": readiness,
         "risk_level": risk,
@@ -1499,7 +1511,7 @@ def _find_action(brief: dict[str, Any], action_id: str) -> dict[str, Any] | None
 
 
 def _task_draft_from_action(brief: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
-    today = date.today()
+    today = utc_today()
     context = brief.get("context") or {}
     tasks = context.get("tasks") or {}
     active_goals = tasks.get("active_goals") or []
@@ -1892,7 +1904,7 @@ async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, inten
                 draft["duplicate_note_id"] = note.id
                 break
     elif intent.get("intent") == "add_daily_plan_items":
-        plan_date = str(draft.get("date") or date.today().isoformat())[:10]
+        plan_date = str(draft.get("date") or utc_today().isoformat())[:10]
         draft["date"] = plan_date
         result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
         row = result.scalar_one_or_none()
@@ -1944,7 +1956,7 @@ async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, inten
 
 
 async def build_agent_write_draft(db: AsyncSession, user_id: int, message: str) -> dict[str, Any]:
-    today = date.today()
+    today = utc_today()
     heuristic = _heuristic_write_intent(message, today)
     if heuristic.get("intent") != "none" and float(heuristic.get("confidence") or 0) >= 0.65:
         return await _annotate_write_draft_duplicates(db, user_id, heuristic)
@@ -1970,6 +1982,8 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
         )
         db.add(note)
         await db.flush()
+        if settings.KNOWLEDGE_V2_ENABLED:
+            await register_note_source(db, user_id=int(user_id), note_id=int(note.id))
         await db.refresh(note)
         return {
             "status": "created",
@@ -1980,7 +1994,7 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
         }
 
     if intent == "add_daily_plan_items":
-        plan_date = str(draft.get("date") or date.today().isoformat())[:10]
+        plan_date = str(draft.get("date") or utc_today().isoformat())[:10]
         result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
         row = result.scalar_one_or_none()
         existing_content = row.content if row else ""
@@ -2046,7 +2060,7 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
     }
     created_tasks: list[dict[str, Any]] = []
     skipped_tasks: list[dict[str, Any]] = []
-    today = date.today()
+    today = utc_today()
     for item in (draft.get("tasks") if isinstance(draft.get("tasks"), list) else [])[:12]:
         if not isinstance(item, dict):
             continue
@@ -2104,8 +2118,8 @@ async def remember_agent_feedback(
     action: dict[str, Any] | None = None,
     reason_code: str | None = None,
 ) -> dict[str, Any]:
-    now = datetime.now()
-    key = f"agent_feedback_{date.today().isoformat()}_{now.strftime('%H%M%S%f')}_{action_id}"[:100]
+    now = utc_now_db()
+    key = f"agent_feedback_{utc_today().isoformat()}_{now.strftime('%H%M%S%f')}_{action_id}"[:100]
     normalized_outcome = {"snoozed": "later", "rejected": "dismissed"}.get(outcome, outcome)
     reason_code = reason_code if reason_code in NEGATIVE_FEEDBACK_REASON_LABELS else None
     action = action or {}
@@ -2133,7 +2147,7 @@ async def remember_agent_feedback(
         "outcome": normalized_outcome,
         "notes": (notes or "")[:500],
         "effectiveness": effectiveness,
-        "recorded_at": now.isoformat(),
+        "recorded_at": to_utc_iso(now),
     }
     existing = await db.execute(select(UserMemory).where(UserMemory.user_id == user_id, UserMemory.memory_key == key))
     row = existing.scalar_one_or_none()
@@ -2228,11 +2242,12 @@ async def update_agent_profile_item(
     controls["ignored_items"] = sorted(ignored)
     controls["inaccurate_items"] = sorted(inaccurate)
     controls["locked_items"] = sorted(locked)
-    payload["updated_at"] = datetime.now().isoformat()
+    now = utc_now_db()
+    payload["updated_at"] = to_utc_iso(now)
     await _upsert_agent_learning_profile(db, user_id, payload)
     db.add(
         AgentExecutionLog(
-            id=f"pc_{datetime.now().strftime('%H%M%S%f')}"[:32],
+            id=f"pc_{now.strftime('%H%M%S%f')}"[:32],
             user_id=user_id,
             job_id=None,
             agent="profile_control",

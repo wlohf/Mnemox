@@ -19,17 +19,19 @@ from app.services.projection_outbox_service import (
     record_outbox_worker_heartbeat,
     resolve_outbox_retry_policy,
 )
+from app.utils.error_safety import safe_error_diagnostic, safe_exception_summary
+from app.utils.utc import to_utc_iso, utc_now_db
 
 
 logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return utc_now_db()
 
 
 def _iso(value: datetime | None) -> str | None:
-    return value.isoformat() if value else None
+    return to_utc_iso(value) if value else None
 
 
 def default_worker_id(prefix: str | None = None) -> str:
@@ -120,6 +122,14 @@ class ProjectionOutboxWorker:
 
     def snapshot(self) -> dict[str, Any]:
         """Return aggregate worker state suitable for a health response."""
+        diagnostic = (
+            safe_error_diagnostic(
+                self._last_error,
+                code="projection_outbox.worker_failed",
+            )
+            if self._last_error
+            else None
+        )
         return {
             "worker_id": self.worker_id,
             "running": self._running,
@@ -129,6 +139,8 @@ class ProjectionOutboxWorker:
             "last_error_at": _iso(self._last_error_at),
             "last_projection_failure_at": _iso(self._last_projection_failure_at),
             "last_error": self._last_error,
+            "last_error_code": diagnostic.code if diagnostic else None,
+            "last_error_fingerprint": diagnostic.fingerprint if diagnostic else None,
             "polls": self._polls,
             "failed_polls": self._failed_polls,
             "claimed": self._claimed,
@@ -288,11 +300,11 @@ class ProjectionOutboxWorker:
                 )
                 await session.commit()
         except Exception as exc:
+            safe_error = safe_exception_summary(exc)
             logger.warning(
                 "projection outbox heartbeat failed worker_id=%s error=%s",
                 self.worker_id,
-                exc,
-                exc_info=True,
+                safe_error,
             )
             return False
         self._last_heartbeat_at = current
@@ -322,11 +334,11 @@ class ProjectionOutboxWorker:
                 )
                 await session.rollback()
         except Exception as exc:
+            safe_error = safe_exception_summary(exc)
             logger.warning(
                 "projection outbox alert snapshot failed worker_id=%s error=%s",
                 self.worker_id,
-                exc,
-                exc_info=True,
+                safe_error,
             )
             return
         current_codes = frozenset(
@@ -392,12 +404,11 @@ class ProjectionOutboxWorker:
                     poll_failed = True
                     self._failed_polls += 1
                     self._last_error_at = _now()
-                    self._last_error = str(exc)[:500]
+                    self._last_error = safe_exception_summary(exc)
                     logger.warning(
                         "projection outbox poll failed worker_id=%s error=%s",
                         self.worker_id,
-                        exc,
-                        exc_info=True,
+                        self._last_error,
                     )
 
                 if poll_failed and await self._persist_heartbeat(force=True):

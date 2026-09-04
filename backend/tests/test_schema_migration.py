@@ -173,6 +173,18 @@ def test_alembic_upgrades_v13_rows_to_phase1_without_data_loss(tmp_path: Path):
             "memory_declarations",
             "retrieval_projections",
             "retrieval_projection_chunks",
+            "agent_action_confirmations",
+            "knowledge_sources",
+            "knowledge_source_revisions",
+            "knowledge_units",
+            "claims",
+            "claim_evidence",
+            "claim_relations",
+            "knowledge_extraction_runs",
+            "entity_resolution_candidates",
+            "claim_concept_links",
+            "knowledge_embedding_projections",
+            "knowledge_projection_outbox",
         }.issubset(inspector.get_table_names())
 
         assert {"stability", "difficulty", "fsrs_state", "fsrs_step", "last_review_at"}.issubset(
@@ -533,6 +545,20 @@ def test_postgresql_offline_ddl_includes_the_required_foreign_keys():
     assert "ALTER TABLE users ADD COLUMN login_locked_until" in ddl
     assert "CREATE INDEX ix_memory_declarations_user_fact_review_valid" in ddl
     assert "CREATE UNIQUE INDEX uq_memory_declarations_user_fact_current" in ddl
+    assert "CREATE TABLE knowledge_sources" in ddl
+    assert "CREATE TABLE knowledge_source_revisions" in ddl
+    assert "CREATE TABLE knowledge_units" in ddl
+    assert "CREATE TABLE claims" in ddl
+    assert "CREATE TABLE claim_evidence" in ddl
+    assert "CREATE TABLE claim_relations" in ddl
+    assert "CREATE TABLE knowledge_extraction_runs" in ddl
+    assert "CREATE TABLE entity_resolution_candidates" in ddl
+    assert "CREATE TABLE claim_concept_links" in ddl
+    assert "CREATE TABLE knowledge_embedding_projections" in ddl
+    assert "CREATE TABLE knowledge_projection_outbox" in ddl
+    assert "CREATE UNIQUE INDEX uq_knowledge_source_revisions_current" in ddl
+    assert "FOREIGN KEY(source_revision_id) REFERENCES knowledge_source_revisions" in ddl
+    assert "FOREIGN KEY(knowledge_unit_id) REFERENCES knowledge_units" in ddl
 
 
 def test_projection_outbox_operations_migration_defers_legacy_terminal_classification(tmp_path: Path):
@@ -889,6 +915,58 @@ def test_sqlite_lightweight_migration_adds_rebuildable_retrieval_manifests(tmp_p
     assert "ix_retrieval_projection_chunks_user_source" in chunk_indexes
 
 
+def test_sqlite_lightweight_migration_adds_canonical_claim_schema_idempotently(tmp_path: Path):
+    database_path = tmp_path / "legacy-local-knowledge.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "20260901_18")
+
+    async def _run() -> tuple[set[str], set[str], set[str]]:
+        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+        try:
+            async with async_engine.begin() as connection:
+                await _run_lightweight_migrations(connection)
+                await _run_lightweight_migrations(connection)
+                return await connection.run_sync(
+                    lambda sync_connection: (
+                        set(inspect(sync_connection).get_table_names()),
+                        {
+                            index["name"]
+                            for index in inspect(sync_connection).get_indexes(
+                                "knowledge_source_revisions"
+                            )
+                        },
+                        {
+                            row[0]
+                            for row in sync_connection.execute(
+                                text(
+                                    "SELECT revision FROM mnemox_lightweight_migrations "
+                                    "WHERE revision IN ('20260902_19', '20260903_20', '20260903_21', '20260903_22')"
+                                )
+                            )
+                        },
+                    )
+                )
+        finally:
+            await async_engine.dispose()
+
+    tables, revision_indexes, markers = asyncio.run(_run())
+    assert {
+        "knowledge_sources",
+        "knowledge_source_revisions",
+        "knowledge_units",
+        "claims",
+        "claim_evidence",
+        "claim_relations",
+        "knowledge_extraction_runs",
+        "entity_resolution_candidates",
+        "claim_concept_links",
+        "knowledge_embedding_projections",
+        "knowledge_projection_outbox",
+    }.issubset(tables)
+    assert "uq_knowledge_source_revisions_current" in revision_indexes
+    assert markers == {"20260902_19", "20260903_20", "20260903_21", "20260903_22"}
+
+
 def test_sqlite_lightweight_migration_adds_reviewable_concept_provenance(tmp_path: Path):
     database_path = tmp_path / "legacy-local-concept-provenance.db"
     config = _alembic_config(database_path)
@@ -1042,3 +1120,97 @@ def test_sqlite_lightweight_migration_restores_event_dedupe_index(tmp_path: Path
             await async_engine.dispose()
 
     assert asyncio.run(_run()) == (2, 1, True)
+
+
+def test_agent_runtime_lifecycle_migration_adds_schedule_and_idempotency(tmp_path: Path):
+    database_path = tmp_path / "agent-runtime-lifecycle.db"
+    config = _alembic_config(database_path)
+    command.upgrade(config, "head")
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        inspector = inspect(engine)
+        job_columns = {item["name"] for item in inspector.get_columns("agent_jobs")}
+        confirmation_columns = {
+            item["name"] for item in inspector.get_columns("agent_action_confirmations")
+        }
+        preference_columns = {item["name"] for item in inspector.get_columns("coach_preferences")}
+        job_indexes = {item["name"]: item for item in inspector.get_indexes("agent_jobs")}
+        confirmation_indexes = {
+            item["name"]: item for item in inspector.get_indexes("agent_action_confirmations")
+        }
+
+        assert {
+            "scenario",
+            "run_key",
+            "attempt_count",
+            "scheduled_for",
+            "started_at",
+            "finished_at",
+            "cancel_requested_at",
+            "resumed_from_job_id",
+            "lease_owner",
+            "lease_expires_at",
+            "checkpoint",
+        } <= job_columns
+        assert {
+            "id",
+            "user_id",
+            "job_id",
+            "action_id",
+            "status",
+            "action_snapshot",
+            "draft",
+            "result",
+            "confirmed_at",
+        } <= confirmation_columns
+        assert {
+            "proactive_last_evaluated_at",
+            "proactive_next_evaluate_at",
+            "proactive_failure_count",
+            "time_zone",
+        } <= preference_columns
+        assert job_indexes["uq_agent_jobs_user_run_key"]["unique"] == 1
+        assert "ix_agent_jobs_lease_expires_at" in job_indexes
+        assert confirmation_indexes["uq_agent_action_confirmations_user_job_action"]["unique"] == 1
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, username, email, hashed_password) "
+                    "VALUES (1, 'runtime-migration', 'runtime-migration@example.test', 'hash')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO agent_jobs (id, user_id, agent, task, status, run_key) "
+                    "VALUES ('job-1', 1, 'runtime', 'review_debt_rescue', 'completed', 'same-window')"
+                )
+            )
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO agent_jobs (id, user_id, agent, task, status, run_key) "
+                        "VALUES ('job-2', 1, 'runtime', 'review_debt_rescue', 'completed', 'same-window')"
+                    )
+                )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO agent_action_confirmations "
+                    "(id, user_id, job_id, action_id, status, action_snapshot, draft) "
+                    "VALUES ('draft-1', 1, 'job-1', 'action-1', 'prepared', '{}', '{}')"
+                )
+            )
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO agent_action_confirmations "
+                        "(id, user_id, job_id, action_id, status, action_snapshot, draft) "
+                        "VALUES ('draft-2', 1, 'job-1', 'action-1', 'prepared', '{}', '{}')"
+                    )
+                )
+    finally:
+        engine.dispose()

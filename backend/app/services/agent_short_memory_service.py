@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.memory import ConversationSummary
 from app.services.goal_context_service import build_goal_context
 from app.services.learning_event_service import list_recent_learning_events
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 def _json_loads(value: str | None, fallback: Any) -> Any:
@@ -36,8 +37,8 @@ def _summary_to_dict(row: ConversationSummary | None) -> dict[str, Any] | None:
         "misconceptions": _json_loads(row.misconceptions, []),
         "review_prompts": _json_loads(row.review_prompts, []),
         "message_count": row.message_count or 0,
-        "last_message_at": row.last_message_at.isoformat() if row.last_message_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "last_message_at": to_utc_iso(row.last_message_at) if row.last_message_at else None,
+        "updated_at": to_utc_iso(row.updated_at) if row.updated_at else None,
     }
 
 
@@ -90,14 +91,14 @@ async def build_short_memory(
 ) -> dict[str, Any]:
     """Assemble volatile Agent context without writing durable user beliefs."""
 
-    current = now or datetime.now()
+    current = to_db_utc(now) if now is not None else utc_now_db()
     conversation_summary = await _get_conversation_summary(db, user_id, conversation_id)
     recent_events = await list_recent_learning_events(db, user_id, limit=30)
     active_goal_context = await build_goal_context(db, user_id, goal_id=goal_id, now=current)
 
     return {
         "user_id": user_id,
-        "generated_at": current.isoformat(),
+        "generated_at": to_utc_iso(current),
         "conversation_id": conversation_id,
         "conversation_summary": conversation_summary,
         "recent_events": recent_events,

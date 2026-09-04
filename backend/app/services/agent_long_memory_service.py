@@ -19,6 +19,7 @@ from app.services.memory_declaration_service import (
     record_automatic_memory_declaration,
     sync_memory_declaration_review_status,
 )
+from app.utils.utc import to_utc_iso, utc_now_db
 
 CORE_PROFILE_KEY = "agent_core_profile"
 CORE_PROFILE_CATEGORY = "system"
@@ -37,7 +38,7 @@ SENSITIVE_PATTERNS = [
 
 
 def _now() -> datetime:
-    return datetime.now()
+    return utc_now_db()
 
 
 def _clamp_confidence(value: Any, default: float = 0.75) -> float:
@@ -144,13 +145,13 @@ def memory_to_dict(memory: UserMemory) -> dict[str, Any]:
         "source_type": getattr(memory, "source_type", None),
         "source_id": getattr(memory, "source_id", None),
         "evidence": _json_loads(getattr(memory, "evidence", None), []),
-        "expires_at": memory.expires_at.isoformat() if getattr(memory, "expires_at", None) else None,
+        "expires_at": to_utc_iso(memory.expires_at) if getattr(memory, "expires_at", None) else None,
         "review_status": getattr(memory, "review_status", None) or CONFIRMED,
         "material_id": getattr(memory, "material_id", None),
         "memory_type": getattr(memory, "memory_type", "semantic") or "semantic",
-        "last_seen_at": memory.last_seen_at.isoformat() if memory.last_seen_at else None,
-        "created_at": memory.created_at.isoformat() if memory.created_at else None,
-        "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
+        "last_seen_at": to_utc_iso(memory.last_seen_at) if memory.last_seen_at else None,
+        "created_at": to_utc_iso(memory.created_at) if memory.created_at else None,
+        "updated_at": to_utc_iso(memory.updated_at) if memory.updated_at else None,
     }
 
 
@@ -475,7 +476,7 @@ async def rebuild_core_profile(db: AsyncSession, user_id: int) -> dict[str, Any]
 
     payload = {
         "summary": summary[:12],
-        "updated_at": _now().isoformat(),
+        "updated_at": to_utc_iso(_now()),
         "source_memory_ids": source_ids[:80],
         "safety": "sanitized_no_raw_note_bodies_or_secrets",
     }

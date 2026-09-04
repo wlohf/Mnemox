@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
@@ -15,6 +14,7 @@ from app.models.question import Question, WrongQuestion
 from app.models.user_profile import UserProfile
 from app.services.note_retriever import NoteRetriever
 from app.services.retrieval_router import RetrievalRouter
+from app.utils.utc import utc_now_db, utc_today
 
 CONFIRMED_REVIEW_STATUS = "confirmed"
 
@@ -176,7 +176,7 @@ class ChatAgent(BaseAgent):
                 UserMemory.memory_key == "agent_learning_profile",
                 UserMemory.status == "active",
                 UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
             )
         )
         item = result.scalar_one_or_none()
@@ -195,7 +195,7 @@ class ChatAgent(BaseAgent):
                 UserMemory.user_id == ctx.user_id,
                 UserMemory.status == "active",
                 UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
-                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
+                or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > utc_now_db()),
                 UserMemory.category == "agent_feedback",
             )
             .order_by(UserMemory.last_seen_at.desc(), UserMemory.id.desc())
@@ -219,7 +219,7 @@ class ChatAgent(BaseAgent):
         return {"tool": "get_recent_feedback", "items": items}
 
     async def _get_today_tasks(self, ctx: AgentRunContext, limit: int) -> dict:
-        today = date.today()
+        today = utc_today()
         result = await ctx.db.execute(
             select(Task)
             .join(Goal, Task.goal_id == Goal.id)

@@ -17,7 +17,14 @@ from app.models.knowledge import (
     KnowledgeSource,
     KnowledgeSourceRevision,
 )
-from app.services.graph_store.base import CLAIM_PATTERNS, CONCEPT_PATTERNS, GraphHit
+from app.services.graph_store.base import (
+    CLAIM_PATTERNS,
+    CONCEPT_PATTERNS,
+    GraphCapabilityUnsupported,
+    GraphHit,
+    GraphPath,
+    TraversalDirection,
+)
 
 
 def _ids(values: Sequence[int]) -> tuple[int, ...]:
@@ -185,6 +192,26 @@ class SqlGraphStore:
             .order_by(Claim.id.asc()).limit(max_hits)
         )
         return [GraphHit("claim", int(row.id), "source_claims", 1, float(row.confidence), ({"type": "source", "id": int(source_id)},)) for row in rows.all()]
+
+    async def find_concept_paths(
+        self,
+        *,
+        user_id: int,
+        start_concept_ids: Sequence[int],
+        target_concept_ids: Sequence[int],
+        relation_types: Sequence[str],
+        direction: TraversalDirection = "outgoing",
+        max_depth: int = 4,
+        limit: int = 10,
+    ) -> list[GraphPath]:
+        # Stage 7 intentionally does not turn SqlGraphStore into a generic graph
+        # engine. Existing bounded/fixed neighborhood queries remain available,
+        # while graph-native path search is introduced by a backend that can
+        # express it naturally. A product-level caller may choose a narrower SQL
+        # fallback later, but must do so explicitly rather than silently changing
+        # path semantics.
+        del user_id, start_concept_ids, target_concept_ids, relation_types, direction, max_depth, limit
+        raise GraphCapabilityUnsupported("concept_path_search_not_supported_by_sql_backend")
 
     async def rebuild_user(self, *, user_id: int) -> dict[str, Any]:
         return {"backend": "sql", "user_id": int(user_id), "rebuilt": False, "authoritative": True}

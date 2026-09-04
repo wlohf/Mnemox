@@ -19,6 +19,7 @@ from app.services.learning_snapshot_service import build_learning_snapshot
 from app.services.note_retriever import NoteRetriever
 from app.services.agent_long_memory_service import get_core_profile
 from app.services.agent_memory_learning_service import run_agent_memory_learning_if_due
+from app.utils.error_safety import safe_exception_summary
 
 logger = logging.getLogger(__name__)
 CONFIRMED_REVIEW_STATUS = "confirmed"
@@ -389,7 +390,7 @@ async def build_goal_context(
     try:
         await run_agent_memory_learning_if_due(db, user_id, now=current, interval_hours=6)
     except Exception as exc:
-        logger.warning("Agent memory checkpoint failed for user_id=%s: %s", user_id, exc)
+        logger.warning("Agent memory checkpoint failed for user_id=%s: %s", user_id, safe_exception_summary(exc))
     core_profile = await get_core_profile(db, user_id)
     snapshot = await build_learning_snapshot(db, user_id, now=current, include_recent_notes=True, include_memories=True)
     goal, all_stats = await _select_goal(db, user_id, goal_id, current)

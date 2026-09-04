@@ -5,7 +5,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +28,12 @@ from app.services.coach_learning_service import list_skill_stats
 from app.services.coach_preference_service import get_or_create_coach_preferences, update_coach_preferences
 from app.services.coach_skills.registry import coach_skill_registry
 from app.services.coach_runtime_service import evaluate_coach_event
+from app.services.coach_time_service import normalize_coach_time_zone, parse_quiet_hour
 from app.services.coach_workflow_service import advance_coach_workflow, list_coach_workflows, start_coach_workflow
 from app.services.learning_event_service import record_learning_event
 from app.services.agent_service import execute_agent_write_draft
 from app.services.note_quote_service import attach_note_quote_feedback
+from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -75,12 +77,24 @@ class CoachPreferencePatch(BaseModel):
     enabled: bool | None = None
     proactive_enabled: bool | None = None
     desktop_notifications_enabled: bool | None = None
+    time_zone: str | None = Field(None, max_length=64)
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
     max_nudges_per_day: int | None = None
     min_minutes_between_nudges: int | None = None
     allowed_channels: list[str] | None = None
     disabled_skill_ids: list[str] | None = None
+
+    @field_validator("time_zone")
+    @classmethod
+    def validate_time_zone(cls, value: str | None) -> str | None:
+        return normalize_coach_time_zone(value) if value is not None else None
+
+    @field_validator("quiet_hours_start", "quiet_hours_end")
+    @classmethod
+    def validate_quiet_hour(cls, value: str | None) -> str | None:
+        parsed = parse_quiet_hour(value)
+        return parsed.strftime("%H:%M") if parsed else None
 
 
 class CoachWorkflowStartRequest(BaseModel):
@@ -119,7 +133,7 @@ async def create_event(
             dedupe_key=body.dedupe_key,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.get("/events")
@@ -174,7 +188,7 @@ async def evaluate_coach(
             include_memories=body.include_memories,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.get("/nudges")
@@ -219,7 +233,7 @@ async def start_nudge_action(
     try:
         return await start_coach_action_attempt(db, int(current_user.id), nudge_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.get("/nudges/{nudge_id}/attempts")
@@ -301,7 +315,7 @@ async def confirm_nudge_draft(
     try:
         result = await execute_agent_write_draft(db, user_id, intent, nudge.draft)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
     created = result.get("created") or {}
     plan = created.get("plan") or {}
@@ -329,7 +343,7 @@ async def confirm_nudge_draft(
             reason="draft_confirmed",
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
     return {"ok": True, "result": result, "attribution": attribution}
 
 
@@ -343,12 +357,16 @@ async def feedback_nudge(
     try:
         feedback = await record_coach_feedback(db, int(current_user.id), nudge_id, body.outcome, body.notes)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
     try:
         await attach_note_quote_feedback(db, int(current_user.id), nudge_id, body.outcome)
     except Exception as exc:  # 引用反馈回写失败不影响反馈主流程
-        logger.warning("笔记自引反馈回写失败 nudge_id=%s err=%s", nudge_id, exc)
+        logger.warning(
+            "笔记自引反馈回写失败 nudge_id=%s err=%s",
+            nudge_id,
+            safe_exception_summary(exc),
+        )
     return feedback
 
 
@@ -393,7 +411,7 @@ async def create_workflow(
             pending_draft=body.pending_draft,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.get("/workflows")
@@ -425,4 +443,4 @@ async def advance_workflow(
             pending_draft=body.pending_draft,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc

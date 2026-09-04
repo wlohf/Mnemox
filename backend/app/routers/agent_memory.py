@@ -16,6 +16,7 @@ from app.services.agent_long_memory_service import (
     rebuild_core_profile,
 )
 from app.services.agent_memory_learning_service import run_agent_memory_learning
+from app.utils.error_safety import redact_sensitive_text
 
 router = APIRouter()
 
@@ -49,7 +50,7 @@ async def confirm_agent_memory_candidate(
         await rebuild_core_profile(db, int(current_user.id))
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/candidates/{candidate_id}/ignore")
@@ -69,7 +70,7 @@ async def ignore_agent_memory_candidate(
         await rebuild_core_profile(db, int(current_user.id))
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(exc)) from exc
 
 
 @router.post("/run-learning")

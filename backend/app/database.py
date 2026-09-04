@@ -150,13 +150,30 @@ async def _run_lightweight_migrations(conn):
         ("agent_jobs", "result", "JSON"),
         ("agent_jobs", "summary", "TEXT"),
         ("agent_jobs", "updated_at", "DATETIME"),
+        ("agent_jobs", "scenario", "VARCHAR(100)"),
+        ("agent_jobs", "run_key", "VARCHAR(160)"),
+        ("agent_jobs", "attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("agent_jobs", "scheduled_for", "DATETIME"),
+        ("agent_jobs", "started_at", "DATETIME"),
+        ("agent_jobs", "finished_at", "DATETIME"),
+        ("agent_jobs", "cancel_requested_at", "DATETIME"),
+        ("agent_jobs", "resumed_from_job_id", "VARCHAR(32)"),
+        ("agent_jobs", "lease_owner", "VARCHAR(64)"),
+        ("agent_jobs", "lease_expires_at", "DATETIME"),
+        ("agent_jobs", "checkpoint", "JSON"),
         ("agent_execution_logs", "metadata", "JSON"),
         # Coach 行动生命周期：旧 SQLite 数据库也需要区分采纳、开始和放弃。
         ("coach_skill_stats", "started_count", "INTEGER NOT NULL DEFAULT 0"),
         ("coach_skill_stats", "abandoned_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("coach_preferences", "proactive_last_evaluated_at", "DATETIME"),
+        ("coach_preferences", "proactive_next_evaluate_at", "DATETIME"),
+        ("coach_preferences", "proactive_failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("coach_preferences", "time_zone", "VARCHAR(64) NOT NULL DEFAULT 'UTC'"),
         ("ai_provider_settings", "available_models", "TEXT DEFAULT '[]'"),
         ("ai_provider_settings", "max_context_tokens", "INTEGER"),
         ("ai_provider_settings", "max_output_tokens", "INTEGER"),
+        ("ai_provider_settings", "input_price_per_million", "REAL"),
+        ("ai_provider_settings", "output_price_per_million", "REAL"),
         ("ai_routing_settings", "model", "VARCHAR(100)"),
         ("learning_events", "source", "VARCHAR(50)"),
         ("learning_events", "dedupe_key", "VARCHAR(160)"),
@@ -241,6 +258,26 @@ async def _run_lightweight_migrations(conn):
         await conn.execute(sqlalchemy.text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_notes_source_identity "
             "ON notes(user_id, source_vault_id, source_file_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_jobs_user_run_key "
+            "ON agent_jobs(user_id, run_key)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_jobs_scenario ON agent_jobs(scenario)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_jobs_scheduled_for ON agent_jobs(scheduled_for)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_jobs_resumed_from_job_id ON agent_jobs(resumed_from_job_id)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_jobs_lease_expires_at ON agent_jobs(lease_expires_at)"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "CREATE INDEX IF NOT EXISTS ix_coach_preferences_proactive_next_evaluate_at "
+            "ON coach_preferences(proactive_next_evaluate_at)"
         ))
     except Exception:
         pass
@@ -759,6 +796,146 @@ async def _run_lightweight_migrations(conn):
             )
     except Exception as exc:
         raise RuntimeError("SQLite concept graph provenance migration failed") from exc
+
+    # Mnemox V2 Stages 1-4 are additive. Existing desktop databases receive the
+    # canonical source, extraction, entity-resolution, and disposable projection
+    # tables without rebuilding any domain table.
+    try:
+        from app.models.knowledge import (
+            Claim,
+            ClaimConceptLink,
+            ClaimEvidence,
+            ClaimRelation,
+            EntityResolutionCandidate,
+            KnowledgeEmbeddingProjection,
+            KnowledgeExtractionRun,
+            KnowledgeProjectionOutbox,
+            KnowledgeSource,
+            KnowledgeSourceRevision,
+            KnowledgeUnit,
+        )
+
+        knowledge_tables = [
+            KnowledgeSource.__table__,
+            KnowledgeSourceRevision.__table__,
+            KnowledgeUnit.__table__,
+            Claim.__table__,
+            ClaimEvidence.__table__,
+            ClaimRelation.__table__,
+            KnowledgeExtractionRun.__table__,
+            EntityResolutionCandidate.__table__,
+            ClaimConceptLink.__table__,
+            KnowledgeEmbeddingProjection.__table__,
+            KnowledgeProjectionOutbox.__table__,
+        ]
+        await conn.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=knowledge_tables,
+                checkfirst=True,
+            )
+        )
+        expected_columns = {
+            "knowledge_sources": {
+                "id", "user_id", "source_type", "source_record_id", "source_key",
+                "title_snapshot", "status", "current_revision", "created_at", "updated_at",
+                "deleted_at",
+            },
+            "knowledge_source_revisions": {
+                "id", "user_id", "knowledge_source_id", "revision", "content_hash",
+                "title_snapshot", "status", "created_at", "superseded_at",
+            },
+            "knowledge_units": {
+                "id", "user_id", "source_revision_id", "parent_unit_id", "unit_type",
+                "ordinal", "text", "text_hash", "locator", "created_at",
+            },
+            "claims": {
+                "id", "user_id", "source_revision_id", "statement", "claim_kind",
+                "fingerprint", "confidence", "derivation_type", "review_status",
+                "lifecycle_status", "extractor_version", "schema_version", "model_version",
+                "created_at", "updated_at", "reviewed_at",
+            },
+            "claim_evidence": {
+                "id", "user_id", "claim_id", "knowledge_unit_id", "excerpt",
+                "char_start", "char_end", "locator", "grounding_method", "confidence",
+                "created_at",
+            },
+            "claim_relations": {
+                "id", "user_id", "from_claim_id", "to_claim_id", "relation_type",
+                "confidence", "derivation_type", "review_status", "rationale",
+                "evidence_provenance", "model_version", "evaluator_version",
+                "created_at", "updated_at", "reviewed_at",
+            },
+            "knowledge_extraction_runs": {
+                "id", "user_id", "source_revision_id", "extractor_type",
+                "extractor_version", "schema_version", "provider", "model",
+                "prompt_hash", "input_hash", "status", "attempt_count",
+                "available_at", "locked_at", "lease_owner", "started_at",
+                "finished_at", "last_error", "usage", "stats", "created_at",
+                "updated_at",
+            },
+            "entity_resolution_candidates": {
+                "id", "user_id", "extraction_run_id", "knowledge_unit_id", "claim_id",
+                "mention_text", "mention_normalized", "mention_context", "relation_type",
+                "candidate_concept_id", "exact_score", "alias_score", "lexical_score",
+                "vector_score", "context_score", "combined_score", "decision",
+                "resolved_concept_id", "decided_by", "decided_at", "identity_hash",
+                "created_at", "updated_at",
+            },
+            "claim_concept_links": {
+                "id", "user_id", "claim_id", "concept_id", "relation_type", "mention_text",
+                "confidence", "derivation_type", "review_status", "resolution_candidate_id",
+                "created_at", "updated_at",
+            },
+            "knowledge_embedding_projections": {
+                "id", "user_id", "object_type", "object_id", "content_hash",
+                "configuration_fingerprint", "embedding_model", "collection", "vector_key",
+                "status", "attempt_count", "last_error", "indexed_at", "deleted_at",
+                "created_at", "updated_at",
+            },
+            "knowledge_projection_outbox": {
+                "id", "user_id", "aggregate_type", "aggregate_id", "aggregate_version",
+                "operation", "projection_target", "idempotency_key", "payload_version",
+                "payload", "status", "attempts", "available_at", "locked_at", "lease_owner",
+                "processed_at", "last_error", "dead_lettered_at", "created_at", "updated_at",
+            },
+        }
+        for table_name, required in expected_columns.items():
+            actual = {
+                row[1]
+                for row in await conn.execute(
+                    sqlalchemy.text(f"PRAGMA table_info({table_name})")
+                )
+            }
+            missing = sorted(required - actual)
+            if missing:
+                raise RuntimeError(f"{table_name} missing columns: {', '.join(missing)}")
+        revision_indexes = {
+            row[1]
+            for row in await conn.execute(
+                sqlalchemy.text("PRAGMA index_list(knowledge_source_revisions)")
+            )
+        }
+        if "uq_knowledge_source_revisions_current" not in revision_indexes:
+            raise RuntimeError("knowledge Source current-revision index is missing")
+        await conn.execute(sqlalchemy.text(
+            "INSERT OR IGNORE INTO mnemox_lightweight_migrations (revision) "
+            "VALUES ('20260902_19')"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "INSERT OR IGNORE INTO mnemox_lightweight_migrations (revision) "
+            "VALUES ('20260903_20')"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "INSERT OR IGNORE INTO mnemox_lightweight_migrations (revision) "
+            "VALUES ('20260903_21')"
+        ))
+        await conn.execute(sqlalchemy.text(
+            "INSERT OR IGNORE INTO mnemox_lightweight_migrations (revision) "
+            "VALUES ('20260903_22')"
+        ))
+    except Exception as exc:
+        raise RuntimeError("SQLite canonical knowledge schema migration failed") from exc
 
     # Coach action attempts bridge a recommendation to a later domain event.
     # Fresh databases get this from metadata; this additive DDL keeps existing

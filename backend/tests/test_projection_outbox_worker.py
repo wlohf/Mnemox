@@ -284,12 +284,18 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(snapshot["last_projection_failure_at"])
         self.assertIsNotNone(snapshot["last_error_at"])
         self.assertEqual(snapshot["last_error"], "one or more projection rows failed")
+        self.assertEqual(snapshot["last_error_code"], "projection_outbox.worker_failed")
+        self.assertRegex(snapshot["last_error_fingerprint"], r"^[0-9a-f]{16}$")
         health_snapshot = worker.health_snapshot()
         self.assertEqual(
             health_snapshot["last_projection_failure_at"],
             snapshot["last_projection_failure_at"],
         )
         self.assertNotIn("last_error", health_snapshot)
+        self.assertEqual(
+            health_snapshot["last_error_code"],
+            "projection_outbox.worker_failed",
+        )
         async with self.sessions() as session:
             row = await session.get(ProjectionOutbox, outbox_id)
             self.assertEqual(row.status, "failed")
@@ -534,6 +540,8 @@ class ProjectionOutboxWorkerTests(unittest.IsolatedAsyncioTestCase):
         snapshot = worker.snapshot()
         self.assertGreaterEqual(snapshot["failed_polls"], 1)
         self.assertIn("database unavailable", snapshot["last_error"])
+        self.assertEqual(snapshot["last_error_code"], "projection_outbox.worker_failed")
+        self.assertRegex(snapshot["last_error_fingerprint"], r"^[0-9a-f]{16}$")
         self.assertFalse(snapshot["running"])
 
     async def test_public_health_omits_global_outbox_operations_snapshot(self):

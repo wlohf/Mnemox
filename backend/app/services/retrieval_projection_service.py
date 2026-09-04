@@ -10,10 +10,13 @@ import hashlib
 import json
 import logging
 from collections import Counter
-from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any, AsyncIterator, Optional, Sequence
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.rag_service import RAGService, get_rag_service, load_rag_settings
@@ -22,12 +25,54 @@ from app.models.chat import ChatProject, ChatProjectMaterial
 from app.models.material import Material
 from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 from app.services.material_retrieval_backend import _chunk_material_text
+from app.utils.error_safety import (
+    redact_sensitive_text,
+    safe_error_diagnostic,
+    safe_exception_summary,
+)
+from app.utils.operation_lock import serialized_global_operation, serialized_user_operation
+from app.utils.utc import to_utc_iso, utc_now_db
 
 logger = logging.getLogger(__name__)
 
 PROJECTION_BACKEND = "chroma"
 SOURCE_TYPE = "material"
 MAX_ERROR_CHARS = 1000
+RETRIEVAL_MUTATION_LOCK_NAMESPACE = "retrieval_projection_user_v1"
+RETRIEVAL_CONFIGURATION_LOCK_NAMESPACE = "retrieval_projection_configuration_v1"
+
+
+@asynccontextmanager
+async def serialized_retrieval_mutation(
+    db: AsyncSession,
+    *,
+    user_id: int,
+) -> AsyncIterator[None]:
+    """Keep each user mutation stable across a global configuration switch."""
+
+    async with serialized_global_operation(
+        db,
+        namespace=RETRIEVAL_CONFIGURATION_LOCK_NAMESPACE,
+        exclusive=False,
+    ):
+        async with serialized_user_operation(
+            db,
+            namespace=RETRIEVAL_MUTATION_LOCK_NAMESPACE,
+            user_id=int(user_id),
+        ):
+            yield
+
+
+@asynccontextmanager
+async def serialized_retrieval_configuration_change(db: AsyncSession) -> AsyncIterator[None]:
+    """Exclude every ingest/rebuild while changing global retrieval settings."""
+
+    async with serialized_global_operation(
+        db,
+        namespace=RETRIEVAL_CONFIGURATION_LOCK_NAMESPACE,
+        exclusive=True,
+    ):
+        yield
 
 
 def _sha256(value: str) -> str:
@@ -35,11 +80,11 @@ def _sha256(value: str) -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return utc_now_db()
 
 
 def _safe_error(value: Any) -> str:
-    return str(value or "")[:MAX_ERROR_CHARS]
+    return redact_sensitive_text(value, max_chars=MAX_ERROR_CHARS)
 
 
 def retrieval_configuration(rag: RAGService | None = None) -> dict[str, Any]:
@@ -85,6 +130,25 @@ def serialize_projection(row: RetrievalProjection | None) -> dict[str, Any] | No
     # Reading such a value synchronously from an AsyncSession causes
     # MissingGreenlet, so use its loaded snapshot until the next explicit read.
     updated_at = row.__dict__.get("updated_at")
+    safe_last_error = _safe_error(row.last_error) if row.last_error else None
+    error_code: str | None = None
+    error_fingerprint: str | None = None
+    if safe_last_error:
+        if str(row.status) == "failed" and str(row.last_operation) == "forget":
+            error_code = "retrieval.forget_failed"
+        elif str(row.status) == "failed":
+            error_code = "retrieval.index_failed"
+        elif str(row.status) == "degraded":
+            error_code = "retrieval.degraded"
+        else:
+            error_code = "retrieval.diagnostic"
+        diagnostic = safe_error_diagnostic(
+            safe_last_error,
+            code=error_code,
+            max_chars=MAX_ERROR_CHARS,
+        )
+        error_code = diagnostic.code
+        error_fingerprint = diagnostic.fingerprint
     return {
         "source_type": str(row.source_type),
         "source_id": int(row.source_id),
@@ -101,9 +165,11 @@ def serialize_projection(row: RetrievalProjection | None) -> dict[str, Any] | No
         "chunk_count": int(row.chunk_count or 0),
         "vector_chunk_count": int(row.vector_chunk_count or 0),
         "attempt_count": int(row.attempt_count or 0),
-        "last_error": row.last_error,
-        "last_indexed_at": row.last_indexed_at.isoformat() if row.last_indexed_at else None,
-        "updated_at": updated_at.isoformat() if updated_at else None,
+        "last_error": safe_last_error,
+        "last_error_code": error_code,
+        "last_error_fingerprint": error_fingerprint,
+        "last_indexed_at": to_utc_iso(row.last_indexed_at) if row.last_indexed_at else None,
+        "updated_at": to_utc_iso(updated_at) if updated_at else None,
     }
 
 
@@ -184,25 +250,97 @@ class RetrievalProjectionService:
         *,
         operation: str,
     ) -> RetrievalProjection:
-        projection = await self.get_projection(user_id, material_id)
-        if projection is None:
-            projection = RetrievalProjection(
-                user_id=int(user_id),
-                source_type=SOURCE_TYPE,
-                source_id=int(material_id),
-                backend=PROJECTION_BACKEND,
-                status="pending",
-                last_operation=operation,
-                source_version=1,
-                attempt_count=0,
-                chunk_count=0,
-                vector_chunk_count=0,
+        values = {
+            "user_id": int(user_id),
+            "source_type": SOURCE_TYPE,
+            "source_id": int(material_id),
+            "backend": PROJECTION_BACKEND,
+            "status": "pending",
+            "last_operation": operation,
+            "source_version": 1,
+            "attempt_count": 0,
+            "chunk_count": 0,
+            "vector_chunk_count": 0,
+        }
+        dialect_name = self.db.bind.dialect.name if self.db.bind is not None else ""
+        if dialect_name == "postgresql":
+            statement = (
+                postgresql_insert(RetrievalProjection)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    constraint="uq_retrieval_projection_source_backend"
+                )
             )
-            self.db.add(projection)
-            await self.db.flush()
+            await self.db.execute(statement)
+        elif dialect_name == "sqlite":
+            statement = (
+                sqlite_insert(RetrievalProjection)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=["user_id", "source_type", "source_id", "backend"]
+                )
+            )
+            await self.db.execute(statement)
+        else:
+            projection = await self.get_projection(user_id, material_id)
+            if projection is None:
+                projection = RetrievalProjection(**values)
+                self.db.add(projection)
+                await self.db.flush()
+            return projection
+
+        projection = await self.db.scalar(
+            select(RetrievalProjection)
+            .where(
+                RetrievalProjection.user_id == int(user_id),
+                RetrievalProjection.source_type == SOURCE_TYPE,
+                RetrievalProjection.source_id == int(material_id),
+                RetrievalProjection.backend == PROJECTION_BACKEND,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if projection is None:
+            raise RuntimeError("retrieval projection upsert did not produce a readable row")
         return projection
 
     async def ingest(
+        self,
+        material: Material,
+        *,
+        user_id: int,
+        operation: str = "ingest",
+        force: bool = False,
+        project_ids: Sequence[int] | None = None,
+        sync_vectors: bool = True,
+    ) -> dict[str, Any]:
+        """Serialize one user's vector mutations and reload canonical SQL state."""
+        material_id = int(material.id)
+        if int(material.user_id) != int(user_id):
+            raise PermissionError("Cannot project a material owned by another user")
+        async with serialized_retrieval_mutation(self.db, user_id=int(user_id)):
+            canonical = await self.db.scalar(
+                select(Material)
+                .where(
+                    Material.id == material_id,
+                    Material.user_id == int(user_id),
+                )
+                .execution_options(populate_existing=True)
+            )
+            if canonical is None:
+                projection = await self.get_projection(int(user_id), material_id)
+                if projection is not None:
+                    return serialize_projection(projection) or {}
+                raise LookupError("资料不存在，无法建立检索投影。")
+            return await self._ingest_locked(
+                canonical,
+                user_id=int(user_id),
+                operation=operation,
+                force=force,
+                project_ids=project_ids,
+                sync_vectors=sync_vectors,
+            )
+
+    async def _ingest_locked(
         self,
         material: Material,
         *,
@@ -308,9 +446,9 @@ class RetrievalProjectionService:
             try:
                 await self.rag.remove_material(material_id, user_id=int(user_id))
             except Exception as cleanup_exc:
-                cleanup_error = f"；残留清理失败：{cleanup_exc}"
+                cleanup_error = f"；残留清理失败：{safe_exception_summary(cleanup_exc)}"
             projection.status = "failed"
-            projection.last_error = _safe_error(f"{exc}{cleanup_error}")
+            projection.last_error = _safe_error(f"{safe_exception_summary(exc)}{cleanup_error}")
             projection.vector_chunk_count = 0
             logger.warning(
                 "retrieval projection failed user_id=%s material_id=%s operation=%s: %s",
@@ -345,6 +483,10 @@ class RetrievalProjectionService:
         return projection
 
     async def forget(self, user_id: int, material_id: int) -> dict[str, Any]:
+        async with serialized_retrieval_mutation(self.db, user_id=int(user_id)):
+            return await self._forget_locked(int(user_id), int(material_id))
+
+    async def _forget_locked(self, user_id: int, material_id: int) -> dict[str, Any]:
         projection = await self.get_projection(user_id, material_id)
         if projection is None:
             projection = await self.prepare_forget(user_id, material_id)
@@ -362,7 +504,7 @@ class RetrievalProjectionService:
             await self.rag.remove_material(int(material_id), user_id=int(user_id))
         except Exception as exc:
             projection.status = "failed"
-            projection.last_error = _safe_error(f"删除向量投影失败：{exc}")
+            projection.last_error = _safe_error(f"删除向量投影失败：{safe_exception_summary(exc)}")
             await self.db.commit()
             return serialize_projection(projection) or {}
 
@@ -387,6 +529,18 @@ class RetrievalProjectionService:
         return await self.ingest(material, user_id=user_id, operation="retry", force=True)
 
     async def rebuild_user(
+        self,
+        user_id: int,
+        *,
+        material_ids: Sequence[int] | None = None,
+    ) -> dict[str, Any]:
+        async with serialized_retrieval_mutation(self.db, user_id=int(user_id)):
+            return await self._rebuild_user_locked(
+                int(user_id),
+                material_ids=material_ids,
+            )
+
+    async def _rebuild_user_locked(
         self,
         user_id: int,
         *,
@@ -419,14 +573,18 @@ class RetrievalProjectionService:
                     where={"user_id": str(user_id)},
                 )
             except Exception as exc:
-                logger.warning("user-scoped vector pre-clean failed user_id=%s: %s", user_id, exc)
+                logger.warning(
+                    "user-scoped vector pre-clean failed user_id=%s: %s",
+                    user_id,
+                    safe_exception_summary(exc),
+                )
 
         indexed = 0
         degraded = 0
         total_chunks = 0
         failures: list[dict[str, Any]] = []
         for material in materials:
-            projection = await self.ingest(
+            projection = await self._ingest_locked(
                 material,
                 user_id=int(user_id),
                 operation="rebuild",
@@ -463,6 +621,10 @@ class RetrievalProjectionService:
 
     async def forget_user(self, user_id: int) -> dict[str, Any]:
         """Physically purge only one user's vector and SQL retrieval projections."""
+        async with serialized_retrieval_mutation(self.db, user_id=int(user_id)):
+            return await self._forget_user_locked(int(user_id))
+
+    async def _forget_user_locked(self, user_id: int) -> dict[str, Any]:
         await self.rag.initialize()
         await asyncio.to_thread(self.rag._collection.delete, where={"user_id": str(user_id)})
         result = await self.db.execute(
@@ -480,8 +642,19 @@ class RetrievalProjectionService:
         await self.db.commit()
         return {"ok": True, "user_id": int(user_id), "projections_deleted": len(projections)}
 
-    async def mark_configuration_stale(self, *, user_id: Optional[int] = None) -> int:
+    async def mark_configuration_stale(
+        self,
+        *,
+        user_id: Optional[int] = None,
+        configuration_lock_held: bool = False,
+    ) -> int:
         """Flag incompatible manifests after global model/chunk settings change."""
+        if not configuration_lock_held:
+            async with serialized_retrieval_configuration_change(self.db):
+                return await self.mark_configuration_stale(
+                    user_id=user_id,
+                    configuration_lock_held=True,
+                )
         config = retrieval_configuration(self.rag)
         query = select(RetrievalProjection).where(
             RetrievalProjection.status.not_in(("deleted", "deleting"))

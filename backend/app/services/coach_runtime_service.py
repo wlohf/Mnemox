@@ -30,6 +30,8 @@ from app.services.coach_skills.base import CoachSkillContext
 from app.services.coach_skills.registry import coach_skill_registry
 from app.services.learning_snapshot_service import build_learning_snapshot
 from app.services.note_quote_service import record_note_quote_usage, select_note_quote
+from app.utils.error_safety import safe_exception_summary
+from app.utils.utc import to_db_utc, utc_now_db
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +61,15 @@ async def evaluate_coach_event(
     """
 
     await expire_due_coach_nudges(db, user_id)
+    active_preferences = preferences or await get_or_create_coach_preferences(db, user_id)
     active_snapshot = snapshot or await build_learning_snapshot(
         db,
         user_id,
         include_recent_notes=include_recent_notes,
         include_memories=include_memories,
+        now=utc_now_db(),
+        time_zone=str(active_preferences.get("time_zone") or "UTC"),
     )
-    active_preferences = preferences or await get_or_create_coach_preferences(db, user_id)
     recent_feedback = await list_recent_coach_feedback(db, user_id, limit=30)
     skill_stats = await get_policy_skill_stats(db, user_id)
     policy = evaluate_coach_policy(
@@ -93,7 +97,11 @@ async def evaluate_coach_event(
         except Exception as exc:
             # A personal note quote improves warmth but can never block the
             # core suggestion.
-            logger.warning("coach note quote selection failed user_id=%s err=%s", user_id, exc)
+            logger.warning(
+                "coach note quote selection failed user_id=%s err=%s",
+                user_id,
+                safe_exception_summary(exc),
+            )
 
     generated = await skill.generate(
         CoachSkillContext(
@@ -124,7 +132,11 @@ async def evaluate_coach_event(
                 nudge_id=str(nudge.get("id") or "") or None,
             )
         except Exception as exc:
-            logger.warning("coach note quote usage failed user_id=%s err=%s", user_id, exc)
+            logger.warning(
+                "coach note quote usage failed user_id=%s err=%s",
+                user_id,
+                safe_exception_summary(exc),
+            )
 
     return {"nudge": nudge, "policy": policy, "event": event}
 
@@ -144,7 +156,7 @@ async def run_proactive_review_debt_cycle(
     changes a plan by itself.
     """
 
-    current = now or datetime.now()
+    current = to_db_utc(now) if now is not None else utc_now_db()
     preference_row = await db.scalar(
         select(CoachPreference)
         .where(CoachPreference.user_id == user_id)
@@ -161,6 +173,8 @@ async def run_proactive_review_debt_cycle(
         user_id,
         include_recent_notes=False,
         include_memories=True,
+        now=current,
+        time_zone=str(preferences.get("time_zone") or "UTC"),
     )
     due_review_count = int((snapshot.get("review") or {}).get("due_review_count") or 0)
     if due_review_count < PROACTIVE_REVIEW_DEBT_THRESHOLD:
@@ -184,7 +198,7 @@ async def run_proactive_review_debt_cycle(
         severity="warning" if due_review_count >= 10 else "info",
         # One opportunity per day is enough.  If the user snoozes or rejects
         # it, the normal Coach policy should not keep creating pressure.
-        dedupe_key=f"agent-runtime:review-debt:{current.date().isoformat()}",
+        dedupe_key=f"agent-runtime:review-debt:{snapshot.get('date') or current.date().isoformat()}",
         occurred_at=current,
     )
     result = await evaluate_coach_event(

@@ -27,6 +27,8 @@ from app.models.note import Note
 from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.models.user import User
+from app.services.knowledge_source_service import register_material_source, register_note_source
+from app.utils.utc import to_utc_iso, utc_now_db
 
 router = APIRouter()
 
@@ -110,12 +112,12 @@ async def _has_system_memory(db: AsyncSession, user_id: int, key: str) -> bool:
 async def _mark_system_memory(db: AsyncSession, user_id: int, key: str, value: str | None = None) -> None:
     if await _has_system_memory(db, user_id, key):
         return
-    now = datetime.now(timezone.utc)
+    now = utc_now_db()
     db.add(
         UserMemory(
             user_id=user_id,
             memory_key=key,
-            memory_value=value or now.isoformat(),
+            memory_value=value or to_utc_iso(now),
             category="system",
             confidence=1.0,
             status="ignored",
@@ -374,6 +376,8 @@ async def seed_demo_workspace(
     )
     db.add(material)
     await db.flush()
+    if settings.KNOWLEDGE_V2_ENABLED:
+        await register_material_source(db, user_id=int(user_id), material_id=int(material.id))
     created["materials"] += 1
 
     chapters = [
@@ -489,7 +493,7 @@ async def seed_demo_workspace(
     ])
     created["review_tasks"] += 2
 
-    db.add(Note(
+    demo_note = Note(
         user_id=user_id,
         material_id=material.id,
         chapter_id=chapters[1].id,
@@ -504,7 +508,11 @@ async def seed_demo_workspace(
 - 明天最小补缺口：
 
 > 不需要切换模式；在每日计划里直接写，AI 会根据你的复述继续追问。""",
-    ))
+    )
+    db.add(demo_note)
+    await db.flush()
+    if settings.KNOWLEDGE_V2_ENABLED:
+        await register_note_source(db, user_id=int(user_id), note_id=int(demo_note.id))
     created["notes"] += 1
 
     db.add_all([

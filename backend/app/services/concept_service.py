@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.concept import Concept, ConceptAlias, ConceptEdge, ConceptLink, ConceptSourceEvidence
 from app.models.learner_model import UserConceptState
 from app.models.material import Chapter, Material
@@ -79,6 +80,18 @@ async def upsert_concept(
     if existing:
         if description and not existing.description:
             existing.description = description[:500]
+            await db.flush()
+            if settings.KNOWLEDGE_V2_ENABLED:
+                from app.services.knowledge_projection_service import (
+                    enqueue_knowledge_object_projection,
+                )
+
+                await enqueue_knowledge_object_projection(
+                    db,
+                    user_id=int(user_id),
+                    object_type="concept",
+                    object_id=int(existing.id),
+                )
         return existing
 
     concept = Concept(
@@ -92,6 +105,15 @@ async def upsert_concept(
     db.add(concept)
     await db.flush()
     await ensure_concept_state(db, user_id, int(concept.id))
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_projection_service import enqueue_knowledge_object_projection
+
+        await enqueue_knowledge_object_projection(
+            db,
+            user_id=int(user_id),
+            object_type="concept",
+            object_id=int(concept.id),
+        )
     return concept
 
 
@@ -163,6 +185,14 @@ async def add_edge(
         )
     )
     await db.flush()
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_projection_service import enqueue_neo4j_user_rebuild
+
+        await enqueue_neo4j_user_rebuild(
+            db,
+            user_id=int(user_id),
+            force=True,
+        )
     return True
 
 
@@ -224,6 +254,11 @@ async def ingest_structure_concepts(
     按章节标题匹配已入库的 Chapter 行，key_points 逐个 upsert 为概念并建立
     chapter COVERS concept 挂接。返回新建/挂接的概念数。
     """
+    if settings.KNOWLEDGE_V2_ENABLED:
+        # Stage 2 requires grounded Claim candidates. Generated key_points are
+        # not copied into the canonical graph unless their quotes can be found
+        # in a versioned Unit by the extraction pipeline.
+        return 0
     owned_material = await db.scalar(
         select(Material.id).where(Material.id == material_id, Material.user_id == user_id)
     )

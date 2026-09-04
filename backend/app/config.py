@@ -1,7 +1,7 @@
 """应用配置管理"""
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Literal
 from pathlib import Path
 import os
 import warnings
@@ -93,6 +93,102 @@ class Settings(BaseSettings):
     # available.
     RAG_SETTINGS_ADMIN_USERNAMES: str = ""
     AGENT_LLM_PLANNER_TIMEOUT_SECONDS: float = 12.0
+    # Mnemox V2 feature flags remain opt-in. Stage 6 ended 2026-09-04 with
+    # Neo4j/Graphiti default-runtime NO-GO. Stage 7 adds an explicit graph
+    # backend selector while keeping SQL as the default and canonical source.
+    KNOWLEDGE_V2_ENABLED: bool = False
+    KNOWLEDGE_LLM_EXTRACTION_ENABLED: bool = False
+    ASSOCIATION_V2_ENABLED: bool = False
+    ASSOCIATION_V2_SHADOW: bool = False
+    ASSOCIATION_MULTIHOP_EXPLANATION_ENABLED: bool = False
+    KNOWLEDGE_PATH_ENABLED: bool = False
+    KNOWLEDGE_SEMANTIC_AUTO_RESOLVE_ENABLED: bool = False
+    GRAPH_BACKEND: Literal["sql", "neo4j"] = "sql"
+    # Stage 7 rollout gate. When Neo4j is selected, reads still require the
+    # current user to be admitted by this stable cohort policy and to have a
+    # caught-up projection. Explicit user IDs are useful for canary accounts.
+    NEO4J_GRAPH_ROLLOUT_PERCENT: int = Field(default=100, ge=0, le=100)
+    NEO4J_GRAPH_ROLLOUT_USER_IDS: str = Field(default="", max_length=2_000)
+    NEO4J_GRAPH_ENABLED: bool = False
+    NEO4J_GRAPH_SHADOW: bool = False
+    NEO4J_URI: str = Field(default="bolt://localhost:7687", max_length=500)
+    NEO4J_USER: str = Field(default="neo4j", max_length=120)
+    NEO4J_PASSWORD: str = Field(default="", max_length=500)
+    NEO4J_DATABASE: str = Field(default="neo4j", min_length=1, max_length=120)
+    NEO4J_GRAPH_SHADOW_TIMEOUT_SECONDS: float = Field(default=2.0, ge=0.1, le=30.0)
+    GRAPHITI_ENABLED: bool = False
+    GRAPHITI_SHADOW: bool = False
+    GRAPHITI_SHADOW_TIMEOUT_SECONDS: float = Field(default=5.0, ge=0.1, le=60.0)
+    # Initial extraction safety and budget defaults. Stage 0 records and
+    # validates them but does not start an extraction worker or model call.
+    KNOWLEDGE_EXTRACTION_MAX_UNIT_CHARS: int = Field(default=8_000, ge=512, le=50_000)
+    KNOWLEDGE_EXTRACTION_MAX_CLAIMS_PER_UNIT: int = Field(default=12, ge=1, le=100)
+    KNOWLEDGE_CLAIM_MAX_CHARS: int = Field(default=500, ge=80, le=2_000)
+    KNOWLEDGE_EXTRACTION_MAX_OUTPUT_CHARS: int = Field(default=12_000, ge=1_000, le=100_000)
+    KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS: float = Field(default=30.0, ge=1.0, le=300.0)
+    KNOWLEDGE_LLM_MAX_CALLS_PER_RUN: int = Field(default=64, ge=1, le=1_000)
+    KNOWLEDGE_LLM_MAX_ESTIMATED_TOKENS_PER_RUN: int = Field(
+        default=64_000,
+        ge=1_024,
+        le=10_000_000,
+    )
+    KNOWLEDGE_LLM_DAILY_ESTIMATED_TOKENS_PER_USER: int = Field(
+        default=256_000,
+        ge=1_024,
+        le=50_000_000,
+    )
+    KNOWLEDGE_EXTRACTION_WORKER_POLL_INTERVAL_SECONDS: float = Field(
+        default=2.0,
+        gt=0,
+        le=60,
+    )
+    KNOWLEDGE_EXTRACTION_WORKER_BATCH_SIZE: int = Field(default=4, ge=1, le=100)
+    KNOWLEDGE_EXTRACTION_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=20)
+    KNOWLEDGE_EXTRACTION_LEASE_SECONDS: int = Field(default=120, ge=30, le=3600)
+    KNOWLEDGE_EXTRACTION_RETRY_BASE_SECONDS: float = Field(default=5.0, ge=0, le=3600)
+    # Stage 3 keeps knowledge vectors disposable and independently switchable.
+    # Exact canonical/alias resolution does not depend on these settings.
+    KNOWLEDGE_EMBEDDING_ENABLED: bool = False
+    KNOWLEDGE_CHROMA_COLLECTION_NAME: str = Field(
+        default="mnemox_knowledge",
+        min_length=1,
+        max_length=120,
+    )
+    KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS: float = Field(default=20.0, ge=1.0, le=300.0)
+    KNOWLEDGE_RESOLUTION_TOP_K: int = Field(default=5, ge=1, le=50)
+    KNOWLEDGE_RESOLUTION_LEXICAL_THRESHOLD: float = Field(default=0.45, ge=0.0, le=1.0)
+    KNOWLEDGE_RESOLUTION_MAX_MENTIONS_PER_CLAIM: int = Field(default=8, ge=1, le=50)
+    # Stage 5 sparse backend. Auto selects SQLite FTS5 or PostgreSQL native FTS
+    # and keeps query-time reference fallback; explicit reference is the rollback.
+    KNOWLEDGE_SPARSE_BACKEND: str = Field(
+        default="auto",
+        pattern="^(auto|reference|sqlite_fts5|postgres_fts)$",
+    )
+    # Semantic reranking is optional and must never block Association V2.
+    KNOWLEDGE_RERANKER_MODE: str = Field(default="feature", pattern="^(feature|llm)$")
+    KNOWLEDGE_RERANKER_MODEL: str = Field(default="", max_length=160)
+    KNOWLEDGE_RERANKER_TIMEOUT_SECONDS: float = Field(default=3.0, ge=0.1, le=30.0)
+    # Expensive canonical signature verification is available for diagnostics;
+    # normal lifecycle uses write-time dirty markers plus SQL display revalidation.
+    KNOWLEDGE_SPARSE_VERIFY_SIGNATURE: bool = False
+    KNOWLEDGE_PROJECTION_WORKER_POLL_INTERVAL_SECONDS: float = Field(
+        default=2.0,
+        gt=0,
+        le=60,
+    )
+    KNOWLEDGE_PROJECTION_WORKER_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
+    KNOWLEDGE_PROJECTION_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=20)
+    KNOWLEDGE_PROJECTION_LEASE_SECONDS: int = Field(default=120, ge=30, le=3600)
+    KNOWLEDGE_PROJECTION_RETRY_BASE_SECONDS: float = Field(default=5.0, ge=0, le=3600)
+    # Observation-only A/A instrumentation. Both variants keep identical
+    # policy behavior until coverage and attribution are independently proven.
+    COACH_INTERVENTION_EXPERIMENT_ENABLED: bool = False
+    COACH_INTERVENTION_EXPERIMENT_ID: str = Field(
+        default="coach_intervention_aa_v1",
+        min_length=1,
+        max_length=80,
+    )
+    COACH_INTERVENTION_EXPERIMENT_SPLIT_PERCENT: int = Field(default=50, ge=1, le=99)
     
     # 服务器配置
     HOST: str = "0.0.0.0"
@@ -123,6 +219,18 @@ class Settings(BaseSettings):
     AGENT_RUNTIME_SCHEDULER_ENABLED: bool = True
     AGENT_RUNTIME_POLL_INTERVAL_SECONDS: float = Field(default=300.0, ge=30, le=3600)
     AGENT_RUNTIME_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    AGENT_RUNTIME_USER_INTERVAL_SECONDS: int = Field(default=21600, ge=300, le=86400)
+    AGENT_RUNTIME_RETRY_INTERVAL_SECONDS: int = Field(default=900, ge=60, le=21600)
+    AGENT_RUNTIME_USER_TIMEOUT_SECONDS: float = Field(default=60.0, ge=1.0, le=600.0)
+    AGENT_KERNEL_LEASE_SECONDS: int = Field(default=120, ge=60, le=600)
+    AGENT_KERNEL_MAX_MODEL_CALLS: int = Field(default=7, ge=1, le=9)
+    AGENT_KERNEL_MAX_ESTIMATED_TOKENS: int = Field(default=32000, ge=512, le=1000000)
+    AGENT_KERNEL_DAILY_MODEL_CALLS_PER_USER: int = Field(default=30, ge=1, le=1000)
+    AGENT_KERNEL_DAILY_ESTIMATED_TOKENS_PER_USER: int = Field(
+        default=128000,
+        ge=512,
+        le=10000000,
+    )
     # Obsidian vault 同步根目录白名单；生产环境必须配置后才允许 vault 同步（决策 D6）
     OBSIDIAN_VAULT_ROOT: str = ""
     

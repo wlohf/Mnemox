@@ -1,5 +1,5 @@
 """AI 提供商设置模型"""
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -18,6 +18,8 @@ class AIProviderSetting(Base):
     available_models = Column(Text, default="[]", comment="可选模型 JSON 列表")
     max_context_tokens = Column(Integer, nullable=True, comment="上下文 token 上限")
     max_output_tokens = Column(Integer, nullable=True, comment="输出 token 上限")
+    input_price_per_million = Column(Float, nullable=True, comment="每百万输入 token 的美元价格")
+    output_price_per_million = Column(Float, nullable=True, comment="每百万输出 token 的美元价格")
     is_active = Column(Boolean, default=False, comment="是否为当前激活的提供商")
     enabled = Column(Boolean, default=True, comment="是否启用")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
