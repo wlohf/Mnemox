@@ -563,6 +563,7 @@ function AgentSettings() {
   const [coachPreferences, setCoachPreferences] = useState<CoachPreferences | null>(null)
   const [coachSaving, setCoachSaving] = useState(false)
   const desktopCoachAvailable = isDesktopCoachNotificationAvailable()
+  const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
   useEffect(() => {
     let cancelled = false
@@ -611,6 +612,15 @@ function AgentSettings() {
     { label: 'Agent 面板', value: 'agent_panel' },
     { label: '桌面通知', value: 'desktop_notification', disabled: !desktopCoachAvailable },
   ]
+  const timeZoneOptions = Array.from(new Map([
+    [browserTimeZone, { label: `当前设备 · ${browserTimeZone}`, value: browserTimeZone }],
+    ['UTC', { label: 'UTC', value: 'UTC' }],
+    ['Asia/Shanghai', { label: '中国标准时间 · Asia/Shanghai', value: 'Asia/Shanghai' }],
+    ['Asia/Tokyo', { label: '日本标准时间 · Asia/Tokyo', value: 'Asia/Tokyo' }],
+    ['Europe/London', { label: '英国时间 · Europe/London', value: 'Europe/London' }],
+    ['America/New_York', { label: '美国东部时间 · America/New_York', value: 'America/New_York' }],
+    ['America/Los_Angeles', { label: '美国西部时间 · America/Los_Angeles', value: 'America/Los_Angeles' }],
+  ]).values())
 
   const parseQuietTime = (value?: string | null) => {
     if (!value) return null
@@ -677,7 +687,18 @@ function AgentSettings() {
               maxTagCount="responsive"
             />
           )}
-          {row('免打扰时段', '此时段内不发送主动桌面通知',
+          {row('所在时区', '后台评估和免打扰时段都按此地时间解释',
+            <Select
+              size="small"
+              showSearch
+              optionFilterProp="label"
+              options={timeZoneOptions}
+              value={coachPreferences.time_zone || 'UTC'}
+              onChange={(time_zone) => updateCoachPref({ time_zone })}
+              style={{ minWidth: 238 }}
+            />
+          )}
+          {row('免打扰时段', '后台定时评估会延后到时段结束；主动桌面通知也不会发送',
             <Space size={6}>
               <TimePicker
                 size="small"

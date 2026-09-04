@@ -81,6 +81,55 @@ export interface NorthStarMetricsReport {
   }
 }
 
+export interface CoachExperimentVariant {
+  variant: 'control' | 'shadow' | string
+  shown_count: number
+  mature_exposure_count: number
+  pending_attribution_count: number
+  accepted_count: number
+  started_count: number
+  completed_count: number
+  completed_by_domain_event_count: number
+  abandoned_count: number
+  dismissed_count: number
+  acceptance_rate?: number | null
+  start_rate?: number | null
+  execution_rate?: number | null
+}
+
+export interface CoachExperimentReport {
+  enabled: boolean
+  experiment_id: string
+  mode: 'aa_observation' | 'disabled' | string
+  policy_behavior_changed: boolean
+  assignment?: {
+    experiment_id: string
+    assignment_version: number
+    bucket: number
+    variant: 'control' | 'shadow' | string
+    mode: string
+    policy_applied: boolean
+  } | null
+  period: {
+    days: number
+    start_at: string
+    end_at: string
+    attribution_window_days: number
+  }
+  variants: CoachExperimentVariant[]
+  coverage: {
+    instrumented_shown_count: number
+    uninstrumented_shown_count: number
+    ledger_event_count: number
+  }
+  decision_readiness: {
+    ready: boolean
+    reason: string
+    minimum_mature_exposures_per_variant: number
+  }
+  disclaimer: string
+}
+
 export async function getEdaReport(days = 30): Promise<EDAReport | null> {
   try {
     return await apiFetch<EDAReport>(`/api/analytics/eda-report?days=${days}`)
@@ -96,6 +145,16 @@ export async function getNorthStarMetrics(
   try {
     return await apiFetch<NorthStarMetricsReport>(
       `/api/analytics/north-star?days=${encodeURIComponent(String(days))}&time_zone=${encodeURIComponent(timeZone)}`,
+    )
+  } catch {
+    return null
+  }
+}
+
+export async function getCoachExperimentReport(days = 28): Promise<CoachExperimentReport | null> {
+  try {
+    return await apiFetch<CoachExperimentReport>(
+      `/api/analytics/coach-experiment?days=${encodeURIComponent(String(days))}`,
     )
   } catch {
     return null

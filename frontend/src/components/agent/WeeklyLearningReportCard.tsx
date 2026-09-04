@@ -1,7 +1,14 @@
-import { Button, Card, Col, List, Row, Space, Typography } from 'antd'
+import { CopyOutlined } from '@ant-design/icons'
+import { Button, Card, Col, Divider, List, Row, Space, Tag, Typography, message } from 'antd'
 import type { WeeklyLearningReport } from '../../services/agentApi'
 
 const { Text } = Typography
+
+const sourceKindLabels = {
+  note: '笔记',
+  review: '复习',
+  wrong_question: '错题',
+} as const
 
 interface WeeklyLearningReportCardProps {
   report: WeeklyLearningReport | null
@@ -17,6 +24,17 @@ export function WeeklyLearningReportCard({
   onGenerate,
   onNavigate,
 }: WeeklyLearningReportCardProps) {
+  const handleCopy = async () => {
+    if (!report?.consolidation.markdown) return
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard_unavailable')
+      await navigator.clipboard.writeText(report.consolidation.markdown)
+      message.success('知识巩固草案已复制')
+    } catch {
+      message.error('无法访问剪贴板，请检查浏览器权限')
+    }
+  }
+
   return (
     <Card
       size="small"
@@ -60,6 +78,60 @@ export function WeeklyLearningReportCard({
               />
             </Col>
           </Row>
+          <Divider style={{ margin: '4px 0' }} />
+          <Row align="middle" justify="space-between" gutter={[12, 8]}>
+            <Col>
+              <Space direction="vertical" size={2}>
+                <Space size={6} wrap>
+                  <Text strong>知识巩固草案</Text>
+                  <Tag>{report.consolidation.source_counts.total} 条来源</Tag>
+                  {report.consolidation.write_policy.imported_source_count > 0 && (
+                    <Tag color="gold">Obsidian 只读</Tag>
+                  )}
+                </Space>
+                <Text type="secondary">
+                  {report.consolidation.week_start} 至 {report.consolidation.week_end_exclusive}（结束日期不含）
+                  · {report.time_zone}
+                </Text>
+              </Space>
+            </Col>
+            <Col>
+              <Button icon={<CopyOutlined />} onClick={handleCopy}>
+                复制 Markdown
+              </Button>
+            </Col>
+          </Row>
+          <List
+            size="small"
+            dataSource={report.consolidation.sources.slice(0, 3)}
+            locale={{ emptyText: '本周暂未扫描到笔记、已完成复习或错题线索。' }}
+            renderItem={(source) => (
+              <List.Item>
+                <Space direction="vertical" size={1}>
+                  <Space size={6} wrap>
+                    <Tag bordered={false}>{sourceKindLabels[source.kind]}</Tag>
+                    <Text>{source.title}</Text>
+                    {source.ownership !== 'mnemox' && (
+                      <Text type="warning">
+                        {source.ownership === 'obsidian_conflict' ? '冲突来源，只读' : '导入来源，只读'}
+                      </Text>
+                    )}
+                  </Space>
+                  {source.excerpt && <Text type="secondary">{source.excerpt}</Text>}
+                </Space>
+              </List.Item>
+            )}
+          />
+          {report.consolidation.sources.length > 3 && (
+            <Text type="secondary">
+              另有 {report.consolidation.sources.length - 3} 条来源已写入可复制草案。
+            </Text>
+          )}
+          {Object.values(report.consolidation.truncated).some(Boolean) && (
+            <Text type="warning">
+              本周来源较多，草案已按类型各保留最近 {report.consolidation.source_limit_per_kind} 条。
+            </Text>
+          )}
           <Text type="secondary">{report.disclaimer}</Text>
         </Space>
       ) : (

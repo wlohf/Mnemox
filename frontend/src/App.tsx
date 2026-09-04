@@ -32,6 +32,7 @@ const EDAReportPage = lazy(() => import('./pages/EDAReportPage').then(m => ({ de
 const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
 const AnkiPage = lazy(() => import('./pages/AnkiPage').then(m => ({ default: m.AnkiPage })))
 const PlansPage = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })))
+const KnowledgeLabPage = lazy(() => import('./pages/KnowledgeLabPage').then(m => ({ default: m.KnowledgeLabPage })))
 
 const PageSpinner = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
@@ -258,6 +259,7 @@ function App() {
               <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
               <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
               <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
+              <Route path="/knowledge-lab" element={<ProtectedRoute><KnowledgeLabPage /></ProtectedRoute>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

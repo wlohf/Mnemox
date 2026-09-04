@@ -29,6 +29,8 @@ export interface AIProvider {
   available_models: string[]
   max_context_tokens?: number | null
   max_output_tokens?: number | null
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
   is_active: boolean
   enabled: boolean
 }
@@ -45,6 +47,8 @@ export interface ProviderUpdate {
   available_models?: string[]
   max_context_tokens?: number | null
   max_output_tokens?: number | null
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
   enabled?: boolean
 }
 
@@ -58,6 +62,8 @@ export interface ProviderCreate {
   available_models?: string[]
   max_context_tokens?: number | null
   max_output_tokens?: number | null
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
   enabled?: boolean
 }
 

@@ -55,15 +55,21 @@ export function ProactiveReviewChecksCard({
                 ? status.scheduler.running ? '后台检查器运行中' : '后台检查器未运行'
                 : '当前模式仅页面内评估'}
             </Tag>
-            {status.scheduler.last_success_at && <Text type="secondary">最近检查：{formatDateTime(status.scheduler.last_success_at)}</Text>}
+            <Tag>{status.preference.time_zone || 'UTC'}</Tag>
+            {status.preference.proactive_last_evaluated_at && (
+              <Text type="secondary">最近评估：{formatDateTime(status.preference.proactive_last_evaluated_at)}</Text>
+            )}
+            {status.preference.proactive_enabled && status.preference.proactive_next_evaluate_at && (
+              <Text type="secondary">下次最早评估：{formatDateTime(status.preference.proactive_next_evaluate_at)}</Text>
+            )}
           </Space>
           <Text type="secondary">{status.scheduler.message}</Text>
-          {status.scheduler.last_error_at && (
+          {Number(status.preference.proactive_failure_count || 0) > 0 && (
             <Alert
               type="warning"
               showIcon
               message="上一次后台检查未完成"
-              description="系统会在下一次低频周期重试；没有修改你的计划、任务或复习数据。"
+              description="系统已按退避时间安排重试；没有修改你的计划、任务或复习数据。"
             />
           )}
         </Space>

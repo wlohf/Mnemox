@@ -58,12 +58,15 @@ export interface AgentPlannerInfo {
 export interface AgentActionDraft {
   operation: 'create_task' | 'navigate'
   goal_id?: number | null
+  goal_title?: string
   title?: string
   description?: string
   task_type?: string
   planned_date?: string
   estimated_minutes?: number
   route?: string
+  source_job_id?: string
+  source_action_id?: string
 }
 
 export interface AgentActionDraftResponse {
@@ -236,7 +239,103 @@ export interface AgentRuntimeInfo {
   task_queue: Array<Record<string, unknown>>
   execution_logs: Array<Record<string, unknown>>
   profile_control_logs?: AgentProfileControlLog[]
+  kernel_daily_budget?: AgentKernelDailyBudget
 }
+
+export interface AgentKernelDailyBudget {
+  date: string
+  timezone: 'UTC'
+  model_calls: number
+  estimated_tokens: number
+  actual_usage_calls?: number
+  actual_tokens?: number
+  configured_cost_usd?: number
+  model_call_limit: number
+  estimated_token_limit: number
+  remaining_model_calls: number
+  remaining_estimated_tokens: number
+}
+
+export interface AgentKernelUsage {
+  model_calls: number
+  estimated_input_tokens: number
+  estimated_output_tokens: number
+  estimated_total_tokens: number
+  actual_input_tokens?: number
+  actual_output_tokens?: number
+  actual_total_tokens?: number
+  actual_usage_calls?: number
+  unreconciled_calls?: number
+  configured_cost_usd?: number
+  provider?: string | null
+  model?: string | null
+  usage_source?: 'provider' | 'mixed' | 'estimated_only'
+  run_model_calls?: number
+  run_estimated_input_tokens?: number
+  run_estimated_output_tokens?: number
+  run_estimated_total_tokens?: number
+  run_actual_input_tokens?: number
+  run_actual_output_tokens?: number
+  run_actual_total_tokens?: number
+  run_actual_usage_calls?: number
+  run_unreconciled_calls?: number
+  run_configured_cost_usd?: number
+  model_call_limit: number
+  estimated_token_limit: number
+  budget_reason?:
+    | 'model_call_limit'
+    | 'estimated_token_limit'
+    | 'daily_model_call_limit'
+    | 'daily_estimated_token_limit'
+  daily_budget?: AgentKernelDailyBudget
+}
+
+export interface AgentKernelRunResponse {
+  status: 'completed' | 'failed' | 'fallback' | 'cancelled' | 'unavailable'
+  reason?: string
+  strategy?: string | null
+  fallback_plan?: string | null
+  next_actions: Array<Record<string, unknown>>
+  steps: Array<Record<string, unknown>>
+  error?: string | null
+  usage?: AgentKernelUsage
+  fallback?: {
+    source?: 'rules'
+    reason?: string
+    available?: boolean
+    generated_at?: string | null
+    risk_level?: string | null
+  } | null
+  job_id: string
+}
+
+export interface AgentKernelPreparedJobResponse {
+  job: Record<string, unknown>
+}
+
+export interface AgentKernelActionDraftResponse extends AgentActionDraftResponse {
+  draft_id: string
+  job_id: string
+  status: 'prepared' | 'executing' | 'completed'
+  execution_result?: AgentKernelActionExecuteResponse | null
+  idempotent?: boolean
+}
+
+export interface AgentKernelActionExecuteResponse extends AgentActionExecuteResponse {
+  job_id: string
+  draft_id: string
+  idempotent: boolean
+}
+
+export interface AgentJobStreamHandlers {
+  onSnapshot?: (job: Record<string, unknown>) => void
+  onLog?: (log: Record<string, unknown>) => void
+  onTerminal?: (job: Record<string, unknown>) => void
+  onTimeout?: (jobId: string) => void
+  onError?: (code: string) => void
+}
+
+export type AgentJobStreamOutcome = 'terminal' | 'timeout' | 'ended' | 'aborted' | 'error'
 
 export interface AgentProactiveRuntimeStatus {
   preference: CoachPreferences
@@ -244,6 +343,11 @@ export interface AgentProactiveRuntimeStatus {
     available: boolean
     running: boolean
     poll_interval_seconds?: number | null
+    user_interval_seconds?: number | null
+    retry_interval_seconds?: number | null
+    user_timeout_seconds?: number | null
+    quiet_hours_deferred?: number | null
+    timed_out_users?: number | null
     last_run_at?: string | null
     last_success_at?: string | null
     last_error_at?: string | null
@@ -258,6 +362,45 @@ export interface WeeklyLearningReportStep {
   estimated_minutes: number
 }
 
+export interface WeeklyConsolidationSource {
+  kind: 'note' | 'review' | 'wrong_question'
+  id: number
+  title: string
+  excerpt: string
+  route: string
+  observed_at: string | null
+  ownership: 'mnemox' | 'obsidian_read_only' | 'obsidian_conflict'
+  source_ref: string
+}
+
+export interface WeeklyKnowledgeConsolidation {
+  version: number
+  draft_key: string
+  content_hash: string
+  week_start: string
+  week_end_exclusive: string
+  scan_start_utc: string
+  scan_end_utc: string
+  scan_end_inclusive: boolean
+  source_counts: {
+    notes: number
+    reviews: number
+    wrong_questions: number
+    total: number
+  }
+  source_limit_per_kind: number
+  truncated: Record<'notes' | 'reviews' | 'wrong_questions', boolean>
+  sources: WeeklyConsolidationSource[]
+  markdown: string
+  write_policy: {
+    mode: 'copy_only'
+    automatic_write: false
+    obsidian_write_allowed: false
+    imported_source_count: number
+    rollback: string
+  }
+}
+
 export interface WeeklyLearningReport {
   generated_at: string
   time_zone: string
@@ -267,6 +410,7 @@ export interface WeeklyLearningReport {
   next_steps: WeeklyLearningReportStep[]
   metrics: Record<string, unknown>
   coverage: Record<string, unknown>
+  consolidation: WeeklyKnowledgeConsolidation
   disclaimer: string
 }
 
@@ -460,6 +604,146 @@ export async function getAgentStatus(): Promise<AgentRuntimeInfo | null> {
     return await apiFetch<AgentRuntimeInfo>('/api/agent/status')
   } catch {
     return null
+  }
+}
+
+export async function prepareAgentKernel(resumeFromJobId?: string): Promise<AgentKernelPreparedJobResponse | null> {
+  try {
+    return await apiFetch<AgentKernelPreparedJobResponse>('/api/agent/kernel/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        resume_from_job_id: resumeFromJobId || null,
+        max_steps: 6,
+      }),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function runPreparedAgentKernel(preparedJobId: string): Promise<AgentKernelRunResponse | null> {
+  try {
+    return await apiFetch<AgentKernelRunResponse>('/api/agent/kernel/run', {
+      method: 'POST',
+      body: JSON.stringify({ prepared_job_id: preparedJobId }),
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function cancelAgentJob(jobId: string): Promise<{ job: Record<string, unknown>; changed: boolean } | null> {
+  try {
+    return await apiFetch<{ job: Record<string, unknown>; changed: boolean }>(
+      `/api/agent/jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    )
+  } catch {
+    return null
+  }
+}
+
+export async function prepareAgentKernelAction(
+  jobId: string,
+  actionId: string,
+): Promise<AgentKernelActionDraftResponse | null> {
+  try {
+    return await apiFetch<AgentKernelActionDraftResponse>(
+      `/api/agent/jobs/${encodeURIComponent(jobId)}/actions/${encodeURIComponent(actionId)}/draft`,
+      { method: 'POST' },
+    )
+  } catch {
+    return null
+  }
+}
+
+export async function confirmAgentKernelAction(
+  jobId: string,
+  actionId: string,
+  draftId: string,
+): Promise<AgentKernelActionExecuteResponse | null> {
+  try {
+    return await apiFetch<AgentKernelActionExecuteResponse>(
+      `/api/agent/jobs/${encodeURIComponent(jobId)}/actions/${encodeURIComponent(actionId)}/confirm`,
+      { method: 'POST', body: JSON.stringify({ draft_id: draftId }) },
+    )
+  } catch {
+    return null
+  }
+}
+
+export async function streamAgentJobEvents(
+  jobId: string,
+  handlers: AgentJobStreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<AgentJobStreamOutcome> {
+  try {
+    const response = await fetch(`/api/agent/jobs/${encodeURIComponent(jobId)}/events`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'text/event-stream' },
+      signal,
+    })
+    if (!response.ok || !response.body) {
+      handlers.onError?.(`http_${response.status}`)
+      return 'error'
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    const dispatchBlock = (block: string): AgentJobStreamOutcome | null => {
+      const data = block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart())
+        .join('\n')
+      if (!data) return null
+      try {
+        const payload = JSON.parse(data) as Record<string, any>
+        if (payload.type === 'snapshot' && payload.job) handlers.onSnapshot?.(payload.job)
+        if (payload.type === 'log' && payload.log) handlers.onLog?.(payload.log)
+        if (payload.type === 'terminal' && payload.job) {
+          handlers.onTerminal?.(payload.job)
+          return 'terminal'
+        }
+        if (payload.type === 'timeout') {
+          handlers.onTimeout?.(String(payload.job_id || jobId))
+          return 'timeout'
+        }
+        if (payload.type === 'error') {
+          handlers.onError?.(String(payload.code || 'stream_error'))
+          return 'error'
+        }
+      } catch {
+        handlers.onError?.('invalid_stream_event')
+        return 'error'
+      }
+      return null
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() || ''
+      for (const block of blocks) {
+        const outcome = dispatchBlock(block)
+        if (outcome) {
+          await reader.cancel().catch(() => undefined)
+          return outcome
+        }
+      }
+      if (done) {
+        const outcome = buffer ? dispatchBlock(buffer) : null
+        return outcome || 'ended'
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') return 'aborted'
+    handlers.onError?.('stream_unavailable')
+    return 'error'
   }
 }
 

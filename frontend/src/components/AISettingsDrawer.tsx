@@ -74,6 +74,8 @@ interface EditState {
   test_model: string
   max_context_tokens?: number | null
   max_output_tokens?: number | null
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
 }
 
 interface ProviderFeedback {
@@ -133,6 +135,8 @@ function buildProviderEditStates(data: AIProvider[]): Record<string, EditState> 
       test_model: resolveValidationModel(p.model, p.model, availableModels),
       max_context_tokens: p.max_context_tokens ?? null,
       max_output_tokens: p.max_output_tokens ?? null,
+      input_price_per_million: p.input_price_per_million ?? null,
+      output_price_per_million: p.output_price_per_million ?? null,
     }
   }
   return states
@@ -320,6 +324,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
     updateData.available_models = selectedModels
     updateData.max_context_tokens = edit.max_context_tokens || null
     updateData.max_output_tokens = edit.max_output_tokens || null
+    updateData.input_price_per_million = edit.input_price_per_million ?? null
+    updateData.output_price_per_million = edit.output_price_per_million ?? null
 
     try {
       const result = await updateProvider(providerName, updateData)
@@ -338,6 +344,8 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
           test_model: resolveValidationModel(edit.test_model, result.model, savedModels),
           max_context_tokens: result.max_context_tokens ?? null,
           max_output_tokens: result.max_output_tokens ?? null,
+          input_price_per_million: result.input_price_per_million ?? null,
+          output_price_per_million: result.output_price_per_million ?? null,
         },
       }))
       notifyAIProvidersUpdated({
@@ -457,7 +465,11 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
 
   const updateTokenEditState = (
     providerName: string,
-    field: 'max_context_tokens' | 'max_output_tokens',
+    field:
+      | 'max_context_tokens'
+      | 'max_output_tokens'
+      | 'input_price_per_million'
+      | 'output_price_per_million',
     value: number | null,
   ) => {
     setEditStates((prev) => ({
@@ -1578,6 +1590,42 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       </div>
                       <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#999' }}>
                         上下文上限会用于后续 RAG / 搜索 / 记忆裁剪；输出上限会直接传给支持的模型供应商。过高可能增加费用和延迟。
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12, marginBottom: 16 }}>
+                      <div>
+                        <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                          输入单价（USD / 百万 Token）
+                        </div>
+                        <InputNumber
+                          min={0}
+                          max={1000000}
+                          step={0.01}
+                          precision={6}
+                          style={{ width: '100%' }}
+                          placeholder="按供应商账单填写"
+                          value={edit.input_price_per_million ?? undefined}
+                          onChange={(value) => updateTokenEditState(provider.provider_name, 'input_price_per_million', value ?? null)}
+                        />
+                      </div>
+                      <div>
+                        <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>
+                          输出单价（USD / 百万 Token）
+                        </div>
+                        <InputNumber
+                          min={0}
+                          max={1000000}
+                          step={0.01}
+                          precision={6}
+                          style={{ width: '100%' }}
+                          placeholder="按供应商账单填写"
+                          value={edit.output_price_per_million ?? undefined}
+                          onChange={(value) => updateTokenEditState(provider.provider_name, 'output_price_per_million', value ?? null)}
+                        />
+                      </div>
+                      <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#666' }}>
+                        两项都填写后，Agent 会用供应商返回的真实 Token 计算参考成本；未填写时只记录 Token，不猜测价格。
                       </div>
                     </div>
 

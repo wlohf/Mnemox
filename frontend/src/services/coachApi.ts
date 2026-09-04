@@ -165,12 +165,16 @@ export interface CoachPreferences {
   enabled: boolean
   proactive_enabled: boolean
   desktop_notifications_enabled: boolean
+  time_zone: string
   quiet_hours_start?: string | null
   quiet_hours_end?: string | null
   max_nudges_per_day: number
   min_minutes_between_nudges: number
   allowed_channels: string[]
   disabled_skill_ids: string[]
+  proactive_last_evaluated_at?: string | null
+  proactive_next_evaluate_at?: string | null
+  proactive_failure_count?: number
   updated_at?: string | null
 }
 
