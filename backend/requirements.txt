@@ -41,3 +41,6 @@ cryptography>=42.0.0
 # PostgreSQL
 asyncpg>=0.29.0
 alembic>=1.13.0
+
+# Optional Graph Backend runtime (service remains disabled by default)
+neo4j>=6.3,<7
