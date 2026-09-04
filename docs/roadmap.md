@@ -3,7 +3,7 @@
 > 状态：维护中
 >
 > 基线日期：2026-08-03
-> 最近核查：2026-08-23
+> 最近核查：2026-09-04
 > 上游决策：[2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)
 
 本文件是"接下来做什么、按什么顺序做"的唯一权威来源。需求范围见 [需求基线](requirements.md)，实现约定见 [技术基线](technical.md)，执行状态见 [进度文档](progress.md)。每个阶段收口时更新本文件与进度文档。
@@ -24,12 +24,13 @@
 
 ## 1. 轨道总览
 
-| 轨道 | 主题 | 前置 | 状态（2026-08-23 复核） |
+| 轨道 | 主题 | 前置 | 状态（2026-09-03 复核） |
 | --- | --- | --- | --- |
 | 立即（小胜利） | 自引激励收尾 + FSRS 调度替换 | 无 | 🔶 主体完成（FSRS 优先、SM-2 降级；笔记引用冷却与 Coach 反馈已接入；版本化迁移、离线验证和一次性 PostgreSQL 16 演练已完成；正式生产升级按发布窗口执行） |
 | Phase 0 | Beta 稳定化 + 仓库卫生 | 无（与"立即"并行） | 🔶 主体收口中（授权/注入/RAG 可见化主体、主线整合和远程旧分支清理已完成；Chromium 草案确认、PostgreSQL 16 与 Windows smoke 已通过 GitHub CI；真实 Windows Electron E2E 待补） |
 | Phase 1 | 四层学习智能底座：数据契约、事件投影、混合检索、概念图、时态记忆、学习者模型、Obsidian 与联想 | Phase 0 主体验收（数据边界允许并行收口） | 🔶 MVP 持续收口（统一检索、资料生命周期、SQL 概念审核/来源、可解释学习推荐、SQL 时态记忆与 Coach 教学行为闭环均已实现；PostgreSQL 备份、恢复和临时库升级已实演，正式源库升级与真实浏览器专项验收仍待发布窗口） |
-| Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 原生 AgentKernel 与 opt-in 的“复习积压”服务端切片已实现；框架 Spike、调度扩展、自学习归因、知识巩固写回仍未开始 |
+| Phase 2 | AgentRuntime 垂直切片：原生 Kernel/LangGraph 对比、后台调度、自学习、知识巩固 | Phase 1 收口 | 🔶 已正式进入受控纵向切片：原生 Kernel 具备持久任务、恢复/取消、SSE、预算/用量对账和确认式行动；opt-in 调度已补齐 catch-up、时区、免打扰、超时和多实例跳锁；自学习 v0 已新增默认关闭的确定性 A/A 观察；知识巩固已接本地自然周扫描、稳定来源版本和 copy-only Markdown 草案。框架/真实账单抽样、远程 PostgreSQL 验收、真人样本、四层来源扩展和写回协议仍未完成 |
+| Mnemox V2 | Claim 中心知识图谱：契约、SQL Claim、抽取、归一、Association V2、Sparse、Neo4j/Graphiti 条件 Shadow | Stage 0～3 已验收；Stage 4 进入受控实现 | 🔶 Stage 4 后端纵向切片已落地：ClaimRelation、GraphStore/SqlGraphStore、`/api/knowledge/associate`、feature flag 回滚、确定性 Feature Ranker 与离线 V1/V2 对照均已接入；合成集显式 Recall@5 保持 `1.0`、隐式从 `0.0` 提升到 `1.0`，隔离/删除残留/无证据展示/负例误关联均为 `0`。真实人工牵强率、真实语料与产品灰度尚未验收，因此不标记 Stage 4 完成，Association V1 仍保留主线回滚。 |
 | Phase 3 | 生态：MCP server、语音、AnkiConnect、一键 Demo | Phase 2 | 未开始 |
 
 ## 2. 立即（小胜利轨道）
@@ -62,7 +63,7 @@
 | # | 事项 | 完成标准 | 状态 |
 | --- | --- | --- | --- |
 | 1 | 规范数据契约 | 新增/演进 `learner_evidence`、`user_concept_state`、记忆声明、`projection_outbox` 与检索投影；定义稳定 ID、版本、删除和重建语义 | ✅ 学习证据、计数、记忆事实身份/唯一约束/冲突关系、outbox、资料投影与概念别名/来源/审计均具备版本化 SQL 迁移、用户隔离和派生删除语义 |
-| 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 outbox 幂等、DLQ、分页回放、跨实例心跳与 PostgreSQL 16 多 worker CI 已通过；资料投影已补 `ingest/refresh/forget/rebuild/retry`、配置失效和失败删除墓碑；正式生产升级待发布窗口 |
+| 2 | 事件与投影 | 领域数据与 `LearningEvent` 同事务；服务层不得私自提交调用方 unit of work；投影任务具备幂等、重试、状态、重放和按用户删除；至少一个真实投影流完成回放 | 🔶 outbox 幂等、DLQ、分页回放、跨实例心跳与 PostgreSQL 16 多 worker CI 已通过；资料投影已补 `ingest/refresh/forget/rebuild/retry`、配置失效和失败删除墓碑，投影身份使用 PostgreSQL/SQLite 原子冲突处理；用户长操作持全局配置共享锁和同用户 fencing，配置保存/热重载/失效标记持排他锁，二者不会交错；画像投影和 Agent 只读工具已改为 flush-only、调用方提交，画像刷新用 savepoint 隔离失败，学习快照保持纯读，画像首次写入使用 PostgreSQL/SQLite 原子 upsert 并限制冲突更新字段；服务/Agent 的剩余提交点已有所有权理由清单和 AST 双向门禁；Agent/Coach/事件/记忆/画像/outbox 主链已统一 naive UTC 入库与 RFC 3339 `Z` 边界，显式用户时区继续负责自然日/周；Agent、RAG、检索投影、outbox/DLQ 和 worker 失败已统一幂等脱敏、稳定错误码与安全关联指纹，历史数据库诊断已有 dry-run/显式 apply/可回滚幂等清理；历史墙上时间统计、HTTP 错误码覆盖及外部日志保留治理仍需逐步迁移，正式生产升级待发布窗口 |
 | 3 | 统一检索与资料生命周期 | `RetrievalRouter` 收敛资料/笔记/记忆/概念/学习状态；资料投影具备版本、删除、重建、关键词降级、用户隔离和离线质量门禁 | ✅ 主链完成：主聊天、ChatAgent、AgentKernel 与资料搜索使用统一 Router；SQL chunk + Chroma 投影、资料更新、删除恢复、前端状态及 16-case 质量集已接入 |
 | 4 | Qdrant 检索 Spike | 对同一资料集比较 dense+sparse/BM25+rerank 与现有基线；通过 Windows 打包、无 embedding 降级、删除/重建、延迟和成本门槛后再决定是否采纳 | ✅ 已完成受控 go/no-go：Qdrant Local 真机对比未证明明显质量优势，轻量词项重排只追平 Recall@5；保留 Chroma，Qdrant 不进入运行时依赖 |
 | 5 | 概念图谱 MVP 与 GraphStore Spike | 三表、上传抽取、错题回填、人工改名/合并/删除、来源和质量集完成；只有 SQL 不足时才评估 Neo4j，Spike 不通过不影响 SQL 图 | ✅ SQL 主链已完成：资料自动候选/别名/先修关系、审核、来源版本、更新/删除清理、改名/合并/拆分/删除、错题回填、跨用户/环路拦截和先修缺口均有专项回归；SQL 能满足当前规模，Neo4j 不引入 |
@@ -91,15 +92,70 @@
 
 | # | 事项 | 完成标准 |
 | --- | --- | --- |
-| 1 | AgentRuntime Spike | 用“复习积压”场景比较原生 AgentKernel 与 LangGraph；当前原生路径已实现 opt-in 的 PostgreSQL 低频扫描、Agent 面板建议、最小运行记录及下轮重试提示，仍需验证 SQLite/PostgreSQL 持久化、SSE、暂停/恢复、取消、草案确认、用户隔离、回放、成本和桌面分发；未通过则继续原生 Kernel |
-| 2 | AgentKernel 单一纵向闭环 | 一个主动触发场景完成多步只读工具调用、SSE 步骤、行动草案、用户确认执行、旧 Planner fallback、执行日志回放；运行时选型未收口前不能替代旧 Planner |
-| 3 | 后台调度器 MVP | 先支持一个触发器（复习积压）的启动/恢复 catch-up；明确生命周期、幂等键、锁、重试、超时、时区、免打扰和多实例语义；所有触达经 Coach 治理 |
-| 4 | 干预效果自学习 v0 | 先落不可变曝光、接受/执行和后续行为事件；定义归因窗口和四项指标；确定性分桶统计先于 bandit，并置于 feature flag 后 |
-| 5 | 知识巩固与周报 | 先定义扫描范围、去重、来源追溯和 Obsidian 文件所有权；生成可回滚草案，再实现写回；夜间任务必须可取消、可重试、可观测 |
+| 1 | AgentRuntime Spike | 用“复习积压”场景比较原生 AgentKernel 与 LangGraph；原生路径现已具备持久任务、短租约、过期回收、受限上下文 checkpoint、用户确认的下一步精确续跑、SSE 实时订阅与断线回放、用户隔离、协作取消、预算护栏、供应商真实 Token/配置单价参考成本对账和幂等行动确认，仍需 PostgreSQL 候选验收、真实密钥账单抽样核对和桌面分发对照；未证明 LangGraph 有净收益则继续原生 Kernel |
+| 2 | AgentKernel 单一纵向闭环 | 多步只读工具调用、调试前端入口、租约过期回收、checkpoint 精确续跑、持久日志 SSE 和确认式行动草案已接入，任务在首个模型调用前持久化，写入只接受服务端凭据并重新验证用户/目标；模型调用次数与估算 Token 的单次/逐用户日上限会在下一次调用前硬停止，调用后归一化 OpenAI-compatible、Claude 和 Gemini usage，按用户配置单价计算参考成本，并把未取得 usage 的调用单独计数。Provider/模型/预算失败会显式生成规则简报，原任务继续保留失败状态与 checkpoint，降级行动仍走服务端确认凭据。同一用户运行通过 PostgreSQL 用户行锁串行化。继续补真实账单抽样核对；运行时选型未收口前不能替代旧 Planner |
+| 3 | 后台调度器 MVP | “复习积压”已按 opt-in 用户持久化计划和幂等运行键；代码与本地回归已覆盖启动 catch-up、IANA 时区、本地日界线、跨午夜免打扰延后、单用户硬超时、完成/跳过/失败状态、有界指数退避和 `SKIP LOCKED` 多实例防重复；远程 PostgreSQL 16 双 worker 验收待候选 workflow，所有触达仍经 Coach 治理 |
+| 4 | 干预效果自学习 v0 | 默认关闭的 feature flag 已接确定性用户级 A/A 分桶；实验元数据随不可变 Coach 生命周期事件保存，用户级报告按 7 天成熟窗统计接受、开始、完成、真实领域完成、放弃和拒绝，并报告未埋点覆盖。两组策略完全相同、决策就绪度固定为 false；只有积累真人覆盖、通过 A/A 完整性校验并新增独立决策后才允许 A/B，当前禁止 bandit 和自动调参 |
+| 5 | 知识巩固与周报 | 第一条只读切片已按 IANA 时区扫描本地自然周，聚合用户自有的笔记、已完成复习和错题线索；来源带内容版本指纹、稳定草案键、页面路由及 Mnemox/Obsidian 只读/冲突所有权，vault `missing` 来源不进入草案。Agent 页只展示有限摘录并复制 Markdown，不创建笔记、不隐式更新画像、不回写 Obsidian。下一步通过四层路由补资料、概念和时态记忆证据；只有另立写回协议、冲突与回滚验收后才讨论写回，夜间任务仍须可取消、可重试、可观测 |
 
 阶段验收：一次典型干预可完整回放"为何触发、依据什么、展示给谁、用户是否接受/执行、后续行为变化"；失败、取消、重试和降级也有状态记录。只有该证据和灰度指标齐全才算 Phase 2 完成。
 
-## 6. Phase 3：生态
+## 6. Mnemox V2：Claim 中心知识图谱
+
+目标与完整阶段门禁见 [Mnemox V2 Claim 中心知识图谱实施设计](superpowers/specs/2026-09-02-mnemox-v2-claim-centered-knowledge-graph-implementation.md)。本轨道继续以 SQLite/PostgreSQL 为规范来源，第一版关系查询固定为 `SqlGraphStore`；Chroma、Sparse、Neo4j 和 Graphiti 都只能是可重建投影或 Shadow 候选。
+
+### 6.1 与当前 Phase 2 的执行窗口
+
+1. Stage 0 只增加文档、合成 fixture、离线 runner 和默认关闭配置，不触碰生产数据与请求路径，因此允许在当前 Phase 2 收口期间完成。
+2. 2026-09-02 产品负责人明确授权 Stage 1 先行，完成默认关闭的 Canonical Claim Schema、来源生命周期和双数据库门禁。
+3. 2026-09-03 产品负责人明确授权并依次验收 Stage 2～3：先完成统一 Extraction Schema、确定性/LLM 抽取、Evidence Grounding 和可恢复 run，再完成 Entity Resolution、知识 embedding 投影、人工审核与投影恢复；没有借此启动 Association V2 或外部图运行时。
+4. Stage 3 完成并验收后才进入 Stage 4；Stage 4 通过前，Association V2 不成为产品数据主线，V1 始终保留 feature flag 回滚。
+5. Stage 5 只能基于 Stage 4 的真实规模数据优化 Sparse/Reranker；Stage 6 用于 Neo4j/Graphiti Shadow 与 Go/No-Go。Stage 6 的 Runtime No-Go 不等于放弃图架构：按 [图基础设施提前建设策略](superpowers/specs/2026-09-04-mnemox-v2-graph-foundation-strategy.md) 保持 Architecture READY。
+6. Stage 0～6 工程/Spike 已完成；Stage 4/5 的真实人工牵强率、匿名语料与产品灰度继续作为质量验收后置。2026-09-04 追加“产品 + 技术学习 / 作品集”双目标后，新增 [图架构演进、技术选型与作品集目标决策](superpowers/specs/2026-09-04-mnemox-v2-graph-evolution-and-portfolio-architecture.md)：Neo4j 重新打开为 Optional Graph Backend 建设目标，Graphiti 重新打开为独立 Temporal/Episodic Vertical Slice；默认产品 Runtime 仍不强制依赖二者。
+
+### 6.2 阶段状态
+
+| Stage | 范围 | 前置与退出门禁 | 状态 |
+| --- | --- | --- | --- |
+| 0 | 契约、评测、关闭开关 | ≥50 联想问题、≥50 Claim/Evidence Unit；无敏感数据；V1 baseline 可重复且零外部模型调用；路线图明确窗口 | ✅ 已完成：56 个问题、50 个标注 Unit；显式 Recall@5/MRR `1.0`，隐式均为 `0.0`；隔离/删除残留 `0`；九个开关默认关闭 |
+| 1 | Canonical Claim Schema | Stage 0 验收；SQLite 新旧库和 PostgreSQL 迁移、隔离、版本与删除门禁；不接自动抽取或 Association V2 | ✅ 已完成：Source/Revision/Unit/Claim/Evidence 五表、迁移 `20260902_19`、Material/Note 生命周期和手工 Grounding 已通过 SQLite 与全新 PostgreSQL 16 验收 |
+| 2 | 统一抽取与 Grounding | Stage 1；Evidence 覆盖 100%，无定位 Claim 写入为 0，自动结果 pending，可恢复/降级 | ✅ 已完成：严格共享 Schema、确定性/LLM extractor、精确/归一 Grounding、pending Claim、迁移 `20260903_20` 与可租约/重试/取消/partial 的 durable run 已通过 SQLite 和全新 PostgreSQL 16 验收 |
+| 3 | Entity Resolution 与 Knowledge Embedding | Stage 2；exact/alias、Top-5、零自动语义合并、隔离/删除/重建门禁 | ✅ 已完成：迁移 `20260903_21`、exact/alias/人工复用 resolver、pending 语义候选、ClaimConceptLink、四类知识投影、compact outbox、审核抽屉和双数据库门禁均通过；记录式合成 Top-5 Recall `1.0`、跨用户/自动语义合并/删除重建残留 `0` |
+| 4 | Association V2 + SqlGraphStore | Stage 3；隐式 Recall@5 相比 V1 提升 ≥20 个百分点，无证据展示 0，V1/V2 可切换 | 🔶 后端纵向切片已完成并通过合成门禁：显式 `1.0 → 1.0`、隐式 `0.0 → 1.0`，跨用户/删除残留/无证据展示/负例误关联均为 `0`；Judge 故障会回退 confirmed graph path。尚缺真实人工标注的牵强/不支持关联率 ≤5%、真实语料与产品灰度验收，因此暂不标记 Stage 4 完成。 |
+| 5 | Sparse 规模化与 Reranker | Stage 4；质量不退化，目标规模 p95/内存改善，reference fallback 可用 | ✅ **工程阶段已收口，真实质量验收单列后置**：`SparseKnowledgeIndex` 默认 `auto`，SQLite→FTS5、PostgreSQL→原生 GIN FTS，查询异常回退 reference；claim-level dirty + `sparse_knowledge` outbox、target 隔离和 savepoint 失败保护均已接入。5,000 Claim SQLite p95 `423.94ms → 10.58ms`（约 `40.07x`），PostgreSQL 16 `407.20ms → 29.03ms`（约 `14.03x`），parity 均为 true；可选 LLM reranker 复用用户 Provider，并记录模型/延迟/token/配置成本，异常或超时退回 Feature Ranker。真实匿名中文/双语语料与真人牵强率仍未验收，不把工程收口误写成产品质量验收完成。 |
+| 6 | Neo4j / Graphiti Shadow Spike | Stage 5；分别验证图查询投影与时态关系层，只记录脱敏差异，不改变用户结果，完成完整 go/no-go | ✅ **已完成，双 NO-GO**：Neo4j 在 1000/5000 Claim 合成图上 ID/path/score 一致率均 `1.0`、隔离/正文泄漏为 0；5000 combined p95 `33.97ms → 19.20ms`，但 direct 无稳定收益，且测试容器约 `0.7–1.0 GiB` 内存 / `~0.52 GiB` 数据盘，新增常驻服务/备份/凭据/桌面双后端成本，净收益门槛失败。Graphiti 0.30.1 已通过合法 group_id、as-of temporal search、来源版本失效、故障隔离和真实 Neo4j BM25-only 集成；100/1000 facts Recall@5 均与 SQL 为 `1.0`，但 p95 分别 `14.24/19.15ms`，慢于 SQL `8.28/9.62ms`，且正常 ingestion 还需 embedding/LLM。详见 2026-09-04 最终 ADR。 |
+| 7 | Optional Graph Backend + Graph-native Feature + Temporal Slice | 在 Stage 6 安全/正确性证据上，把 Neo4j 做成可选 Graph Backend，并实现 Knowledge/Learning Path、Explainable Multi-hop；Graphiti 做独立 Temporal/Episodic Vertical Slice。SQL Canonical、desktop fallback、Shadow、Rebuild、灰度与回滚继续保留 | ✅ **工程阶段已收口，默认仍为 SQL**：Graph Domain、Optional Neo4j selector/readiness/fallback/rollout、Knowledge/Learning Path V1、Explainable Multi-hop Association V1、Graphiti Temporal Slice、Compose optional profile、真实 Neo4j/Graphiti integration、前后端回归和 Architecture Story 均已完成。最终宽回归 `149 passed`，真实 Neo4j/Graphiti 图数据库专项另有 `6 passed`，前端 `27 files / 93 tests` + build/lint 通过。Graphiti benchmark correctness 为 `1.0` 但明显慢于 SQL，因此保持 Experimental/default-off。真实中文/双语人评不伪装成工程验收，下一阶段通过云端 WebUI 导入用户自己的技术笔记做 dogfooding。 |
+
+### 6.3 上线前 2～4 周图架构深化
+
+当前没有强制上线 deadline，因此将剩余窗口用于“做深而不是做多”。权威实施计划：
+
+`docs/superpowers/plans/2026-09-04-mnemox-v2-neo4j-graphiti-implementation-plan.md`
+
+执行优先级：
+
+- [x] **P0 图领域模型**：已冻结 Node / Edge / Relation type / 方向 / Evidence / 生命周期语义；见 `2026-09-04-mnemox-v2-graph-domain-contract.md`。
+- [x] **P1 GraphStore 契约**：storage-neutral path DTO、显式 traversal direction、`find_concept_paths(...)` 能力边界和 `GRAPH_BACKEND=sql|neo4j` selector 已完成；SQL 通用 path 明确 unsupported，不为 parity 自研通用图引擎。
+- [x] **P2 Neo4j 可选运行时地基**：Projection dirty propagation、rebuild-only two-slot coalescing、同用户跨进程串行、初始化/caught-up/Lag/DLQ readiness、request-scoped fallback、稳定百分比/用户 canary 灰度、Shadow 保留与真实 Neo4j parity 已收口；默认仍为 SQL，真实长期灰度指标继续在上线阶段观察。
+- [x] **P3 Graph-native 产品能力**：Knowledge / Learning Path V1 与 Explainable Multi-hop Association V1 均已完成；
+- [ ] **P4 真实数据与 Benchmark**：工程 benchmark 已覆盖 Neo4j 与 Graphiti correctness/p50/p95/rebuild/fallback；中文/英文/双语真实笔记的人评移到 WebUI dogfooding，仍保持未完成状态；
+- [x] **P5 Graphiti Temporal Slice**：reviewed `MemoryDeclaration` → model-free Graphiti temporal projection → current/as-of/invalidation → SQL rehydrate 已完成，并通过真实 Graphiti + Neo4j 集成与 60/300 declarations benchmark；
+- [ ] **P6 可选一个 Graph Analytics**：bridge concept / community / central concept 三选一，有产品入口才做；
+- [x] **P7 上线与面试材料工程收口**：默认/graph Compose 边界、真实 integration、Architecture Story、ADR、Benchmark 与回滚 checkpoint 均已完成；可演示的真实笔记 WebUI dogfooding 作为紧接 Stage 7 的产品验证入口继续建设。
+
+如果时间不足，宁可不做 Graph Analytics，也必须把 **Optional Neo4j Backend + Knowledge Path + Graphiti Temporal Slice + Benchmark** 做完整。
+
+Stage 0 与 Stage 3 的离线入口：
+
+```bash
+cd backend
+venv/bin/python evaluate_knowledge.py --min-explicit-recall-at-5 0.95 --summary-only
+venv/bin/python evaluate_entity_resolution.py --summary-only
+```
+
+合成 baseline 和记录式 embedding 排名固定的是回归契约，不等同真实 provider 或真实用户验收。Stage 1 来自 2026-09-02 的明确授权，Stage 2～3 来自 2026-09-03 的连续明确授权；Stage 3 授权不自动延伸到 Stage 4、Association V2 或图后端运行时。
+
+## 7. Phase 3：生态
 
 | 事项 | 说明 |
 | --- | --- |
@@ -109,7 +165,7 @@
 | 一键 Demo | 示例数据 + 快速体验（沿用需求基线 P2） |
 | 发布自动化 | 版本、构建、Release 资产、清单自动化 |
 
-## 7. 冻结清单（默认不做）
+## 8. 冻结清单（默认不做）
 
 - Markdown 编辑器新功能（保留现状供独立使用）。
 - 新增业务页面（除非能回答"降低了哪个行为的执行阻力"）。
@@ -119,8 +175,9 @@
 - Microsoft GraphRAG 不纳入运行时或离线索引；LightRAG 只作评估与参考，不进入依赖树。
 - 不把 Cognee、Mem0、Graphiti、Qdrant 或 Neo4j 作为用户事实、掌握度或权限的唯一来源。
 - 在没有数据迁移、归因链路和回滚开关前，不引入 bandit 或其他在线策略学习。
+- Mnemox V2 Stage 4 的真实人工质量验收继续单列；Stage 6 已于 2026-09-04 双 NO-GO，因此不引入 Neo4j/Graphiti 默认运行时、产品切流或桌面服务，除非未来满足重评 ADR 的新证据触发条件。
 
-## 8. 维护约定
+## 9. 维护约定
 
 - 每个阶段收口：更新本文件状态、`progress.md` 快照，并在 `docs/updates/` 记录周期变更。
 - 顺序原则：一条线收口再开下一条；跨阶段并行仅限"立即轨道 + Phase 0"。

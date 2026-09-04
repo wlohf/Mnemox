@@ -12,11 +12,11 @@
 - 新增 Alembic 迁移 `20260903_22` 和 SQL `claim_relations`，支持 `supports`、`contradicts`、`refines`、`exemplifies`、`analogous_to`，保留置信度、审核状态、推导类型、rationale 与 evidence provenance。
 - 新增 `GraphStore` protocol 与默认 `SqlGraphStore`；关系查询仍以 SQLite/PostgreSQL 为权威来源，不依赖外部图数据库。
 - `SqlGraphStore` 只返回当前用户、active Source、current Revision、confirmed/active Claim 且存在 Evidence 的结果；删除、superseded、跨用户 Claim 均不可进入产品结果。
-- 新增 `claim_relation_service`，服务层保持 flush-only，事务仍由请求或 worker 入口拥有。
+- 新增 `claim_relation_service`，写入关系前同时校验两端 Claim 的用户归属、active Source、current Revision、active Claim 与 Evidence；服务层保持 flush-only，事务仍由请求或 worker 入口拥有。
 - 新增 `association_v2_service`：
   - 通过显式 Concept/Alias 与来源 ClaimConceptLink 构建 Query anchor；
   - 融合 exact、知识 Dense（可用时）、SQL sparse reference、confirmed graph path；
-  - 按证据身份与来源去重；
+  - 按证据身份与来源去重；有明确 source context 时排除同一 Source 的其他 Claim，避免同源内容挤占跨资料联想结果；
   - 使用版本化确定性 Feature Ranker；
   - 无 Evidence 的候选永不展示；
   - Judge 可选且失败时只保留 confirmed graph path，不影响安全降级。
@@ -31,7 +31,14 @@
 
 ## 验证结果
 
-知识层与跨模块专项回归均已通过；最近一次 Stage 4 + 生命周期相关子集为 `38 passed`，此前扩大跨模块子集为 `68 passed`。完整后端 `pytest -q` 在当前 DevSpace 300 秒执行窗口内未完成，因此不记录为“全量通过”。
+专项与生命周期回归（加入关系写入生命周期与同源排除回归后复跑）：
+
+```text
+68 passed in 89.97s
+38 passed in 58.87s  # Stage 4 + lifecycle/schema/transaction 核心子集复跑
+```
+
+覆盖 Association V2、Knowledge Source lifecycle、Extraction、Entity Resolution、Knowledge Projection、Schema Migration、Transaction Ownership 与 Release Preflight。全量 `pytest -q` 在当前 300 秒执行窗口内未完成，因此不把“全量后端通过”作为本轮验收结论；后续 CI/发布候选仍需完成完整测试矩阵。
 
 56-case 合成离线对照：
 
@@ -47,7 +54,7 @@
 | 负例误关联 | - | 0 |
 | 外部模型调用 | 0 | 0 |
 
-本次本地离线运行 V2 p95 约 `47 ms`，高于 V1；这不阻塞当前质量验证，但需要在 Stage 5 用真实规模数据评估 Sparse 索引与 reranker 性能。
+本轮复跑中 V2 显式 p95 约 `35 ms`、隐式 p95 约 `47 ms`，仍明显高于 V1（约 `13 ms` / `7 ms`）；这不阻塞当前质量验证，但需要在 Stage 5 用真实规模数据评估 Sparse 索引与 reranker 性能。
 
 ## 为什么暂不标记 Stage 4 完成
 
