@@ -1,0 +1,23 @@
+# Owner-only cloud dogfooding overlay for post-Stage-7 Knowledge Lab testing.
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.public.yml \
+#     -f docker-compose.dogfood.yml \
+#     --profile graph up -d
+#
+# This file contains no credentials. It deliberately enables experimental
+# product features only when this overlay is explicitly included.
+services:
+  backend:
+    environment:
+      KNOWLEDGE_V2_ENABLED: "true"
+      KNOWLEDGE_LLM_EXTRACTION_ENABLED: "true"
+      KNOWLEDGE_EMBEDDING_ENABLED: "false"
+      ASSOCIATION_V2_ENABLED: "true"
+      KNOWLEDGE_PATH_ENABLED: "true"
+      ASSOCIATION_MULTIHOP_EXPLANATION_ENABLED: "true"
+      GRAPH_BACKEND: "neo4j"
+      NEO4J_GRAPH_ROLLOUT_PERCENT: "100"
+      GRAPHITI_ENABLED: "false"

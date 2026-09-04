@@ -73,6 +73,7 @@ uploads/
 .codegraph/
 .worktrees
 .worktrees/
+.safety/
 .pytest_cache/
 .playwright-cli/
 output/
