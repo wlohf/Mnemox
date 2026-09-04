@@ -1,7 +1,8 @@
 param(
-    [string]$Version = "1.3.0",
+    [string]$Version = "",
     [string]$Repo = "wlohf/Mnemox",
     [string]$ReleaseNotesPath = "",
+    [string]$Python = "python",
     [switch]$Draft
 )
 
@@ -10,6 +11,11 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Resolve-Path (Join-Path $ScriptDir "..")
 $DesktopReleaseDir = Join-Path $Root "release\desktop"
+
+if (-not $Version) {
+    $desktopPackage = Get-Content -Raw (Join-Path $Root "desktop\package.json") | ConvertFrom-Json
+    $Version = [string]$desktopPackage.version
+}
 
 if (-not $ReleaseNotesPath) {
     $ReleaseNotesPath = Join-Path $Root "release-notes-v$Version.md"
@@ -28,6 +34,17 @@ if (-not (Test-Path $LatestYmlPath)) {
 }
 if (-not (Test-Path $ReleaseNotesPath)) {
     throw "未找到发布说明：$ReleaseNotesPath"
+}
+
+Write-Host "[preflight] Verifying version, metadata, tag, clean tree and artifact hashes..."
+& $Python (Join-Path $Root "scripts\release_preflight.py") `
+    --version $Version `
+    --release `
+    --artifacts $DesktopReleaseDir `
+    --require-clean `
+    --require-tag
+if ($LASTEXITCODE -ne 0) {
+    throw "发布候选验收失败；未创建或修改 GitHub Release"
 }
 
 $token = $env:GITHUB_TOKEN

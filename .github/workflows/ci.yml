@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches:
@@ -169,6 +170,9 @@ jobs:
 
           print(f"Validated {len(revisions)} Alembic revision(s); head: {heads[0]}")
           PY
+
+      - name: Validate application version consistency
+        run: python3 scripts/release_preflight.py
 
   backend:
     name: Backend / Python 3.11

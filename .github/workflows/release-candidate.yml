@@ -1,0 +1,113 @@
+name: Release candidate acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate semantic version (must already be synchronized in source)
+        required: true
+        type: string
+      require_code_signature:
+        description: Require a valid Windows Authenticode signature
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gates:
+    uses: ./.github/workflows/ci.yml
+
+  windows-installer:
+    name: Windows installer / build and artifact acceptance
+    needs: quality-gates
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Validate candidate metadata before packaging
+        shell: pwsh
+        run: python scripts/release_preflight.py --version $env:RELEASE_VERSION --release --require-clean --reject-reused-tag
+
+      - name: Install locked JavaScript dependencies
+        shell: pwsh
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix desktop
+
+      - name: Build backend, frontend and NSIS installer
+        shell: pwsh
+        run: ./scripts/build_desktop_installer.ps1 -Python "python" -ElectronMirror "" -ElectronBuilderBinariesMirror ""
+
+      - name: Verify electron-builder update assets
+        shell: pwsh
+        run: python scripts/release_preflight.py --version $env:RELEASE_VERSION --release --artifacts release/desktop
+
+      - name: Verify Windows code signature
+        if: ${{ inputs.require_code_signature }}
+        shell: pwsh
+        run: |
+          $installer = Join-Path $PWD "release\desktop\Mnemox-Setup-$env:RELEASE_VERSION.exe"
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne "Valid") {
+            throw "Installer signature is not valid: $($signature.Status) $($signature.StatusMessage)"
+          }
+          Write-Host "[OK] Authenticode signer: $($signature.SignerCertificate.Subject)"
+
+      - name: Exercise silent NSIS installation layout
+        shell: pwsh
+        run: |
+          $installer = Join-Path $PWD "release\desktop\Mnemox-Setup-$env:RELEASE_VERSION.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "mnemox-install-smoke"
+          $process = Start-Process -FilePath $installer -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Silent installer exited with $($process.ExitCode)"
+          }
+          $required = @(
+            (Join-Path $installDir "Mnemox.exe"),
+            (Join-Path $installDir "resources\backend\mnemox-backend\mnemox-backend.exe"),
+            (Join-Path $installDir "resources\frontend\dist\index.html")
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              throw "Installed release is missing: $path"
+            }
+          }
+          Write-Host "[OK] Silent installer layout contains the app, backend and frontend"
+
+      - name: Upload accepted installer assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnemox-windows-${{ inputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/desktop/Mnemox-Setup-${{ inputs.version }}.exe
+            release/desktop/Mnemox-Setup-${{ inputs.version }}.exe.blockmap
+            release/desktop/latest.yml

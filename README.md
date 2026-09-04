@@ -4,7 +4,7 @@
 
 **不只是聊天助手，而是真正懂你学习规律的 AI 教练**
 
-当前发布版本仍为 `v1.3.0`。统一开发基线已整合 Phase 1 的学习者模型、同事务事件投影、SQL 时态记忆闭环、`RetrievalRouter`、可审核概念图谱和解释型学习推荐：资料、笔记、概念、记忆与学习状态共享检索边界；资料具备 SQL 分块、Chroma 混合召回、更新、删除、按用户重建及自动概念抽取。记忆以稳定事实键识别冲突，待确认候选不会覆盖当前事实，用户可审核、纠错、设置有效期并追溯替代历史；过期或删除会同步清理派生画像。推荐结合已确认先修缺口、FSRS、目标、错误记录和遗忘风险，并公开具体原因。Qdrant、Neo4j 与 Graphiti 均不进入当前运行时依赖。时态记忆模块及新增迁移已在 [PR #11](https://github.com/wlohf/Mnemox/pull/11) 通过 PostgreSQL 16、Chromium、Windows smoke 和其他 GitHub CI 门禁；正式数据库升级、真实 Electron 安装验收和新版发布需单独完成。
+Mnemox 是本地优先的个性化学习系统，把学习资料、笔记、行为、复习、记忆和 AI 教练连接为可追溯的学习闭环。Mnemox V2 以带来源版本和证据定位的 Claim 为知识层核心：SQL 保存规范事实，检索与图投影可以重建，自动抽取和语义归一遵守人工审核、用户隔离与安全降级边界。这里保持耐久的产品总览，不记录容易变化的阶段完成情况。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -20,11 +20,11 @@
 
 ## 文档维护
 
-- 文档导航：`/docs/README.md`
-- 当前需求基线：`/docs/requirements.md`
-- 路线图（阶段顺序与冻结清单的权威来源）：`/docs/roadmap.md`
-- 当前技术基线：`/docs/technical.md`
-- 当前项目进度：`/docs/progress.md`
+- [文档导航](docs/README.md) 是文档入口与导航结构的权威来源。
+- [路线图](docs/roadmap.md) 是当前 Phase/Stage 状态、执行顺序、完成标准与冻结清单的权威来源。
+- [技术基线](docs/technical.md) 是当前代码实现、运行边界与维护约定的权威来源。
+- [需求基线](docs/requirements.md) 维护产品需求范围。
+- [进度文档](docs/progress.md) 汇总版本、验证证据与已知限制；涉及 Phase/Stage 状态时以路线图为准。
 - 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
 - 笔记、上下文与记忆边界（2026-08-13，三层逻辑存储 / 三阶段检索）：`/docs/superpowers/specs/2026-08-13-note-context-memory-architecture.md`
 - 检索生命周期与质量决策（2026-08-22，资料投影 / 质量门禁 / Qdrant no-go）：`/docs/superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md`
@@ -78,7 +78,7 @@ flowchart TB
     SQL --> Learner["LearnerModel / FSRS\n可重算状态与复习调度"]
 ```
 
-SQL 与原始文件是规范来源；Chroma、未来候选向量库、图存储和运行时 checkpoint 都只能作为可重建投影。Qdrant、Neo4j、Graphiti 与 LangGraph 仍处于候选或未评估状态，不属于当前运行时依赖。
+SQL 与原始文件是规范来源；Chroma、未来候选向量库、图存储和运行时 checkpoint 都只能作为可重建投影。现有 Chroma 保持不变；Qdrant、Neo4j、Graphiti 与 LangGraph 仍处于候选或未评估状态，不属于当前运行时依赖。Neo4j/Graphiti 只有在形成可评测的 Claim 关系数据并满足路线图门槛后，才允许进入独立 Shadow。
 
 ---
 
@@ -626,59 +626,6 @@ Mnemox/
 ├── docker-compose.yml
 └── README.md
 ```
-
----
-
-## 当前状态
-
-### 已完成
-
-- [x] 联网搜索：官方 OpenAI Provider 可使用 Web Search，OpenAI-compatible 中转可通过本地工具调用搜索，工具不兼容时回退到应用层搜索结果注入
-- [x] Tavily 搜索设置：支持 Tavily Key、搜索深度、结果数、chunks、超时和 fallback 开关
-- [x] DuckDuckGo / Bing 最终兜底：无搜索 Key 或 Tavily/hosted/tool 搜索失败时仍可保留基础联网能力
-- [x] AI token 预算设置：支持上下文 token 上限、输出 token 上限和长对话历史裁剪
-- [x] AI 设置增强：供应商场景路由、RAG Embedding 配置、自定义中转、模型搜索、连接测试、供应商删除和路由清理
-- [x] AI 错误提示优化：常见 Key、模型、额度、Base URL、JSON 格式和 OpenAI-compatible 响应异常会转成可读中文提示
-- [x] 聊天工作区升级：会话路由、历史搜索、项目筛选、项目资料管理、左侧折叠栏、模型覆盖和流式回复
-- [x] 流式聊天持久化增强：聊天内容、学习会话记录、摘要、记忆、反思、错题检测和事件追踪分阶段提交
-- [x] 桌面体验修复：番茄钟记录恢复、历史对话直达路由、应用内更新检查和发布清单同步
-- [x] 多用户隔离测试补强：覆盖 AI Provider 配置、供应商删除、路由清理和 Agent 写入等关键路径
-- [x] 公开试用前稳定性增强：RAG embedding 异常降级、资料搜索关键词 fallback、Agent Planner 超时兜底、上传安全限制、生产 SECRET_KEY 校验
-- [x] AI 多轮对话（流式输出、会话持久化、项目分组）
-- [x] 多 AI 提供商运行时切换
-- [x] RAG 知识库（资料上传、向量化、检索注入）
-- [x] 学习行为事件追踪系统
-- [x] 用户画像自动计算（专注度/坚持度/最佳时段）
-- [x] AI 双层记忆系统（Episodic + Semantic）
-- [x] 番茄钟计时与统计
-- [x] 学习目标与 7 日计划生成
-- [x] 掌握度地图
-- [x] 错题本
-- [x] 间隔复习调度
-- [x] 笔记系统 + Obsidian 导入
-- [x] Docker 容器化部署
-- [x] 番茄钟中断原因分类（提前完成 / 临时中断 / 走神）+ 画像分析
-- [x] 自定义 Prompt 管理（10 种场景，可视化编辑）
-- [x] 用户画像可视化页面（雷达图 + 24小时热力图 + 薄弱点）
-- [x] 学习行为 EDA 分析报告（pandas + scipy + ECharts）
-- [x] AI 主动干预推送文案与每日学习报告
-- [x] Anki 风格记忆卡（AI 生成 / CSV 导入导出 / FSRS 优先、SM-2 降级调度）
-- [x] Toast UI Markdown 实时编辑器
-- [x] 主题、背景、系统版本检查等设置面板
-
-### 接下来计划
-
-2026-07-26 起，项目方向已固化为「把学习科学变成默认行为」：以行为转化为北极星（建议执行率、中断恢复时长、复习按时率、每周有效学习时段数），按五条轨道推进。2026-08-03 重新核查后，阶段状态以 [路线图](docs/roadmap.md) 和 [进度文档](docs/progress.md) 为准，目标架构与选型边界见 [学习智能底座决策](docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)。
-
-- [ ] **立即（小胜利）· 主体完成**：自引激励与 FSRS 主体已实现；版本化迁移、数据保留回归、PostgreSQL 离线 DDL 和一次性 PostgreSQL 16 升级演练已完成，正式生产升级仍按发布窗口执行
-- [ ] **Phase 0 · 部分完成**：授权审计、注入防护、RAG 可见化、PostgreSQL 16、Chromium 草案确认与 Windows smoke 已通过；真实 Windows Electron 启动/安装 E2E 仍待补
-- [ ] **Phase 1 · 四层底座 MVP 持续收口**：`RetrievalRouter`、资料投影生命周期、SQL 概念图谱、人工审核编辑、先修缺口、可解释推荐与 SQL 时态记忆冲突/替代/失效/纠错已经接入；下一模块为 Coach 教学行为反馈闭环
-- [ ] **Phase 2 · AgentRuntime 原型实现中**：多步只读 AgentKernel 原型已进入主线，但尚未替代现有 Planner；先比较 AgentKernel 与 LangGraph，再补 SSE、前端入口、草案确认、后台调度、自学习归因和知识写回
-- [ ] **Phase 3 · 生态**：MCP Server（向外部 AI 客户端暴露画像/图谱/复习状态）、语音（TTS → STT → 对话）、AnkiConnect 评估、一键 Demo、发布自动化
-
-当前执行顺序：Coach 教学行为反馈 → AgentRuntime 对照切片 → 正式生产验收与版本发布；概念图谱、可解释推荐和 SQL 时态记忆主链已收口。真实学习者校准达到至少 50 个 holdout case 后再运行离线回放；SQLite 保持请求内单消费者；正式生产升级按独立发布窗口执行；Phase 2 必须等待 Phase 1 的投影、删除、重放和反馈边界收口。
-
-默认不做（冻结清单）：Markdown 编辑器新功能、新增业务页面（除非降低某个行为的执行阻力）、站点音视频下载、未经 Spike 验证的通用 agent 框架锁定、Microsoft GraphRAG、未完成隐私设计前的多人共学。
 
 ---
 
