@@ -87,3 +87,25 @@ export async function deleteGoalTask(taskId: number): Promise<boolean> {
 export async function listDailyTasks(day: string): Promise<GoalTaskItem[]> {
   return await apiFetch<GoalTaskItem[]>(`/api/goals/tasks/daily?day=${encodeURIComponent(day)}`)
 }
+
+export interface GoalPlanGenerationResult {
+  goal_id: number
+  generated_tasks: number
+  plan_set?: boolean
+  week_start?: string
+  tasks?: unknown[]
+}
+
+export async function createGoalPlan(
+  goalId: number,
+  data: { total_days: number; current_chapter_id?: number | null; study_days_per_week: number },
+): Promise<GoalPlanGenerationResult> {
+  return apiFetch<GoalPlanGenerationResult>(`/api/goals/${goalId}/plan`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function generateNextWeekGoalTasks(goalId: number): Promise<GoalPlanGenerationResult> {
+  return apiFetch<GoalPlanGenerationResult>(`/api/goals/${goalId}/plan/next-week`, { method: 'POST' })
+}

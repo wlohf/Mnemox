@@ -16,8 +16,8 @@ import {
 } from '../services/studySessionApi'
 import { evaluateTaskOutput, type OutputEvalResult } from '../services/learningApi'
 import { getApiErrorMessage } from '../services/apiClient'
+import { generateNextWeekGoalTasks } from '../services/goalApi'
 import { GoalPlanModal } from '../components/GoalPlanModal'
-import { apiFetch } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
 type GoalFilter = 'all' | 'active' | 'completed' | 'paused'
@@ -233,7 +233,7 @@ export function GoalsTasksPage() {
     if (!selectedGoal?._serverId) { message.warning('目标尚未同步'); return }
     setGeneratingNextWeek(true)
     try {
-      const r = await apiFetch<{ generated_tasks: number }>(`/api/goals/${selectedGoal._serverId}/plan/next-week`, { method: 'POST' })
+      const r = await generateNextWeekGoalTasks(selectedGoal._serverId)
       message.success(`已生成 ${r.generated_tasks} 个下周任务`)
       window.location.reload()
     } catch (e: any) {

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Modal, Form, Input, InputNumber, Select, DatePicker, Button, message, Spin } from 'antd'
 import dayjs from 'dayjs'
-import { apiFetch } from '../services/apiClient'
+import { createGoalPlan, createGoalTask } from '../services/goalApi'
+import { listMaterialChapters } from '../services/materialApi'
 
 interface Chapter {
   id: number
@@ -64,8 +65,8 @@ export function GoalPlanModal({ open, goalId, materialId, onClose, onSuccess }: 
     if (!materialId) return
     setLoadingChapters(true)
     try {
-      const data = await apiFetch<Chapter[]>(`/api/materials/${materialId}/chapters`)
-      setChapters(data)
+      const data = await listMaterialChapters(materialId)
+      setChapters(data.map(({ id, title }) => ({ id, title })))
     } catch (error) {
       message.error('加载章节失败')
     } finally {
@@ -92,14 +93,11 @@ export function GoalPlanModal({ open, goalId, materialId, onClose, onSuccess }: 
 
         await Promise.all(
           rows.map((row) =>
-            apiFetch(`/api/goals/${goalId}/tasks`, {
-              method: 'POST',
-              body: JSON.stringify({
-                title: row.title,
-                description: values.manual_description?.trim() || null,
-                task_type: row.task_type,
-                planned_date: row.planned_date,
-              }),
+            createGoalTask(goalId, {
+              title: row.title,
+              description: values.manual_description?.trim() || undefined,
+              task_type: row.task_type,
+              planned_date: row.planned_date || undefined,
             })
           )
         )
@@ -112,13 +110,10 @@ export function GoalPlanModal({ open, goalId, materialId, onClose, onSuccess }: 
         return
       }
       
-      const response = await apiFetch(`/api/goals/${goalId}/plan`, {
-        method: 'POST',
-        body: JSON.stringify({
-          total_days: values.total_days,
-          current_chapter_id: values.current_chapter_id || null,
-          study_days_per_week: values.study_days_per_week,
-        }),
+      const response = await createGoalPlan(goalId, {
+        total_days: values.total_days,
+        current_chapter_id: values.current_chapter_id || null,
+        study_days_per_week: values.study_days_per_week,
       })
       
       message.success(`学习计划已设定，生成了 ${response.generated_tasks} 个本周任务`)

@@ -21,6 +21,8 @@ from ..models.user import User
 from ..utils.ownership import get_owned_row
 from ..services.retrieval_projection_service import RetrievalProjectionService, serialize_projection
 from ..services.retrieval_router import RetrievalRouter
+from ..utils.ai_errors import format_ai_provider_error
+from ..utils.error_safety import redact_sensitive_text
 
 
 router = APIRouter()
@@ -48,6 +50,7 @@ class MaterialResponse(BaseModel):
     updated_at: str
     project_ids: Optional[List[int]] = None
     retrieval_projection: Optional[dict[str, Any]] = None
+    knowledge_extraction: Optional[dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 
@@ -65,11 +68,24 @@ class MaterialSearchResponse(BaseModel):
     text: str
 
 
+class MaterialChapterResponse(BaseModel):
+    """Stable chapter contract used by goal planning and frontend selectors."""
+
+    id: int
+    title: str
+    parent_id: Optional[int] = None
+    order_index: Optional[int] = None
+    mastery_level: Optional[float] = None
+
+    model_config = {"from_attributes": True}
+
+
 def _build_material_response(
     material: Material,
     project_ids: Optional[List[int]] = None,
     preview: bool = False,
     retrieval_projection: Optional[dict[str, Any]] = None,
+    knowledge_extraction: Optional[dict[str, Any]] = None,
 ) -> MaterialResponse:
     material_dict = getattr(material, "__dict__", {})
     material_id = material_dict.get("id")
@@ -97,6 +113,24 @@ def _build_material_response(
         updated_at=(updated_at or material.updated_at).isoformat(),
         project_ids=project_ids or [],
         retrieval_projection=retrieval_projection,
+        knowledge_extraction=knowledge_extraction,
+    )
+
+
+async def _material_extraction_summary(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    material_id: int,
+) -> dict[str, Any] | None:
+    if not settings.KNOWLEDGE_V2_ENABLED:
+        return None
+    from app.services.knowledge_extraction_service import get_material_extraction_summary
+
+    return await get_material_extraction_summary(
+        db,
+        user_id=int(user_id),
+        material_id=int(material_id),
     )
 
 
@@ -294,7 +328,7 @@ async def upload_material(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {redact_sensitive_text(e)}")
 
     try:
         _validate_material_file_signature(abs_file_path, file_extension)
@@ -332,6 +366,11 @@ async def upload_material(
             existing,
             project_ids=project_ids,
             retrieval_projection=serialize_projection(projection),
+            knowledge_extraction=await _material_extraction_summary(
+                db,
+                user_id=int(current_user.id),
+                material_id=int(existing.id),
+            ),
         )
         return MaterialUploadResponse(**response.model_dump(), duplicate=True)
 
@@ -354,13 +393,18 @@ async def upload_material(
             material,
             project_ids=[],
             retrieval_projection=serialize_projection(projection),
+            knowledge_extraction=await _material_extraction_summary(
+                db,
+                user_id=int(current_user.id),
+                material_id=int(material.id),
+            ),
         )
         return MaterialUploadResponse(**response.model_dump(), duplicate=False)
     except Exception as e:
         # 如果创建失败，删除已上传的文件
         if abs_file_path.exists():
             abs_file_path.unlink()
-        raise HTTPException(status_code=500, detail=f"创建资料失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"创建资料失败: {redact_sensitive_text(e)}")
 
 
 @router.post("/create", response_model=MaterialResponse)
@@ -390,9 +434,14 @@ async def create_material(
             material,
             project_ids=[],
             retrieval_projection=serialize_projection(projection),
+            knowledge_extraction=await _material_extraction_summary(
+                db,
+                user_id=int(current_user.id),
+                material_id=int(material.id),
+            ),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建资料失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"创建资料失败: {redact_sensitive_text(e)}")
 
 
 @router.get("/", response_model=List[MaterialResponse])
@@ -423,6 +472,16 @@ async def list_materials(
     projection_map = await RetrievalProjectionService(db).projection_map(
         int(current_user.id), material_ids
     )
+    extraction_map: dict[int, dict[str, Any]] = {}
+    if settings.KNOWLEDGE_V2_ENABLED:
+        from app.services.knowledge_extraction_service import extraction_summary_map
+
+        extraction_map = await extraction_summary_map(
+            db,
+            user_id=int(current_user.id),
+            source_type="material",
+            source_record_ids=material_ids,
+        )
     if material_ids:
         assoc_result = await db.execute(
             sa_select(ChatProjectMaterial.material_id, ChatProjectMaterial.project_id)
@@ -439,6 +498,7 @@ async def list_materials(
             project_ids=sorted(project_ids_map.get(m.id, set())),
             preview=True,
             retrieval_projection=projection_map.get(int(m.id)),
+            knowledge_extraction=extraction_map.get(int(m.id)),
         )
         for m in materials
     ]
@@ -501,6 +561,31 @@ async def search_materials(
     ]
 
 
+@router.get("/{material_id}/chapters", response_model=List[MaterialChapterResponse])
+async def list_material_chapters(
+    material_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List chapters owned through the canonical material boundary."""
+    await get_owned_row(
+        db,
+        Material,
+        material_id,
+        int(current_user.id),
+        not_found_detail="资料不存在",
+    )
+    from sqlalchemy import select as sa_select
+    from app.models.material import Chapter
+
+    result = await db.execute(
+        sa_select(Chapter)
+        .where(Chapter.material_id == material_id)
+        .order_by(Chapter.order_index.asc(), Chapter.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 @router.get("/{material_id}", response_model=MaterialResponse)
 async def get_material(
     material_id: int,
@@ -536,6 +621,11 @@ async def get_material(
         material,
         project_ids=project_ids,
         retrieval_projection=serialize_projection(projection),
+        knowledge_extraction=await _material_extraction_summary(
+            db,
+            user_id=int(current_user.id),
+            material_id=int(material.id),
+        ),
     )
 
 
@@ -565,6 +655,11 @@ async def update_material(
         material,
         project_ids=project_ids,
         retrieval_projection=serialize_projection(projection),
+        knowledge_extraction=await _material_extraction_summary(
+            db,
+            user_id=int(current_user.id),
+            material_id=int(material.id),
+        ),
     )
 
 
@@ -609,11 +704,11 @@ async def analyze_material(
         )
         return analysis
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(e))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"分析失败: {format_ai_provider_error(e)}")
 
 
 @router.post("/{material_id}/ask")
@@ -645,11 +740,11 @@ async def ask_question(
             "answer": answer
         }
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(e))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"提问失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"提问失败: {format_ai_provider_error(e)}")
 
 
 @router.post("/{material_id}/generate-outline")
@@ -675,8 +770,8 @@ async def generate_outline(
         )
         return outline
     except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=redact_sensitive_text(e))
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=redact_sensitive_text(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成大纲失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"生成大纲失败: {format_ai_provider_error(e)}")

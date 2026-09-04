@@ -51,3 +51,36 @@ export async function getDueReviewCount(): Promise<number> {
   const data = await apiFetch<{ due_count: number }>('/api/review/due-count')
   return data.due_count ?? 0
 }
+
+export interface ReviewContent {
+  summary: string[]
+  questions: Array<{
+    id: number
+    type: 'choice' | 'short_answer'
+    question: string
+    options?: string[]
+    correct_answer?: string
+    reference_answer?: string
+  }>
+}
+
+export interface ReviewResult {
+  score: number
+  quality: number
+  feedback: string
+  next_review_date: string
+}
+
+export async function getReviewContent(taskId: number): Promise<ReviewContent> {
+  return apiFetch<ReviewContent>(`/api/review/${taskId}/content`)
+}
+
+export async function submitReviewAnswers(
+  taskId: number,
+  data: { answers: Array<{ question: string; answer: string }>; coach_action_attempt_id?: string | null },
+): Promise<ReviewResult> {
+  return apiFetch<ReviewResult>(`/api/review/${taskId}/submit`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}

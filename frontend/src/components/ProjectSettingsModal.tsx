@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Modal, Input, message, List, Checkbox, Spin } from 'antd'
 import { useChatStore } from '../stores/chatStore'
 import { getProject, batchUpdateProjectMaterials } from '../services/conversationApi'
-import { apiFetch } from '../services/apiClient'
+import { listMaterials } from '../services/materialApi'
 
 const { TextArea } = Input
 
@@ -42,11 +42,11 @@ export function ProjectSettingsModal({ open, projectId, onClose }: ProjectSettin
   const loadMaterials = async () => {
     setMaterialsLoading(true)
     try {
-      const arr = await apiFetch<any[]>('/api/materials/?skip=0&limit=200')
-      const list: MaterialItem[] = (arr || []).map((m: any) => ({
+      const arr = await listMaterials(200)
+      const list: MaterialItem[] = (arr || []).map((m) => ({
         id: m.id,
         title: m.title,
-        file_type: m.file_type,
+        file_type: m.file_type || undefined,
       }))
       setMaterials(list)
     } catch {
