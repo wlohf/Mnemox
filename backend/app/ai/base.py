@@ -85,6 +85,16 @@ class AIProvider(ABC):
         """Return a detached usage snapshot for the most recent completed call."""
         return dict(self._last_usage)
 
+    def configure_extraction(self, max_output_tokens: int) -> None:
+        """Apply per-extraction limits without relaxing configured safeguards."""
+        if not isinstance(max_output_tokens, int) or max_output_tokens <= 0 or self.max_output_tokens <= 0:
+            raise ValueError('Extraction output limits must be positive integers')
+        self.max_output_tokens = min(self.max_output_tokens, max_output_tokens)
+
+    async def close_extraction(self) -> None:
+        """Release resources owned by one extraction run (if any)."""
+        return None
+
     def supports_web_search(self) -> bool:
         """Whether this provider can answer with web search enabled."""
         return False

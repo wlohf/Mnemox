@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type LocalNote } from '../db/studyDb'
-import { enqueueOperation } from '../sync/enqueueOperation'
+import { db as activeDb, type LocalNote } from '../db/studyDb'
+import { saveLocalOperation } from '../sync/enqueueOperation'
 import { syncEngine } from '../sync/SyncEngine'
 
 export interface OfflineNoteItem {
@@ -45,37 +45,26 @@ function safeParse<T>(json: string | null | undefined, fallback: T): T {
 }
 
 export function useOfflineNotes(params?: { q?: string; tag?: string }) {
+  const db = activeDb
   const allNotes = useLiveQuery(
-    () =>
-      db.notes
-        .where('_syncStatus')
-        .notEqual('pending_delete')
-        .toArray(),
-    [],
+    () => db.notes.where('_syncStatus').notEqual('pending_delete').toArray(),
+    [db],
     [] as LocalNote[],
   )
 
-  // Client-side filtering
   let filtered = allNotes
   if (params?.q) {
     const lower = params.q.toLowerCase()
     filtered = filtered.filter(
-      (n) =>
-        n.title.toLowerCase().includes(lower) ||
-        n.content.toLowerCase().includes(lower),
+      (n) => n.title.toLowerCase().includes(lower) || n.content.toLowerCase().includes(lower),
     )
   }
   if (params?.tag) {
     const tag = params.tag
-    filtered = filtered.filter((n) => {
-      const tags: string[] = safeParse(n.tags, [])
-      return tags.includes(tag)
-    })
+    filtered = filtered.filter((n) => safeParse<string[]>(n.tags, []).includes(tag))
   }
 
-  // Sort by _updatedAt descending
   filtered.sort((a, b) => (b._updatedAt > a._updatedAt ? 1 : -1))
-
   const notes: OfflineNoteItem[] = filtered.map(toOfflineItem)
 
   const createNote = async (data: {
@@ -106,76 +95,34 @@ export function useOfflineNotes(params?: { q?: string; tag?: string }) {
       links: JSON.stringify(data.links ?? []),
       created_at: now,
     }
-    await db.notes.put(record)
-    await enqueueOperation('notes', 'create', localId, record as unknown as Record<string, unknown>)
+    const saved = await saveLocalOperation<LocalNote>('notes', 'create', localId, record, db)
+    if (!saved) throw new Error('Unable to save note locally')
     void syncEngine.syncAll()
-    return toOfflineItem(record)
+    return toOfflineItem(saved)
   }
 
   const updateNote = async (
     localId: string,
     data: Record<string, unknown>,
   ): Promise<OfflineNoteItem | null> => {
-    const existing = await db.notes.get(localId)
-    if (!existing) return null
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这篇笔记存在同步冲突，请先在账户菜单中处理')
-    }
-
-    const now = new Date().toISOString()
-    const updates: Partial<LocalNote> = { _updatedAt: now }
-
-    if (data.title !== undefined) updates.title = data.title as string
-    if (data.content !== undefined) updates.content = data.content as string
-    if (data.note_type !== undefined) updates.note_type = data.note_type as string | null
-    if (data.material_id !== undefined) updates.material_id = data.material_id as number | null
-    if (data.chapter_id !== undefined) updates.chapter_id = data.chapter_id as number | null
+    const updates: Record<string, unknown> = {}
+    if (data.title !== undefined) updates.title = data.title
+    if (data.content !== undefined) updates.content = data.content
+    if (data.note_type !== undefined) updates.note_type = data.note_type
+    if (data.material_id !== undefined) updates.material_id = data.material_id
+    if (data.chapter_id !== undefined) updates.chapter_id = data.chapter_id
     if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags)
     if (data.links !== undefined) updates.links = JSON.stringify(data.links)
 
-    if (existing._syncStatus === 'synced') {
-      updates._syncStatus = 'pending_update'
-    }
-    // If pending_create, keep it as pending_create (merge logic handles it)
-
-    await db.notes.update(localId, updates)
-
-    const queuePayload: Record<string, unknown> = { ...updates }
-    // For the queue we store tags as JSON string
-    if (data.tags !== undefined) queuePayload.tags = JSON.stringify(data.tags)
-    if (data.links !== undefined) queuePayload.links = JSON.stringify(data.links)
-
-    await enqueueOperation(
-      'notes',
-      existing._syncStatus === 'pending_create' ? 'update' : 'update',
-      localId,
-      queuePayload,
-    )
+    const saved = await saveLocalOperation<LocalNote>('notes', 'update', localId, updates, db)
     void syncEngine.syncAll()
-
-    const updated = await db.notes.get(localId)
-    return updated ? toOfflineItem(updated) : null
+    return saved ? toOfflineItem(saved) : null
   }
 
   const deleteNote = async (localId: string): Promise<boolean> => {
-    const existing = await db.notes.get(localId)
-    if (!existing) return false
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这篇笔记存在同步冲突，请先在账户菜单中处理')
-    }
-
-    if (existing._syncStatus === 'pending_create') {
-      // Never pushed to server — just delete locally
-      await db.notes.delete(localId)
-      await enqueueOperation('notes', 'delete', localId)
-      return true
-    }
-
-    // Mark as pending_delete so it disappears from UI immediately
-    await db.notes.update(localId, { _syncStatus: 'pending_delete' })
-    await enqueueOperation('notes', 'delete', localId)
+    const saved = await saveLocalOperation<LocalNote>('notes', 'delete', localId, {}, db)
     void syncEngine.syncAll()
-    return true
+    return saved !== undefined
   }
 
   return { notes, createNote, updateNote, deleteNote }

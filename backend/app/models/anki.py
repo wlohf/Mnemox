@@ -1,5 +1,5 @@
 """Anki 风格记忆卡模型"""
-from sqlalchemy import Column, Float, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Float, Integer, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -33,3 +33,6 @@ class AnkiCard(Base):
 
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+    sync_version = Column(Integer, nullable=False, server_default=text("1"), default=1, comment="离线同步版本")
+
+    __mapper_args__ = {"version_id_col": sync_version}

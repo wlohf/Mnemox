@@ -1,19 +1,18 @@
-import { db, type ModuleName, type QueuedOperation } from '../db/studyDb'
+import { db as activeDb, type ModuleName, type QueuedOperation } from '../db/studyDb'
 import { isNetworkOnline } from '../services/apiClient'
+import { claimOperation, deleteLocalGoalChildren } from './enqueueOperation'
+import { acknowledgeOperation, serverMeta, serverVersion, type PushResult, type ServerEntity } from './syncProtocol'
 
 // ── Adapter interface ──
 
 export interface ModuleSyncAdapter {
   module: ModuleName
-  pushCreate(op: QueuedOperation): Promise<void>
-  pushUpdate(op: QueuedOperation): Promise<void>
+  pushCreate(op: QueuedOperation): Promise<PushResult | void>
+  pushUpdate(op: QueuedOperation): Promise<PushResult | void>
   pushDelete(op: QueuedOperation): Promise<void>
   pullAll(): Promise<void>
-  /**
-   * 可选：检测服务端是否在本地上次同步后修改过该记录。
-   * 返回 true 表示有冲突，应跳过本次 push 并标记冲突。
-   */
-  checkConflict?(op: QueuedOperation): Promise<{ conflict: boolean; serverData?: unknown }>
+  getServerData?(op: QueuedOperation): Promise<Record<string, unknown>>
+  mapServer?(server: ServerEntity): Record<string, unknown>
 }
 
 // ── Sync status ──
@@ -44,6 +43,12 @@ export class SyncEngine {
   private currentSyncPromise: Promise<void> | null = null
   private followUpRequested = false
   private authenticated = false
+  private generation = 0
+  private stopController = new AbortController()
+
+  private isActive(generation: number): boolean {
+    return this.authenticated && generation === this.generation
+  }
 
   // ── Registration ──
 
@@ -60,6 +65,7 @@ export class SyncEngine {
       return
     }
     if (this.intervalId) return
+    this.stopController = new AbortController()
     window.addEventListener('online', this.handleOnline)
     window.addEventListener('offline', this.handleOffline)
     this.state.online = navigator.onLine
@@ -80,6 +86,9 @@ export class SyncEngine {
 
   stop() {
     this.authenticated = false
+    ++this.generation
+    this.followUpRequested = false
+    this.stopController.abort()
     window.removeEventListener('online', this.handleOnline)
     window.removeEventListener('offline', this.handleOffline)
     if (this.intervalId) {
@@ -118,11 +127,13 @@ export class SyncEngine {
   }
 
   private async runSync(options: SyncOptions = {}) {
+    const generation = this.generation
     if (!this.authenticated) {
       this.setState({ status: 'idle', online: navigator.onLine, failedCount: 0, conflictCount: 0, lastError: undefined })
       return
     }
-    if (!isNetworkOnline()) {
+    // navigator describes connectivity; a previous backend outage must not disable probes forever.
+    if (!navigator.onLine) {
       this.setState({ status: 'offline', online: false })
       return
     }
@@ -130,17 +141,25 @@ export class SyncEngine {
     this.setState({ status: 'syncing', online: true })
 
     try {
-      const failedCount = await this.processQueue(options)
+      const failedCount = await this.processQueue(options, generation)
+      if (!this.isActive(generation)) return
+      let pullFailed = false
       // Pull latest from server — each adapter is isolated so one failure won't block others
       for (const adapter of this.adapters.values()) {
+        if (!this.isActive(generation)) return
         try {
           await adapter.pullAll()
         } catch (e) {
+          pullFailed = true
           console.warn(`[SyncEngine] pullAll failed for module=${adapter.module}`, e)
         }
       }
+      if (!this.isActive(generation)) return
       const conflictCount = await this.countConflicts()
-      if (failedCount > 0) {
+      if (!this.isActive(generation)) return
+      if (pullFailed) {
+        this.setState({ status: isNetworkOnline() ? 'error' : 'offline', online: isNetworkOnline(), failedCount, conflictCount, lastError: '云端数据拉取失败，将自动重试' })
+      } else if (failedCount > 0) {
         this.setState({
           status: 'error',
           online: true,
@@ -160,13 +179,13 @@ export class SyncEngine {
         this.setState({ status: 'idle', online: true, failedCount: 0, conflictCount: 0, lastError: undefined })
       }
     } catch (e) {
+      if (!this.isActive(generation)) return
       const message = this.formatError(e)
       if (!isNetworkOnline()) {
         this.setState({ status: 'offline', online: false, lastError: message })
       } else {
         this.setState({ status: 'error', online: this.state.online, lastError: message })
       }
-    } finally {
     }
   }
 
@@ -179,60 +198,60 @@ export class SyncEngine {
    * current local record after acknowledging the server version; "use_server"
    * drops only the unsynced local edit and refreshes from the adapter.
    */
-  async resolveConflict(
-    module: ModuleName,
-    localId: string,
-    strategy: 'keep_local' | 'use_server',
-  ): Promise<void> {
+  async resolveConflict(module: ModuleName, localId: string, strategy: 'keep_local' | 'use_server'): Promise<void> {
+    const db = activeDb
+    const generation = this.generation
+    if (!this.isActive(generation)) throw new Error('请先登录')
     const table = db.table(module)
     const record = await table.get(localId) as Record<string, unknown> | undefined
-    if (!record || record._syncStatus !== 'conflicted') {
-      throw new Error('这条同步冲突已不存在，请刷新后重试')
-    }
-
-    if (strategy === 'keep_local') {
-      const now = new Date().toISOString()
-      const remote = this.parseConflictServerData(record._conflictServerData)
-      const serverUpdatedAt = typeof remote?.updated_at === 'string' ? remote.updated_at : null
-      const serverDeleted = remote?.__deleted === true
-      await db.opQueue.where({ module, localId }).delete()
-      await table.update(localId, {
-        _syncStatus: 'pending_update',
-        _updatedAt: now,
-        // The learner has now seen the remote version. Save its revision as
-        // the new comparison point so the confirmed local choice can be sent.
-        _lastSyncedAt: serverUpdatedAt ?? record._lastSyncedAt ?? now,
-        _conflictAt: null,
-        _conflictServerData: null,
-        _syncError: null,
-        _syncFailedAt: null,
-      })
-      await db.opQueue.add({
-        module,
-        // A confirmed local choice can recreate an item deleted elsewhere;
-        // this is still explicit user intent, never an automatic resurrection.
-        opType: serverDeleted ? 'create' : 'update',
-        localId,
-        payload: JSON.stringify(record),
-        createdAt: now,
-      })
-      await this.refreshConflictCount()
-      await this.syncAll()
-      return
-    }
-
-    await db.opQueue.where({ module, localId }).delete()
-    await table.update(localId, {
-      _syncStatus: 'synced',
-      _conflictAt: null,
-      _conflictServerData: null,
-      _syncError: null,
-      _syncFailedAt: null,
-    })
+    if (!record || record._syncStatus !== 'conflicted') throw new Error('这条同步冲突已不存在，请刷新后重试')
     const adapter = this.adapters.get(module)
     if (!adapter) throw new Error(`未注册同步适配器: ${module}`)
-    await adapter.pullAll()
+    let remote = this.parseConflictServerData(record._conflictServerData)
+    if (strategy === 'use_server') {
+      if (!adapter.getServerData) throw new Error('无法取得云端版本')
+      remote = await adapter.getServerData({
+        module, localId, opType: 'update', payload: '{}', createdAt: '', serverId: record._serverId as number,
+      })
+    }
+    if (!remote || !this.isActive(generation)) throw new Error('无法确认当前会话或云端版本，请重试')
+    const server = remote as unknown as ServerEntity
+    const deleted = remote.__deleted === true
+    if (!deleted && !serverVersion(server)) throw new Error('云端版本未知，请先升级服务器并刷新冲突')
+    await db.transaction('rw', db.tables, async () => {
+      const current = await table.get(localId)
+      if (!current || current._syncStatus !== 'conflicted' || current._conflictAt !== record._conflictAt
+        || current._localRevision !== record._localRevision) throw new Error('冲突已变化，请刷新后重试')
+      if (module === 'goals' && deleted && (strategy === 'use_server' || record._conflictOpType === 'delete')) {
+        await deleteLocalGoalChildren(localId, Number(record._serverId), db)
+      }
+      await db.opQueue.where({ module, localId }).delete()
+      if (strategy === 'use_server') {
+        if (deleted) await table.delete(localId)
+        else await table.update(localId, {
+          ...adapter.mapServer?.(server), ...serverMeta(server), _syncStatus: 'synced',
+          _conflictAt: null, _conflictServerData: null, _conflictOpType: null, _syncError: null, _syncFailedAt: null,
+        })
+        return
+      }
+      const wantsDelete = record._conflictOpType === 'delete'
+      if (deleted && wantsDelete) { await table.delete(localId); return }
+      const type = wantsDelete ? 'delete' : deleted ? 'create' : 'update'
+      const now = new Date().toISOString()
+      await table.update(localId, {
+        _serverId: deleted ? null : record._serverId, _serverVersion: deleted ? null : server.sync_version,
+        _syncStatus: type === 'delete' ? 'pending_delete' : type === 'create' ? 'pending_create' : 'pending_update',
+        _updatedAt: now, _localRevision: Number(record._localRevision ?? 0) + 1,
+        _conflictAt: null, _conflictServerData: null, _conflictOpType: null, _syncError: null, _syncFailedAt: null,
+      })
+      await db.opQueue.add({
+        module, localId, opType: type, payload: JSON.stringify(record), createdAt: now,
+        operationId: crypto.randomUUID(), claimedAt: null,
+      })
+    })
+    if (!this.isActive(generation)) return
     await this.refreshConflictCount()
+    if (strategy === 'keep_local' && this.isActive(generation)) await this.syncAll()
   }
 
   getSnapshot = (): SyncState => this.state
@@ -244,134 +263,89 @@ export class SyncEngine {
 
   // ── Queue processing ──
 
-  private async processQueue(options: SyncOptions = {}): Promise<number> {
-    const ops = await db.opQueue.orderBy('id').toArray()
-    const MAX_RETRIES = 5
-    let retryDelay = 1000
-    const MAX_DELAY = 60_000
-    let failedCount = options.retryFailed ? 0 : ops.filter((op) => op.failedAt).length
-
-    for (const op of ops) {
-      if (op.failedAt && !options.retryFailed) {
-        continue
-      }
-
+  private async processQueue(options: SyncOptions, generation: number): Promise<number> {
+    const db = activeDb
+    const snapshot = await db.opQueue.orderBy('id').toArray()
+    for (const row of snapshot) {
+      if (!this.isActive(generation)) return 0
+      let op = await db.opQueue.get(row.id!)
+      if (!op || op.legacyUncertain || (op.failedAt && !options.retryFailed)) continue
       const adapter = this.adapters.get(op.module)
       if (!adapter) {
         await this.markOperationFailed(op, `未注册同步适配器: ${op.module}`, 0)
-        failedCount++
         continue
       }
-
-      let success = false
-      let attempts = 0
-      let lastError = op.lastError || ''
-      while (!success && attempts < MAX_RETRIES) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        if (!this.isActive(generation)) return 0
         try {
-          // 冲突检测：对 update 操作检查服务端是否已被修改
-          if (op.opType === 'update' && adapter.checkConflict) {
-            const conflictResult = await adapter.checkConflict(op)
-            if (conflictResult.conflict) {
-              console.warn(`[SyncEngine] Conflict detected for op ${op.id}, marking conflict`)
-              // Do not overwrite either copy.  The explicit state leaves the
-              // final choice to the learner instead of silently using a clock.
-              await this.markOperationConflicted(op, conflictResult.serverData)
-              await db.opQueue.delete(op.id!)
-              success = true // 不算失败，而是已处理
-              break
+          const claimed = await claimOperation(op.id!, db)
+          if (!claimed) break // failed/conflicted predecessor or cancelled unsent work
+          op = claimed
+          if (!this.isActive(generation)) return 0
+          let result: PushResult | void
+          if (op.opType === 'create') result = await adapter.pushCreate(op)
+          else if (op.opType === 'update') result = await adapter.pushUpdate(op)
+          else result = await adapter.pushDelete(op)
+          if (!this.isActive(generation)) return 0
+          await acknowledgeOperation(op, result, adapter.mapServer, db)
+          break
+        } catch (error) {
+          if (!this.isActive(generation)) return 0
+          const { status, code } = error as { status?: number; code?: string }
+          if (code === 'SYNC_CONFLICT' || status === 412 || (status === 404 && op.opType === 'update')) {
+            // Keep the immutable operation and all later intent until the user
+            // explicitly chooses. A failed preview fetch must not discard either.
+            try {
+              const remote = await adapter.getServerData?.(op)
+              if (!remote) throw new Error('无法取得云端冲突版本，请重试')
+              if (!this.isActive(generation)) return 0
+              await this.markOperationConflicted(op, remote)
+            } catch (previewError) {
+              if (!this.isActive(generation)) return 0
+              await this.markOperationFailed(op, this.formatError(previewError), attempt)
             }
+            break
           }
-          switch (op.opType) {
-            case 'create':
-              await adapter.pushCreate(op)
-              break
-            case 'update':
-              await adapter.pushUpdate(op)
-              break
-            case 'delete':
-              await adapter.pushDelete(op)
-              break
+          if (!isNetworkOnline()) throw error
+          if (attempt === 5 || (status !== undefined && status >= 400 && status < 500 && status !== 429)) {
+            await this.markOperationFailed(op, this.formatError(error), attempt)
+            break
           }
-          success = true
-          await this.clearOperationFailure(op)
-          await db.opQueue.delete(op.id!)
-          retryDelay = 1000 // reset on success
-        } catch (e) {
-          attempts++
-          lastError = this.formatError(e)
-          if (!isNetworkOnline()) {
-            this.setState({ status: 'offline', online: false })
-            throw e // stop processing, will resume when online
-          }
-          // Exponential backoff
-          await new Promise((r) => setTimeout(r, retryDelay))
-          retryDelay = Math.min(retryDelay * 2, MAX_DELAY)
+          await this.waitForRetry(Math.min(1000 * 2 ** (attempt - 1), 60_000))
         }
       }
-
-      if (!success) {
-        console.error(`[SyncEngine] Permanently failed op ${op.id} (module=${op.module}, type=${op.opType}) after ${MAX_RETRIES} attempts`, lastError)
-        await this.markOperationFailed(op, lastError || '同步失败', attempts)
-        failedCount++
-      }
     }
-
-    return failedCount
+    return (await db.opQueue.toArray()).filter(op => op.failedAt || op.legacyUncertain).length
   }
 
   private async markOperationFailed(op: QueuedOperation, message: string, attempts: number) {
-    const failedAt = new Date().toISOString()
-    await db.opQueue.update(op.id!, {
-      attempts: (op.attempts || 0) + attempts,
-      lastError: message,
-      failedAt,
-    })
-
-    if (op.opType === 'delete') return
-
-    try {
+    const db = activeDb
+    await db.transaction('rw', db.table(op.module), db.opQueue, async () => {
+      const current = await db.opQueue.get(op.id!)
+      if (!current || current.operationId !== op.operationId) return
+      const failedAt = new Date().toISOString()
+      await db.opQueue.update(op.id!, { attempts: (current.attempts || 0) + attempts, lastError: message, failedAt })
       const table = db.table(op.module)
-      const record = await table.get(op.localId)
-      if (record) {
-        await table.update(op.localId, {
-          _syncStatus: 'sync_failed',
-          _syncError: message,
-          _syncFailedAt: failedAt,
-        })
-      }
-    } catch (e) {
-      console.warn(`[SyncEngine] Failed to mark local record sync_failed for op ${op.id}`, e)
-    }
+      const local = await table.get(op.localId)
+      if (local) await table.update(op.localId, {
+        _syncStatus: ['pending_delete', 'conflicted'].includes(local._syncStatus) ? local._syncStatus : 'sync_failed',
+        _syncError: message, _syncFailedAt: failedAt,
+      })
+    })
   }
 
   private async markOperationConflicted(op: QueuedOperation, serverData: unknown) {
-    const table = db.table(op.module)
-    const record = await table.get(op.localId)
-    if (!record) return
-    await table.update(op.localId, {
-      _conflictAt: new Date().toISOString(),
-      _conflictServerData: JSON.stringify(serverData ?? null),
-      _syncStatus: 'conflicted',
-      _syncError: null,
-      _syncFailedAt: null,
+    const db = activeDb
+    await db.transaction('rw', db.table(op.module), db.opQueue, async () => {
+      const current = await db.opQueue.get(op.id!)
+      if (!current || current.operationId !== op.operationId) return
+      const all = await db.opQueue.where({ module: op.module, localId: op.localId }).sortBy('id')
+      await db.table(op.module).update(op.localId, {
+        _conflictAt: new Date().toISOString(), _conflictServerData: JSON.stringify(serverData),
+        _conflictOpType: all[all.length - 1]?.opType ?? op.opType,
+        _syncStatus: 'conflicted', _syncError: null, _syncFailedAt: null,
+      })
     })
-  }
-
-  private async clearOperationFailure(op: QueuedOperation) {
-    if (op.opType === 'delete') return
-
-    try {
-      const table = db.table(op.module)
-      const record = await table.get(op.localId)
-      if (record) {
-        await table.update(op.localId, {
-          _syncError: null,
-          _syncFailedAt: null,
-        })
-      }
-    } catch (e) {
-      console.warn(`[SyncEngine] Failed to clear local sync failure for op ${op.id}`, e)
-    }
   }
 
   private formatError(error: unknown): string {
@@ -391,6 +365,7 @@ export class SyncEngine {
   }
 
   private async countConflicts(): Promise<number> {
+    const db = activeDb
     let count = 0
     const modules: ModuleName[] = ['notes', 'goals', 'goalTasks', 'ankiCards', 'wrongQuestions']
     for (const module of modules) {
@@ -405,6 +380,20 @@ export class SyncEngine {
 
   private async refreshConflictCount() {
     this.setState({ conflictCount: await this.countConflicts() })
+  }
+
+  private waitForRetry(delay: number): Promise<void> {
+    const signal = this.stopController.signal
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', finish)
+        resolve()
+      }
+      const timer = setTimeout(finish, delay)
+      signal.addEventListener('abort', finish, { once: true })
+      if (signal.aborted) finish()
+    })
   }
 
   // ── Internal ──

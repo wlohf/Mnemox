@@ -1,141 +1,67 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import 'fake-indexeddb/auto'
+import Dexie from 'dexie'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+vi.mock('antd', () => ({ message: { error: vi.fn(), warning: vi.fn() } }))
+import { db, openStudyDatabase, closeStudyDatabase } from '../db/studyDb'
+import { setApiSessionUser } from '../services/sessionScope'
+import { SyncEngine } from './SyncEngine'
+import { enqueueOperation } from './enqueueOperation'
 
-const syncMocks = vi.hoisted(() => {
-  const queueReads: Array<Array<Record<string, unknown>>> = []
-  return {
-    deleteOperation: vi.fn(),
-    getQueueRows: vi.fn(async () => queueReads.shift() ?? []),
-    isNetworkOnline: vi.fn(() => true),
-    queueReads,
-    table: vi.fn(),
-    token: vi.fn(() => 'test-token'),
-  }
+let engine: SyncEngine
+const local = (id: string) => ({
+  _localId: id, _serverId: 42, _serverVersion: 1, _syncStatus: 'pending_update',
+  _updatedAt: '2026-09-12T12:00:00Z', title: '本机修改', content: '保留内容',
+})
+beforeEach(async () => {
+  await openStudyDatabase({ id: 991, created_at: '2026-09-12T00:00:00Z' })
+  setApiSessionUser(991)
+  window.dispatchEvent(new Event('online'))
+  engine = new SyncEngine()
+})
+afterEach(async () => {
+  engine.stop(); setApiSessionUser(null); closeStudyDatabase()
+  for (const name of await Dexie.getDatabaseNames()) await Dexie.delete(name)
+  vi.restoreAllMocks()
 })
 
-vi.mock('../db/studyDb', () => ({
-  db: {
-    opQueue: {
-      orderBy: vi.fn(() => ({ toArray: syncMocks.getQueueRows })),
-      delete: syncMocks.deleteOperation,
-    },
-    table: syncMocks.table,
-  },
-}))
-
-vi.mock('../services/apiClient', () => ({
-  getToken: syncMocks.token,
-  isNetworkOnline: syncMocks.isNetworkOnline,
-}))
-
-import { SyncEngine } from './SyncEngine'
-
 describe('SyncEngine', () => {
-  afterEach(() => {
-    syncMocks.queueReads.length = 0
-    vi.clearAllMocks()
-  })
-
-  it('drains a follow-up sync request made during an active queue pass', async () => {
-    let releaseDelete: (() => void) | undefined
-    let markDeleteStarted: (() => void) | undefined
-    const deleteStarted = new Promise<void>((resolve) => {
-      markDeleteStarted = resolve
-    })
-    const delayedDelete = new Promise<void>((resolve) => {
-      releaseDelete = resolve
-    })
-    syncMocks.queueReads.push(
-      [{
-        id: 1,
-        module: 'notes',
-        opType: 'delete',
-        localId: 'note-1',
-        payload: '{}',
-        attempts: 0,
-        failedAt: null,
-        lastError: null,
-      }],
-      [],
-    )
-
-    const engine = new SyncEngine()
+  it('drains a follow-up request made during an active queue pass', async () => {
+    await db.table('notes').put(local('first'))
+    await enqueueOperation('notes', 'delete', 'first')
+    let release!: () => void
+    let started!: () => void
+    const ready = new Promise<void>(resolve => { started = resolve })
+    const wait = new Promise<void>(resolve => { release = resolve })
     const adapter = {
-      module: 'notes' as const,
-      pullAll: vi.fn(async () => undefined),
-      pushCreate: vi.fn(async () => undefined),
-      pushUpdate: vi.fn(async () => undefined),
-      pushDelete: vi.fn(async () => {
-        markDeleteStarted?.()
-        await delayedDelete
-      }),
+      module: 'notes' as const, pullAll: vi.fn(async () => {}),
+      pushCreate: vi.fn(async () => {}), pushUpdate: vi.fn(async () => {}),
+      pushDelete: vi.fn(async () => { started(); await wait }),
     }
-    engine.registerAdapter(adapter)
-
-    engine.start()
-    await deleteStarted
-    const followUpSync = engine.syncAll()
-    releaseDelete?.()
-    await followUpSync
-
-    expect(syncMocks.getQueueRows).toHaveBeenCalledTimes(2)
+    engine.registerAdapter(adapter); engine.start(); await ready
+    await db.table('notes').put(local('second'))
+    await enqueueOperation('notes', 'delete', 'second')
+    const followUp = engine.syncAll(); release(); await followUp
+    expect(adapter.pushDelete).toHaveBeenCalledTimes(2)
     expect(adapter.pullAll).toHaveBeenCalledTimes(2)
-    engine.stop()
+    expect(await db.opQueue.count()).toBe(0)
   })
 
-  it('stops a concurrent update for an explicit learner decision instead of overwriting it', async () => {
-    const localRecord: Record<string, unknown> = {
-      _localId: 'note-1',
-      _syncStatus: 'pending_update',
-      _lastSyncedAt: '2026-08-27T08:00:00.000Z',
-      title: '本机修改',
-    }
-    const localTable = {
-      get: vi.fn(async () => localRecord),
-      update: vi.fn(async (_id: string, patch: Record<string, unknown>) => Object.assign(localRecord, patch)),
-      toArray: vi.fn(async () => [localRecord]),
-    }
-    const emptyTable = { toArray: vi.fn(async () => []) }
-    syncMocks.table.mockImplementation((module: string) => module === 'notes' ? localTable : emptyTable)
-    syncMocks.queueReads.push([
-      {
-        id: 1,
-        module: 'notes',
-        opType: 'update',
-        localId: 'note-1',
-        payload: JSON.stringify({ title: '本机修改' }),
-        attempts: 0,
-        failedAt: null,
-        lastError: null,
-      },
-    ])
-
-    let resolvePull: (() => void) | undefined
-    const pulled = new Promise<void>((resolve) => { resolvePull = resolve })
-    const engine = new SyncEngine()
+  it('keeps the queue and both versions on a server CAS conflict', async () => {
+    await db.table('notes').put(local('first'))
+    await enqueueOperation('notes', 'update', 'first', { title: '本机修改' })
     const adapter = {
-      module: 'notes' as const,
-      pullAll: vi.fn(async () => resolvePull?.()),
-      pushCreate: vi.fn(async () => undefined),
-      pushUpdate: vi.fn(async () => undefined),
-      pushDelete: vi.fn(async () => undefined),
-      checkConflict: vi.fn(async () => ({
-        conflict: true,
-        serverData: { title: '云端修改', updated_at: '2026-08-27T09:00:00.000Z' },
-      })),
+      module: 'notes' as const, pullAll: vi.fn(async () => {}),
+      pushCreate: vi.fn(async () => {}), pushDelete: vi.fn(async () => {}),
+      pushUpdate: vi.fn(async () => { throw Object.assign(new Error('资源已变化'), { status: 409, code: 'SYNC_CONFLICT' }) }),
+      getServerData: vi.fn(async () => ({ id: 42, sync_version: 2, title: '云端修改' })),
     }
-    engine.registerAdapter(adapter)
-
-    engine.start()
-    await pulled
-    // Wait for the active pass to publish its conflict count. Calling syncAll
-    // during that pass exercises the normal coalescing path as well.
-    await engine.syncAll()
-
-    expect(adapter.pushUpdate).not.toHaveBeenCalled()
-    expect(localRecord._syncStatus).toBe('conflicted')
-    expect(localRecord._conflictServerData).toContain('云端修改')
-    expect(syncMocks.deleteOperation).toHaveBeenCalledWith(1)
+    engine.registerAdapter(adapter); engine.start(); await engine.syncAll()
+    expect(adapter.pushUpdate).toHaveBeenCalledTimes(1)
+    const record = await db.notes.get('first')
+    expect(record?._syncStatus).toBe('conflicted')
+    expect(record?.title).toBe('本机修改')
+    expect(record?._conflictServerData).toContain('云端修改')
+    expect(await db.opQueue.count()).toBe(1)
     expect(engine.getSnapshot().conflictCount).toBe(1)
-    engine.stop()
   })
 })

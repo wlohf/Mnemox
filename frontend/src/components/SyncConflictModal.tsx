@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Alert, Button, Col, List, Modal, Row, Space, Tag, Typography, message } from 'antd'
 import { CloudOutlined, LaptopOutlined } from '@ant-design/icons'
-import { db, type ModuleName } from '../db/studyDb'
+import { db as activeDb, type ModuleName } from '../db/studyDb'
 import { syncEngine } from '../sync/SyncEngine'
 
 const { Paragraph, Text } = Typography
@@ -67,6 +67,7 @@ interface SyncConflictModalProps {
 }
 
 export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
+  const db = activeDb
   const liveConflicts = useLiveQuery(async (): Promise<ConflictEntry[]> => {
     const modules = Object.keys(MODULE_META) as ModuleName[]
     const records: ConflictEntry[][] = await Promise.all(modules.map(async (module) => {
@@ -76,7 +77,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
         .map((row) => ({ module, item: row, server: parseServerData(row._conflictServerData) }))
     }))
     return records.flat()
-  }, [])
+  }, [db])
   const conflicts = liveConflicts ?? []
   const [resolvingKey, setResolvingKey] = useState<string | null>(null)
 
@@ -95,7 +96,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
     setResolvingKey(key)
     try {
       await syncEngine.resolveConflict(module, localId, strategy)
-      message.success(strategy === 'keep_local' ? '已保留本机版本并重新同步' : '已采用云端版本')
+      message.success(strategy === 'keep_local' ? '已保留本机操作；请查看同步状态确认结果' : '已采用云端版本')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '冲突处理失败，请重试')
     } finally {
@@ -129,7 +130,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
                   </Space>
                   <Row gutter={[12, 12]}>
                     <Col xs={24} sm={12} style={{ minWidth: 0 }}>
-                      <Text strong><LaptopOutlined /> 本机未同步版本</Text>
+                      <Text strong><LaptopOutlined /> {item._conflictOpType === 'delete' ? '本机操作：删除这条记录' : '本机未同步版本'}</Text>
                       <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: '展开' }} style={{ margin: '4px 0 0', overflowWrap: 'anywhere' }}>
                         {preview(item, module)}
                       </Paragraph>
@@ -137,7 +138,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
                     <Col xs={24} sm={12} style={{ minWidth: 0 }}>
                       <Text strong><CloudOutlined /> 云端版本</Text>
                       <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: '展开' }} style={{ margin: '4px 0 0', overflowWrap: 'anywhere' }}>
-                        {server ? preview(server, module) : '云端版本摘要不可用；仍可采用后重新拉取。'}
+                        {server?.__deleted ? '云端已删除这条记录' : server ? preview(server, module) : '云端摘要暂不可用，请重试同步后再处理。'}
                       </Paragraph>
                     </Col>
                   </Row>
@@ -147,7 +148,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
                       loading={resolvingKey === `${key}:keep_local`}
                       onClick={() => void resolve(module, item._localId, 'keep_local')}
                     >
-                      保留本机并同步
+                      {item._conflictOpType === 'delete' ? '继续删除云端记录' : server?.__deleted ? '用本机内容重新创建' : '保留本机并同步'}
                     </Button>
                     <Button
                       danger

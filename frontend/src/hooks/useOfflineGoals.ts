@@ -1,8 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type LocalGoal } from '../db/studyDb'
-import { enqueueOperation } from '../sync/enqueueOperation'
+import { db as activeDb, type LocalGoal } from '../db/studyDb'
+import { saveLocalOperation } from '../sync/enqueueOperation'
 import { syncEngine } from '../sync/SyncEngine'
-import { apiFetch, isNetworkOnline } from '../services/apiClient'
 
 export interface OfflineGoalItem {
   _localId: string
@@ -37,13 +36,10 @@ function toOfflineItem(local: LocalGoal): OfflineGoalItem {
 }
 
 export function useOfflineGoals(statusFilter?: string) {
+  const db = activeDb
   const allGoals = useLiveQuery(
-    () =>
-      db.goals
-        .where('_syncStatus')
-        .notEqual('pending_delete')
-        .toArray(),
-    [],
+    () => db.goals.where('_syncStatus').notEqual('pending_delete').toArray(),
+    [db],
     [] as LocalGoal[],
   )
 
@@ -53,7 +49,6 @@ export function useOfflineGoals(statusFilter?: string) {
   }
 
   filtered.sort((a, b) => (b._updatedAt > a._updatedAt ? 1 : -1))
-
   const goals: OfflineGoalItem[] = filtered.map(toOfflineItem)
 
   const createGoal = async (data: {
@@ -82,68 +77,30 @@ export function useOfflineGoals(statusFilter?: string) {
       material_title: null,
       created_at: now,
     }
-    await db.goals.put(record)
-    await enqueueOperation('goals', 'create', localId, record as unknown as Record<string, unknown>)
+    const saved = await saveLocalOperation<LocalGoal>('goals', 'create', localId, record, db)
+    if (!saved) throw new Error('Unable to save goal locally')
     void syncEngine.syncAll()
-    return toOfflineItem(record)
+    return toOfflineItem(saved)
   }
 
   const updateGoal = async (
     localId: string,
     data: Record<string, unknown>,
   ): Promise<OfflineGoalItem | null> => {
-    const existing = await db.goals.get(localId)
-    if (!existing) return null
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这个目标存在同步冲突，请先在账户菜单中处理')
-    }
+    const updates: Record<string, unknown> = {}
+    if (data.title !== undefined) updates.title = data.title
+    if (data.description !== undefined) updates.description = data.description
+    if (data.target_level !== undefined) updates.target_level = data.target_level
+    if (data.deadline !== undefined) updates.deadline = data.deadline
+    if (data.status !== undefined) updates.status = data.status
 
-    const now = new Date().toISOString()
-    const updates: Partial<LocalGoal> = { _updatedAt: now }
-
-    if (data.title !== undefined) updates.title = data.title as string
-    if (data.description !== undefined) updates.description = data.description as string | null
-    if (data.target_level !== undefined) updates.target_level = data.target_level as string | null
-    if (data.deadline !== undefined) updates.deadline = data.deadline as string | null
-    if (data.status !== undefined) updates.status = data.status as string
-
-    if (existing._syncStatus === 'synced') {
-      updates._syncStatus = 'pending_update'
-    }
-
-    await db.goals.update(localId, updates)
-    await enqueueOperation('goals', 'update', localId, updates as Record<string, unknown>)
+    const saved = await saveLocalOperation<LocalGoal>('goals', 'update', localId, updates, db)
     void syncEngine.syncAll()
-
-    const updated = await db.goals.get(localId)
-    return updated ? toOfflineItem(updated) : null
+    return saved ? toOfflineItem(saved) : null
   }
 
   const deleteGoal = async (localId: string): Promise<void> => {
-    const existing = await db.goals.get(localId)
-    if (!existing) return
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这个目标存在同步冲突，请先在账户菜单中处理')
-    }
-
-    // 本地尚未同步到服务端，直接本地删除
-    if (!existing._serverId) {
-      await db.goals.delete(localId)
-      await db.opQueue.where({ module: 'goals', localId }).delete()
-      return
-    }
-
-    // 在线时直接调用服务端删除，只有成功才更新本地，避免“提示成功但服务端失败”
-    if (isNetworkOnline()) {
-      await apiFetch(`/api/goals/${existing._serverId}`, { method: 'DELETE' })
-      await db.goals.delete(localId)
-      await db.opQueue.where({ module: 'goals', localId }).delete()
-      return
-    }
-
-    // 离线时进入队列，等待后续同步
-    await db.goals.update(localId, { _syncStatus: 'pending_delete' })
-    await enqueueOperation('goals', 'delete', localId, {})
+    await saveLocalOperation<LocalGoal>('goals', 'delete', localId, {}, db)
     void syncEngine.syncAll()
   }
 

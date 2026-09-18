@@ -19,6 +19,7 @@ from app.models.user import User
 from app.utils.ai_errors import format_ai_provider_error
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils.outbound_url import validate_ai_provider_url
+from app.utils.outbound_transport import create_ai_http_client
 from app.models.search_settings import AISearchSettings
 from app.services.search_settings_service import (
     get_or_create_search_settings,
@@ -357,7 +358,7 @@ async def _fetch_model_catalog(
 
     timeout = httpx.Timeout(12.0, connect=5.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with create_ai_http_client(timeout=timeout) as client:
             if provider_kind == "claude":
                 root = (base_url or "https://api.anthropic.com").rstrip("/")
                 if root.endswith("/v1/messages"):

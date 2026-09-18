@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const authApiMock = vi.hoisted(() => ({
@@ -76,19 +77,53 @@ describe('authStore desktop saved login', () => {
     expect(useAuthStore.getState().user?.username).toBe('bob')
   })
 
-  it('keeps saved credentials on plain logout', () => {
+  it('keeps saved credentials on plain logout', async () => {
     useAuthStore.getState().logout()
 
     expect(apiClientMock.clearToken).toHaveBeenCalled()
-    expect(authApiMock.logoutSession).toHaveBeenCalled()
+    await vi.waitFor(() => expect(authApiMock.logoutSession).toHaveBeenCalled())
     expect(desktopAuthMock.clearSavedLogin).not.toHaveBeenCalled()
   })
 
-  it('can clear saved credentials on explicit logout', () => {
+  it('can clear saved credentials on explicit logout', async () => {
     useAuthStore.getState().logout({ clearSavedPassword: true })
 
     expect(apiClientMock.clearToken).toHaveBeenCalled()
-    expect(authApiMock.logoutSession).toHaveBeenCalled()
+    await vi.waitFor(() => expect(authApiMock.logoutSession).toHaveBeenCalled())
     expect(desktopAuthMock.clearSavedLogin).toHaveBeenCalled()
+  })
+
+  it('coalesces concurrent auth checks before opening the account database', async () => {
+    authApiMock.getMe.mockResolvedValue({ id: 3, username: 'carol', created_at: '2026-09-12' })
+    const [first, second] = await Promise.all([
+      useAuthStore.getState().checkAuth(), useAuthStore.getState().checkAuth(),
+    ])
+    expect(first && second).toBe(true)
+    expect(authApiMock.getMe).toHaveBeenCalledOnce()
+  })
+
+  it('does not resurrect a login after logout while getMe is pending', async () => {
+    let finish!: (user: unknown) => void
+    authApiMock.getMe.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const login = useAuthStore.getState().login('alice', 'secret')
+    const rejected = expect(login).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    useAuthStore.getState().logout()
+    finish({ id: 1, username: 'alice', created_at: '2026-09-12' })
+    await rejected
+    expect(useAuthStore.getState().isAuthenticated).toBe(false)
+  })
+
+  it('waits for the old cookie logout before sending the next login', async () => {
+    let finish!: () => void
+    authApiMock.logoutSession.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+    useAuthStore.getState().logout()
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    authApiMock.getMe.mockResolvedValue({ id: 2, username: 'bob', created_at: '2026-09-12' })
+    const login = useAuthStore.getState().login('bob', 'secret')
+    await Promise.resolve()
+    expect(authApiMock.login).not.toHaveBeenCalled()
+    finish(); await login
+    expect(useAuthStore.getState().user?.id).toBe(2)
   })
 })

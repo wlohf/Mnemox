@@ -3,6 +3,7 @@ import re
 import json
 from typing import List, Dict, Any, AsyncIterator, Optional
 import httpx
+from app.utils.outbound_transport import create_claude_http_client
 from app.ai.base import AIProvider
 
 
@@ -44,6 +45,9 @@ class ClaudeProvider(AIProvider):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
+
+    def _http_client(self) -> httpx.AsyncClient:
+        return create_claude_http_client(timeout=120.0)
 
     def _supports_image_input(self) -> bool:
         model_name = (self.model or "").lower()
@@ -112,7 +116,7 @@ class ClaudeProvider(AIProvider):
         if system_prompt:
             payload["system"] = system_prompt
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with self._http_client() as client:
             response = await client.post(
                 self._messages_url(),
                 headers=self._headers(),
@@ -153,7 +157,7 @@ class ClaudeProvider(AIProvider):
         if system_prompt:
             payload["system"] = system_prompt
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with self._http_client() as client:
             async with client.stream(
                 "POST",
                 self._messages_url(),

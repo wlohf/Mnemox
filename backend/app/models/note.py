@@ -1,5 +1,5 @@
 """笔记相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -29,6 +29,7 @@ class Note(Base):
     source_conflict_file_id = Column(String(160), nullable=True, comment="旧路径冲突候选的文件稳定标识")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+    sync_version = Column(Integer, nullable=False, server_default=text("1"), default=1, comment="离线同步版本")
     
     __table_args__ = (
         Index(
@@ -39,6 +40,8 @@ class Note(Base):
             unique=True,
         ),
     )
+
+    __mapper_args__ = {"version_id_col": sync_version}
 
     # 关联关系
     material = relationship("Material", back_populates="notes")

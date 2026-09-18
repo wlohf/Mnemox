@@ -18,16 +18,33 @@ from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
+MAX_BCRYPT_PASSWORD_BYTES = 72
+
+
+def password_fits_bcrypt(password: str) -> bool:
+    """Return whether a password can be processed without bcrypt truncation."""
+    try:
+        return len(password.encode("utf-8")) <= MAX_BCRYPT_PASSWORD_BYTES
+    except (AttributeError, UnicodeError):
+        return False
+
 
 def hash_password(password: str) -> str:
-    pwd_bytes = password.encode("utf-8")
+    if not password_fits_bcrypt(password):
+        raise ValueError(f"密码 UTF-8 编码后不能超过 {MAX_BCRYPT_PASSWORD_BYTES} 字节")
     salt = bcrypt.gensalt()
-    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
+    """Verify a password without accepting bcrypt's historical truncation behavior."""
+    if not password_fits_bcrypt(plain):
+        return False
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except (AttributeError, TypeError, UnicodeError, ValueError):
+        # A corrupt or unsupported stored hash is an authentication failure, not a 500.
+        return False
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
@@ -77,4 +94,14 @@ async def get_current_user(
     # Bearer remains supported for API/CLI clients. The browser uses a
     # HttpOnly cookie so its durable session token is not readable by XSS.
     candidate = token or request.cookies.get(settings.AUTH_COOKIE_NAME, "")
-    return await get_user_from_token(candidate, db)
+    user = await get_user_from_token(candidate, db)
+    expected_user = request.headers.get("X-Mnemox-User-Id")
+    if expected_user is not None and expected_user != str(user.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "SESSION_USER_MISMATCH",
+                "message": "登录账号已变化，请重新登录",
+            },
+        )
+    return user

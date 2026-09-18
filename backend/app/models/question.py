@@ -1,5 +1,5 @@
 """题目和答题记录相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, Float, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -64,6 +64,9 @@ class WrongQuestion(Base):
     )
     mastery_score = Column(Float, default=0.0, comment="掌握度评分 0-100，基于回忆难度+复习次数+间隔天数综合计算")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    sync_version = Column(Integer, nullable=False, server_default=text("1"), default=1, comment="离线同步版本")
+
+    __mapper_args__ = {"version_id_col": sync_version}
     
     # 关联关系
     question = relationship("Question", back_populates="wrong_questions")

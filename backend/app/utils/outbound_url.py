@@ -31,6 +31,30 @@ def _resolve_host(hostname: str) -> tuple[str, ...]:
     return addresses
 
 
+def resolve_allowed_ai_addresses(hostname: str) -> tuple[str, ...]:
+    """Resolve an AI hostname and enforce the current deployment policy.
+
+    This intentionally bypasses the validation cache: callers at the transport
+    boundary must resolve immediately before connecting, then pin the verified IP.
+    """
+    try:
+        addresses = _resolve_host(hostname)
+    except (OSError, socket.gaierror) as exc:
+        raise ValueError("无法解析服务地址") from exc
+
+    if not (_is_public_deployment() and not settings.ALLOW_PRIVATE_AI_ENDPOINTS):
+        return addresses
+
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ValueError("AI 服务地址解析结果无效") from exc
+        if not ip.is_global:
+            raise ValueError("公网部署不允许访问内网或本机 AI 服务地址")
+    return addresses
+
+
 async def _resolved_addresses(hostname: str) -> tuple[str, ...]:
     now = time.monotonic()
     cached = _dns_cache.get(hostname)

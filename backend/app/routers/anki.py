@@ -8,7 +8,7 @@ import csv
 import io
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,8 @@ from app.services.learning_event_service import (
 from app.services.projection_outbox_service import process_event_projection
 from app.services.review_scheduler import apply_review
 from app.utils.prompt_safety import wrap_untrusted_context
+from app.utils.sync import begin_idempotent_operation, complete_idempotent_operation, flush_sync_mutation, require_matching_version
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 
 router = APIRouter()
@@ -40,6 +42,13 @@ class AnkiCardCreate(BaseModel):
 
 class AnkiCardReview(BaseModel):
     quality: int = Field(..., ge=0, le=5)
+
+
+class AnkiCardUpdate(BaseModel):
+    front: Optional[str] = Field(None, min_length=1)
+    back: Optional[str] = Field(None, min_length=1)
+    tags: Optional[str] = None
+    note: Optional[str] = None
 
 
 class AnkiAIGenerateRequest(BaseModel):
@@ -61,15 +70,16 @@ def _to_item(card: AnkiCard) -> dict:
         "source": card.source,
         "tags": card.tags,
         "note": card.note,
-        "due_at": card.due_at.isoformat() if card.due_at else None,
+        "due_at": to_utc_iso(card.due_at) if card.due_at else None,
         "interval_days": card.interval_days,
         "ease_factor": card.ease_factor,
         "repetitions": card.repetitions,
         "last_quality": card.last_quality,
         "stability": card.stability,
         "difficulty": card.difficulty,
-        "created_at": card.created_at.isoformat() if card.created_at else None,
-        "updated_at": card.updated_at.isoformat() if card.updated_at else None,
+        "created_at": to_utc_iso(card.created_at) if card.created_at else None,
+        "updated_at": to_utc_iso(card.updated_at) if card.updated_at else None,
+        "sync_version": card.sync_version,
     }
 
 
@@ -101,9 +111,16 @@ async def list_cards(
 @router.post("/cards")
 async def create_card(
     body: AnkiCardCreate,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="POST", path="/api/anki/cards", body=body.dict(),
+    )
+    if operation.replay is not None:
+        return operation.replay
     card = AnkiCard(
         user_id=current_user.id,
         front=body.front.strip(),
@@ -111,7 +128,7 @@ async def create_card(
         source="manual",
         tags=(body.tags or "").strip() or None,
         note=(body.note or "").strip() or None,
-        due_at=datetime.now(),
+        due_at=utc_now_db(),
         interval_days=1,
         ease_factor=250,
         repetitions=0,
@@ -130,7 +147,66 @@ async def create_card(
         item_id=int(card.id),
         reason="card_created",
     )
-    return _to_item(card)
+    item = _to_item(card)
+    await complete_idempotent_operation(db, operation, item)
+    return item
+
+
+@router.put("/cards/{card_id}")
+async def update_card(
+    card_id: int,
+    body: AnkiCardUpdate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="PUT", path=f"/api/anki/cards/{card_id}", body=body.dict(exclude_unset=True), if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
+    card = await db.scalar(select(AnkiCard).where(AnkiCard.id == card_id, AnkiCard.user_id == current_user.id))
+    if card is None:
+        raise HTTPException(status_code=404, detail="卡片不存在")
+    require_matching_version(card.sync_version, if_match)
+    for field, value in body.dict(exclude_unset=True).items():
+        if field in {"front", "back"}:
+            if value is None or not value.strip():
+                raise HTTPException(status_code=400, detail="卡片正反面内容不能为空")
+            value = value.strip()
+        setattr(card, field, value)
+    await flush_sync_mutation(db)
+    await db.refresh(card)
+    item = _to_item(card)
+    await complete_idempotent_operation(db, operation, item)
+    return item
+
+
+@router.delete("/cards/{card_id}")
+async def delete_card(
+    card_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="DELETE", path=f"/api/anki/cards/{card_id}", body={}, if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
+    card = await db.scalar(select(AnkiCard).where(AnkiCard.id == card_id, AnkiCard.user_id == current_user.id))
+    if card is None:
+        raise HTTPException(status_code=404, detail="卡片不存在")
+    require_matching_version(card.sync_version, if_match)
+    await db.delete(card)
+    await flush_sync_mutation(db)
+    item = {"ok": True}
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.post("/cards/{card_id}/review")

@@ -78,9 +78,12 @@ export async function getMe(): Promise<UserInfo | null> {
   }
 }
 
-export async function logoutSession(): Promise<void> {
+export async function logoutSession(expectedUserId?: number): Promise<void> {
   try {
-    await apiFetch('/api/auth/logout', { method: 'POST' })
+    await apiFetch('/api/auth/logout', {
+      method: 'POST',
+      headers: expectedUserId === undefined ? undefined : { 'X-Mnemox-User-Id': String(expectedUserId) },
+    })
   } catch {
     // The browser may already have an expired cookie; local logout should
     // still complete in that case.

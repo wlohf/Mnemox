@@ -3,6 +3,7 @@ import json
 from typing import List, Dict, AsyncIterator, Any, Optional, cast
 
 from openai import AsyncOpenAI
+from app.utils.outbound_transport import create_openai_http_client
 from app.ai.base import AIProvider
 from app.services.web_search import search_web
 
@@ -81,10 +82,24 @@ class OpenAIProvider(AIProvider):
             provider_name=provider_name,
         )
         self.base_url = (base_url or "").rstrip("/")
-        kwargs: Dict[str, Any] = {"api_key": api_key}
+        kwargs: Dict[str, Any] = {
+            "api_key": api_key,
+            # Use the installed SDK's native HTTP stack with redirects disabled
+            # and a DNS-pinning connection backend.
+            "http_client": create_openai_http_client(),
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self.client = AsyncOpenAI(**kwargs)
+
+    def configure_extraction(self, max_output_tokens: int) -> None:
+        """Disable SDK retries for this extraction-bound client instance."""
+        super().configure_extraction(max_output_tokens)
+        self.client.max_retries = 0
+
+    async def close_extraction(self) -> None:
+        """Close the extraction client's pinned transport."""
+        await self.client.close()
 
     def _uses_official_openai_api(self) -> bool:
         return not self.base_url or self.base_url == "https://api.openai.com/v1"

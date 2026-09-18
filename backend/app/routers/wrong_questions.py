@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -21,6 +21,8 @@ from app.services.concept_service import link_concept, record_concept_source_evi
 from app.services.learner_model_service import record_evidence, record_review_result_evidence
 from app.services.review_scheduler import apply_review
 from app.models.learning_event import EventType
+from app.utils.sync import begin_idempotent_operation, complete_idempotent_operation, flush_sync_mutation, require_matching_version
+from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 router = APIRouter()
 
@@ -104,9 +106,10 @@ def _to_item(wq: WrongQuestion) -> dict:
         "concept_id": wq.concept_id,
         "recall_difficulty": wq.recall_difficulty,
         "mastery_score": wq.mastery_score,
-        "next_review_at": wq.next_review_at.isoformat() if wq.next_review_at else None,
-        "last_wrong_at": wq.last_wrong_at.isoformat() if wq.last_wrong_at else None,
-        "created_at": wq.created_at.isoformat() if wq.created_at else None,
+        "next_review_at": to_utc_iso(wq.next_review_at) if wq.next_review_at else None,
+        "last_wrong_at": to_utc_iso(wq.last_wrong_at) if wq.last_wrong_at else None,
+        "created_at": to_utc_iso(wq.created_at) if wq.created_at else None,
+        "sync_version": wq.sync_version,
     }
 
 
@@ -178,7 +181,7 @@ async def list_wrong_questions(
     if mastery_status:
         query = query.where(WrongQuestion.mastery_status == mastery_status)
     if due_only:
-        now = datetime.now()
+        now = utc_now_db()
         query = query.where(
             WrongQuestion.next_review_at.isnot(None),
             WrongQuestion.next_review_at <= now,
@@ -193,9 +196,16 @@ async def list_wrong_questions(
 @router.post("")
 async def create_wrong_question(
     body: WrongQuestionCreate,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="POST", path="/api/wrong-questions", body=body.dict(),
+    )
+    if operation.replay is not None:
+        return operation.replay
     chapter_id = body.chapter_id or await _ensure_default_chapter(db, user_id=current_user.id)
     await _ensure_user_chapter(db, chapter_id, current_user.id)
 
@@ -211,7 +221,7 @@ async def create_wrong_question(
     db.add(question)
     await db.flush()
 
-    now = datetime.now()
+    now = utc_now_db()
     wrong = WrongQuestion(
         user_id=current_user.id,
         question_id=question.id,
@@ -298,16 +308,26 @@ async def create_wrong_question(
     saved = await _get_wrong_question_for_response(db, wrong.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="错题保存失败")
-    return _to_item(saved)
+    item = _to_item(saved)
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.put("/{wrong_question_id}")
 async def update_wrong_question(
     wrong_question_id: int,
     body: WrongQuestionUpdate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="PUT", path=f"/api/wrong-questions/{wrong_question_id}", body=body.dict(exclude_unset=True), if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     result = await db.execute(
         _with_question_and_chapter(
             select(WrongQuestion).where(
@@ -319,21 +339,24 @@ async def update_wrong_question(
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=404, detail="错题不存在")
+    require_matching_version(item.sync_version, if_match)
 
     if body.mastery_status is not None:
         item.mastery_status = body.mastery_status
     if body.next_review_at is not None:
-        item.next_review_at = body.next_review_at
+        item.next_review_at = to_db_utc(body.next_review_at)
     if body.increment_review_count:
         item.review_count = (item.review_count or 0) + 1
     if body.recall_difficulty and body.recall_difficulty in ("easy", "hard", "forgot"):
         item.recall_difficulty = body.recall_difficulty
 
-    await db.flush()
+    await flush_sync_mutation(db)
     saved = await _get_wrong_question_for_response(db, item.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="错题保存失败")
-    return _to_item(saved)
+    response = _to_item(saved)
+    await complete_idempotent_operation(db, operation, response)
+    return response
 
 
 @router.post("/{wrong_question_id}/review")
@@ -371,7 +394,7 @@ async def review_wrong_question(
     )
     review_task = review_result.scalar_one_or_none()
 
-    now = datetime.now()
+    now = utc_now_db()
     if review_task is None:
         review_task = ReviewSchedule(
             user_id=current_user.id,
@@ -445,9 +468,17 @@ async def review_wrong_question(
 @router.delete("/{wrong_question_id}")
 async def delete_wrong_question(
     wrong_question_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="DELETE", path=f"/api/wrong-questions/{wrong_question_id}", body={}, if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     result = await db.execute(
         select(WrongQuestion)
         .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
@@ -459,6 +490,7 @@ async def delete_wrong_question(
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=404, detail="错题不存在")
+    require_matching_version(item.sync_version, if_match)
 
     # 级联删除关联的 ReviewSchedule（复习中心的复习任务）
     from sqlalchemy import delete
@@ -485,4 +517,7 @@ async def delete_wrong_question(
     )
 
     await db.delete(item)
-    return {"ok": True}
+    await flush_sync_mutation(db)
+    response = {"ok": True}
+    await complete_idempotent_operation(db, operation, response)
+    return response

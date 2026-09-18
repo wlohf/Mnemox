@@ -1,179 +1,20 @@
-import { db, type LocalNote, type QueuedOperation } from '../../db/studyDb'
-import type { ModuleSyncAdapter } from '../SyncEngine'
-import { apiFetch } from '../../services/apiClient'
+import { createCrudAdapter, pick } from './createCrudAdapter'
+import { utcTimestamp, type ServerEntity } from '../syncProtocol'
 
-interface ServerNote {
-  id: number
-  title: string
-  content: string
-  note_type: string | null
-  material_id: number | null
-  chapter_id: number | null
-  tags: string[]
-  links: Array<{ id?: number; link_type: string; link_id: number }>
-  created_at: string | null
-  updated_at: string | null
+function body(payload: Record<string, unknown>) {
+  const result = pick(payload, ['title', 'content', 'note_type', 'material_id', 'chapter_id'])
+  for (const key of ['tags', 'links']) {
+    if (payload[key] !== undefined) result[key] = typeof payload[key] === 'string' ? JSON.parse(payload[key] as string) : payload[key]
+  }
+  return result
 }
-
-function serverChangedSince(serverUpdatedAt: string | null, lastSyncedAt: string | null): boolean {
-  if (!lastSyncedAt) return false
-  const serverTime = Date.parse(serverUpdatedAt || '')
-  const syncedTime = Date.parse(lastSyncedAt)
-  return Number.isFinite(serverTime) && (!Number.isFinite(syncedTime) || serverTime > syncedTime)
-}
-
-export const notesSyncAdapter: ModuleSyncAdapter = {
-  module: 'notes',
-
-  async checkConflict(op) {
-    const local = await db.notes.get(op.localId)
-    if (!local?._serverId || !local._lastSyncedAt) return { conflict: false }
-    const serverNotes = await apiFetch<ServerNote[]>('/api/notes')
-    const server = serverNotes.find((item) => item.id === local._serverId)
-    if (!server) return { conflict: true, serverData: { __deleted: true } }
-    return {
-      conflict: serverChangedSince(server.updated_at ?? server.created_at, local._lastSyncedAt),
-      serverData: server,
-    }
-  },
-
-  async pushCreate(op: QueuedOperation) {
-    const payload = JSON.parse(op.payload) as Record<string, unknown>
-    const body = {
-      title: payload.title ?? '',
-      content: payload.content ?? '',
-      note_type: payload.note_type ?? 'general',
-      material_id: payload.material_id ?? undefined,
-      chapter_id: payload.chapter_id ?? undefined,
-      tags: payload.tags ? JSON.parse(payload.tags as string) : [],
-      links: payload.links ? JSON.parse(payload.links as string) : [],
-    }
-
-    const server = await apiFetch<ServerNote>('/api/notes', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    })
-
-    await db.notes.update(op.localId, {
-      _serverId: server.id,
-      _syncStatus: 'synced',
-      _lastSyncedAt: new Date().toISOString(),
-      _updatedAt: server.updated_at ?? new Date().toISOString(),
-    })
-  },
-
-  async pushUpdate(op: QueuedOperation) {
-    const local = await db.notes.get(op.localId)
-    if (!local || !local._serverId) throw new Error('Cannot push update: no serverId')
-
-    const payload = JSON.parse(op.payload) as Record<string, unknown>
-    const body: Record<string, unknown> = {}
-    if (payload.title !== undefined) body.title = payload.title
-    if (payload.content !== undefined) body.content = payload.content
-    if (payload.note_type !== undefined) body.note_type = payload.note_type
-    if (payload.material_id !== undefined) body.material_id = payload.material_id
-    if (payload.chapter_id !== undefined) body.chapter_id = payload.chapter_id
-    if (payload.tags !== undefined) body.tags = JSON.parse(payload.tags as string)
-    if (payload.links !== undefined) body.links = JSON.parse(payload.links as string)
-
-    const server = await apiFetch<ServerNote>(`/api/notes/${local._serverId}`, {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    })
-
-    await db.notes.update(op.localId, {
-      _syncStatus: 'synced',
-      _lastSyncedAt: new Date().toISOString(),
-      _updatedAt: server.updated_at ?? new Date().toISOString(),
-    })
-  },
-
-  async pushDelete(op: QueuedOperation) {
-    const local = await db.notes.get(op.localId)
-    if (!local) return
-    if (!local._serverId) {
-      await db.notes.delete(op.localId)
-      return
-    }
-
-    try {
-      await apiFetch(`/api/notes/${local._serverId}`, { method: 'DELETE' })
-    } catch {
-      // 404 means already deleted on server — that's fine, other errors will propagate
-    }
-    await db.notes.delete(op.localId)
-  },
-
-  async pullAll() {
-    const serverNotes = await apiFetch<ServerNote[]>('/api/notes')
-    const serverMap = new Map(serverNotes.map((n) => [n.id, n]))
-
-    const allLocal = await db.notes.toArray()
-    const localByServerId = new Map<number, LocalNote>()
-    for (const l of allLocal) {
-      if (l._serverId != null) localByServerId.set(l._serverId, l)
-    }
-
-    // Upsert server records into local
-    for (const sn of serverNotes) {
-      const local = localByServerId.get(sn.id)
-      const serverUpdatedAt = sn.updated_at ?? sn.created_at ?? new Date().toISOString()
-
-      if (!local) {
-        // New record from server
-        await db.notes.put({
-          _localId: crypto.randomUUID(),
-          _serverId: sn.id,
-          _syncStatus: 'synced',
-          _updatedAt: serverUpdatedAt,
-          _lastSyncedAt: new Date().toISOString(),
-          _conflictAt: null,
-          _conflictServerData: null,
-          title: sn.title,
-          content: sn.content,
-          note_type: sn.note_type,
-          material_id: sn.material_id,
-          chapter_id: sn.chapter_id,
-          tags: JSON.stringify(sn.tags ?? []),
-          links: JSON.stringify(sn.links ?? []),
-          created_at: sn.created_at,
-        })
-      } else if (local._syncStatus === 'synced') {
-        // Overwrite with server data
-        await db.notes.update(local._localId, {
-          title: sn.title,
-          content: sn.content,
-          note_type: sn.note_type,
-          material_id: sn.material_id,
-          chapter_id: sn.chapter_id,
-          tags: JSON.stringify(sn.tags ?? []),
-          links: JSON.stringify(sn.links ?? []),
-          _updatedAt: serverUpdatedAt,
-          _lastSyncedAt: new Date().toISOString(),
-          created_at: sn.created_at,
-        })
-      } else if (local._syncStatus === 'pending_update') {
-        if (serverChangedSince(serverUpdatedAt, local._lastSyncedAt)) {
-          // A pull must not silently decide a concurrent edit either.  This
-          // path covers a server update that arrived while a previous push was
-          // retrying or failed.
-          await db.notes.update(local._localId, {
-            _syncStatus: 'conflicted',
-            _conflictAt: new Date().toISOString(),
-            _conflictServerData: JSON.stringify(sn),
-          })
-          await db.opQueue.where({ module: 'notes', localId: local._localId }).delete()
-        }
-      }
-      // pending_delete → keep delete intent, don't overwrite
-      // pending_create → shouldn't have a serverId, skip
-    }
-
-    // Detect server-side deletions: local synced records whose serverId is no longer on server
-    for (const local of allLocal) {
-      if (local._serverId != null && local._syncStatus === 'synced' && !serverMap.has(local._serverId)) {
-        await db.notes.delete(local._localId)
-      }
-    }
-  },
-}
+export const notesSyncAdapter = createCrudAdapter({
+  module: 'notes', collection: '/api/notes',
+  createBody: payload => ({ title: '', content: '', note_type: 'general', ...body(payload) }),
+  updateBody: body,
+  mapServer: (server: ServerEntity) => ({
+    ...pick(server, ['title', 'content', 'note_type', 'material_id', 'chapter_id']),
+    tags: JSON.stringify(server.tags ?? []), links: JSON.stringify(server.links ?? []),
+    created_at: utcTimestamp(server.created_at),
+  }),
+})

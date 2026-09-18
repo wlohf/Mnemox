@@ -380,6 +380,16 @@ _FIELD_LABELS = {
 }
 
 
+from sqlalchemy.orm.exc import StaleDataError
+
+
+@app.exception_handler(StaleDataError)
+async def sync_conflict_exception_handler(request: Request, exc: StaleDataError):
+    return JSONResponse(status_code=409, content={"detail": {
+        "code": "SYNC_CONFLICT", "message": "资源已被其他设备修改，请重新同步",
+    }})
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = []
@@ -496,6 +506,9 @@ async def health():
 # 引入路由
 from app.routers import materials, pomodoro, rag, plans, ai_settings, chat, conversations, chat_projects, wrong_questions, review, goals, study_sessions, memory, notes, learning, images, obsidian_import, auth, motivation, profile, prompt_templates, analytics, interventions, anki, system, agent, agent_memory, coach, concepts, learner_model, knowledge, outbox_operations
 
+from app.routers import sync as sync_router
+
+app.include_router(sync_router.router, prefix="/api/sync", tags=["离线同步"])
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 
 app.include_router(materials.router, prefix="/api/materials", tags=["资料管理"])
@@ -533,12 +546,46 @@ app.include_router(outbox_operations.router, prefix="/internal/outbox")
 ensure_data_dirs()
 
 
-async def _is_upload_owned_by_user(session, user_id: int, relative_path) -> bool:
-    """上传文件归属校验：图片按用户目录隔离，资料文件绑定 Material 归属。
+def _normalise_material_upload_path(file_path: str, uploads_root: Path) -> Path | None:
+    """Return a stored material path relative to ``uploads_root`` when safe.
 
-    - images/{user_id}/...：目录名必须等于当前用户 id。
-    - images/{filename}：早期 Obsidian 附件无归属元数据，保持旧行为（仅登录可见）。
-    - 其余文件：必须能在当前用户的 Material.file_path 中按文件名匹配到。
+    Material rows have historically stored an absolute path, a project-relative
+    ``data/uploads/...`` path, an ``uploads/...`` path, or just a filename.
+    Resolve each supported representation and accept it only if it stays under
+    the current uploads root.
+    """
+    try:
+        stored_path = Path(file_path)
+    except (TypeError, ValueError):
+        return None
+
+    if stored_path.is_absolute():
+        candidates = (stored_path,)
+    elif stored_path.parts[:2] == ("data", "uploads"):
+        candidates = (uploads_root.joinpath(*stored_path.parts[2:]),)
+    elif stored_path.parts[:1] == ("uploads",):
+        candidates = (uploads_root.joinpath(*stored_path.parts[1:]),)
+    else:
+        candidates = (
+            get_project_root() / stored_path,
+            uploads_root / stored_path,
+        )
+
+    for candidate in candidates:
+        try:
+            return candidate.resolve().relative_to(uploads_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return None
+
+
+async def _is_upload_owned_by_user(session, user_id: int, relative_path) -> bool:
+    """Return whether an upload path belongs to the requesting user.
+
+    User image directories are authoritative. Legacy ``images/{filename}``
+    files have no ownership metadata and therefore fail closed. Material files
+    are authorized only when their normalized stored path exactly matches the
+    requested path; filename suffix matching would permit collisions.
     """
     from sqlalchemy import select
 
@@ -546,22 +593,20 @@ async def _is_upload_owned_by_user(session, user_id: int, relative_path) -> bool
 
     parts = relative_path.parts
     if parts and parts[0] == "images":
-        if len(parts) >= 3:
-            return parts[1] == str(user_id)
-        return True
+        return len(parts) >= 3 and parts[1] == str(user_id)
 
-    filename = relative_path.name
-    if not filename:
+    if not parts:
         return False
+
+    uploads_root = get_uploads_dir().resolve()
     result = await session.execute(
-        select(Material.id)
-        .where(
-            Material.user_id == user_id,
-            Material.file_path.ilike(f"%{filename}"),
-        )
-        .limit(1)
+        select(Material.file_path).where(Material.user_id == user_id)
     )
-    return result.scalar_one_or_none() is not None
+    return any(
+        _normalise_material_upload_path(file_path, uploads_root) == relative_path
+        for file_path in result.scalars()
+        if file_path
+    )
 
 
 @app.get("/api/uploads/{file_path:path}")

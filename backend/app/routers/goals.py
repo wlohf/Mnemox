@@ -2,7 +2,7 @@
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func, and_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,8 @@ from app.auth import get_current_user
 from app.models.user import User
 from app.services.learning_event_service import record_learning_event
 from app.utils.pydantic_compat import provided_model_fields
+from app.utils.sync import begin_idempotent_operation, complete_idempotent_operation, flush_sync_mutation, require_matching_version
+from app.utils.utc import to_utc_iso, utc_now_db
 
 
 async def _ensure_user_chapter(db: AsyncSession, chapter_id: int, user_id: int) -> Chapter:
@@ -79,8 +81,9 @@ def _goal_item(g: Goal, material_title: Optional[str] = None) -> dict:
         "status": g.status,
         "material_id": g.material_id,
         "material_title": material_title,
-        "created_at": g.created_at.isoformat() if g.created_at else None,
-        "updated_at": g.updated_at.isoformat() if g.updated_at else None,
+        "created_at": to_utc_iso(g.created_at) if g.created_at else None,
+        "updated_at": to_utc_iso(g.updated_at) if g.updated_at else None,
+        "sync_version": g.sync_version,
     }
 
 
@@ -96,9 +99,10 @@ def _task_item(t: Task, chapter_title: Optional[str] = None) -> dict:
         "task_type": t.task_type,
         "planned_date": t.planned_date.isoformat() if t.planned_date else None,
         "status": t.status,
-        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "completed_at": to_utc_iso(t.completed_at) if t.completed_at else None,
+        "created_at": to_utc_iso(t.created_at) if t.created_at else None,
+        "updated_at": to_utc_iso(t.updated_at) if t.updated_at else None,
+        "sync_version": t.sync_version,
     }
 
 
@@ -131,9 +135,16 @@ async def list_goals(
 @router.post("")
 async def create_goal(
     body: GoalCreate,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="POST", path="/api/goals", body=body.dict(),
+    )
+    if operation.replay is not None:
+        return operation.replay
     if body.material_id:
         mat_result = await db.execute(
             select(Material).where(Material.id == body.material_id, Material.user_id == current_user.id)
@@ -163,16 +174,26 @@ async def create_goal(
         goal_id=int(goal.id),
         dedupe_key=f"goal.created:{goal.id}",
     )
-    return _goal_item(goal)
+    item = _goal_item(goal)
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.put("/tasks/{task_id}")
 async def update_task(
     task_id: int,
     body: TaskUpdate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="PUT", path=f"/api/goals/tasks/{task_id}", body=body.dict(exclude_unset=True), if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     # Verify task belongs to a goal owned by current_user
     result = await db.execute(select(Task).where(Task.id == task_id))
     task = result.scalar_one_or_none()
@@ -183,6 +204,7 @@ async def update_task(
     goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
     if not goal_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="任务不存在")
+    require_matching_version(task.sync_version, if_match)
 
     if body.chapter_id is not None:
         await _ensure_user_chapter(db, body.chapter_id, int(current_user.id))
@@ -228,11 +250,14 @@ async def update_task(
         previous_status = task.status
         task.status = body.status
         if body.status == "completed":
-            task.completed_at = task.completed_at or datetime.now()
+            task.completed_at = task.completed_at or utc_now_db()
         else:
             task.completed_at = None
 
-    await db.flush()
+    for field in ("description", "task_type", "planned_date", "chapter_id"):
+        if field in fields_set and getattr(body, field) is None:
+            setattr(task, field, None)
+    await flush_sync_mutation(db)
     await db.refresh(task)
     if body.status == "completed" and previous_status != "completed":
         await record_learning_event(
@@ -256,19 +281,30 @@ async def update_task(
             task_id=int(task.id),
             dedupe_key=f"task.updated:{task.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
         )
-    return _task_item(task)
+    item = _task_item(task)
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Task).where(Task.id == task_id))
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="DELETE", path=f"/api/goals/tasks/{task_id}", body={}, if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
+    result = await db.execute(select(Task).join(Goal).where(Task.id == task_id, Goal.user_id == current_user.id))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    require_matching_version(task.sync_version, if_match)
 
     # Check that the parent goal belongs to current user
     goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id, Goal.user_id == current_user.id))
@@ -289,7 +325,10 @@ async def delete_task(
         s.task_id = None
 
     await db.delete(task)
-    return {"ok": True}
+    await flush_sync_mutation(db)
+    item = {"ok": True}
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.get("/tasks/daily")
@@ -328,13 +367,22 @@ async def list_daily_tasks(
 async def update_goal(
     goal_id: int,
     body: GoalUpdate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="PUT", path=f"/api/goals/{goal_id}", body=body.dict(exclude_unset=True), if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.user_id == current_user.id))
     goal = result.scalar_one_or_none()
     if not goal:
         raise HTTPException(status_code=404, detail="目标不存在")
+    require_matching_version(goal.sync_version, if_match)
 
     if body.material_id is not None:
         mat_result = await db.execute(
@@ -354,7 +402,10 @@ async def update_goal(
     if body.status is not None:
         goal.status = body.status
 
-    await db.flush()
+    for field in ("description", "target_level", "deadline", "material_id"):
+        if field in provided_model_fields(body) and getattr(body, field) is None:
+            setattr(goal, field, None)
+    await flush_sync_mutation(db)
     await db.refresh(goal)
     await record_learning_event(
         db,
@@ -366,19 +417,30 @@ async def update_goal(
         goal_id=int(goal.id),
         dedupe_key=f"goal.updated:{goal.id}:{datetime.now().strftime('%Y%m%d%H%M%S')}",
     )
-    return _goal_item(goal)
+    item = _goal_item(goal)
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.delete("/{goal_id}")
 async def delete_goal(
     goal_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="DELETE", path=f"/api/goals/{goal_id}", body={}, if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.user_id == current_user.id))
     goal = result.scalar_one_or_none()
     if not goal:
         raise HTTPException(status_code=404, detail="目标不存在")
+    require_matching_version(goal.sync_version, if_match)
 
     # 显式查询任务，避免异步 Session 上访问 goal.tasks 懒加载导致 MissingGreenlet
     tasks_result = await db.execute(select(Task.id, Task.chapter_id).where(Task.goal_id == goal.id))
@@ -411,7 +473,10 @@ async def delete_goal(
         )
 
     await db.delete(goal)
-    return {"ok": True}
+    await flush_sync_mutation(db)
+    item = {"ok": True}
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.get("/{goal_id}/tasks")
@@ -453,9 +518,16 @@ async def list_goal_tasks(
 async def create_goal_task(
     goal_id: int,
     body: TaskCreate,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="POST", path=f"/api/goals/{goal_id}/tasks", body=body.dict(),
+    )
+    if operation.replay is not None:
+        return operation.replay
     goal_result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.user_id == current_user.id))
     if not goal_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="目标不存在")
@@ -494,7 +566,9 @@ async def create_goal_task(
         task_id=int(task.id),
         dedupe_key=f"task.created:{task.id}",
     )
-    return _task_item(task)
+    item = _task_item(task)
+    await complete_idempotent_operation(db, operation, item)
+    return item
 
 
 @router.get("/{goal_id}/time-summary")

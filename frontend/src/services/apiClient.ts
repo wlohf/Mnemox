@@ -1,4 +1,5 @@
 import { message } from 'antd'
+import { captureApiSession, invalidateApiSession, type ApiSessionScope } from './sessionScope'
 
 const TOKEN_KEY = 'study_assistant_token'
 
@@ -104,8 +105,14 @@ let _lastNetworkToastAt = 0
 export async function apiFetch<T = any>(
   url: string,
   options: RequestInit = {},
+  session: ApiSessionScope = captureApiSession(),
 ): Promise<T> {
+  session.assertActive()
   const headers = new Headers(options.headers || {})
+  if (session.userId !== null) headers.set('X-Mnemox-User-Id', String(session.userId))
+  const signal = options.signal
+    ? AbortSignal.any([session.signal, options.signal])
+    : session.signal
 
   // Set Content-Type for non-FormData requests
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
@@ -116,7 +123,8 @@ export async function apiFetch<T = any>(
   try {
     // Keep the fetch redirect behavior explicit while the browser attaches
     // the same-origin HttpOnly session cookie automatically.
-    res = await fetch(url, { ...options, headers, redirect: 'follow', credentials: 'same-origin' })
+    res = await fetch(url, { ...options, signal, headers, redirect: 'follow', credentials: 'same-origin' })
+    session.assertActive()
   } catch (err) {
     // TypeError from fetch usually means network failure
     if (err instanceof TypeError) {
@@ -154,6 +162,8 @@ export async function apiFetch<T = any>(
   if (!res.ok) {
     const errorText = await res.text()
     const parsed = parseErrorBody(errorText)
+    session.assertActive()
+    if (parsed.code === 'SESSION_USER_MISMATCH') invalidateApiSession()
     const error = new ApiRequestError(parsed.message || `HTTP ${res.status}`, {
       status: res.status,
       code: parsed.code,
@@ -166,5 +176,13 @@ export async function apiFetch<T = any>(
     throw error
   }
 
-  return res.json() as Promise<T>
+  const result = res.status === 204 ? undefined : await res.json()
+  session.assertActive()
+  return result as T
+}
+
+/** Capture before any local I/O, so a delayed operation cannot use a new login. */
+export function scopedApiFetch(): typeof apiFetch {
+  const session = captureApiSession()
+  return <T = any>(url: string, options: RequestInit = {}) => apiFetch<T>(url, options, session)
 }

@@ -1,8 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type LocalGoalTask } from '../db/studyDb'
-import { enqueueOperation } from '../sync/enqueueOperation'
+import { db as activeDb, type LocalGoalTask } from '../db/studyDb'
+import { saveLocalOperation } from '../sync/enqueueOperation'
 import { syncEngine } from '../sync/SyncEngine'
-import { apiFetch, isNetworkOnline } from '../services/apiClient'
 
 export interface OfflineGoalTaskItem {
   _localId: string
@@ -49,39 +48,27 @@ export function useOfflineGoalTasks(params?: {
   goalServerId?: number
   plannedDate?: string
 }) {
+  const db = activeDb
   const tasks = useLiveQuery(
-    () =>
-      db.goalTasks
-        .where('_syncStatus')
-        .notEqual('pending_delete')
-        .toArray(),
-    [],
+    () => db.goalTasks.where('_syncStatus').notEqual('pending_delete').toArray(),
+    [db],
     [] as LocalGoalTask[],
   )
 
   let filtered = tasks
-
-  // Filter by goal
   if (params?.goalLocalId) {
     const gLocalId = params.goalLocalId
-    filtered = filtered.filter(
-      (t) => t._localGoalId === gLocalId,
-    )
+    filtered = filtered.filter((t) => t._localGoalId === gLocalId)
   } else if (params?.goalServerId) {
     const gServerId = params.goalServerId
-    filtered = filtered.filter(
-      (t) => t.goal_id === gServerId,
-    )
+    filtered = filtered.filter((t) => t.goal_id === gServerId)
   }
-
-  // Filter by planned_date
   if (params?.plannedDate) {
     const pd = params.plannedDate
     filtered = filtered.filter((t) => t.planned_date === pd)
   }
 
   filtered.sort((a, b) => (b._updatedAt > a._updatedAt ? 1 : -1))
-
   const goalTasks: OfflineGoalTaskItem[] = filtered.map(toOfflineItem)
 
   const createGoalTask = async (
@@ -119,76 +106,34 @@ export function useOfflineGoalTasks(params?: {
       completed_at: null,
       created_at: now,
     }
-    await db.goalTasks.put(record)
-    await enqueueOperation('goalTasks', 'create', localId, record as unknown as Record<string, unknown>)
+    const saved = await saveLocalOperation<LocalGoalTask>('goalTasks', 'create', localId, record, db)
+    if (!saved) throw new Error('Unable to save goal task locally')
     void syncEngine.syncAll()
-    return toOfflineItem(record)
+    return toOfflineItem(saved)
   }
 
   const updateGoalTask = async (
     localId: string,
     data: Record<string, unknown>,
   ): Promise<OfflineGoalTaskItem | null> => {
-    const existing = await db.goalTasks.get(localId)
-    if (!existing) return null
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这个任务存在同步冲突，请先在账户菜单中处理')
-    }
+    const updates: Record<string, unknown> = {}
+    if (data.title !== undefined) updates.title = data.title
+    if (data.description !== undefined) updates.description = data.description
+    if (data.task_type !== undefined) updates.task_type = data.task_type
+    if (data.planned_date !== undefined) updates.planned_date = data.planned_date
+    if (data.parent_task_id !== undefined) updates.parent_task_id = data.parent_task_id
+    if (data.status !== undefined) updates.status = data.status
+    if (data.completed_at !== undefined) updates.completed_at = data.completed_at
 
-    const now = new Date().toISOString()
-    const updates: Partial<LocalGoalTask> = { _updatedAt: now }
-
-    if (data.title !== undefined) updates.title = data.title as string
-    if (data.description !== undefined) updates.description = data.description as string | null
-    if (data.task_type !== undefined) updates.task_type = data.task_type as string | null
-    if (data.planned_date !== undefined) updates.planned_date = data.planned_date as string | null
-    if (data.parent_task_id !== undefined) updates.parent_task_id = data.parent_task_id as number | null
-    if (data.status !== undefined) updates.status = data.status as string
-    if (data.completed_at !== undefined) updates.completed_at = data.completed_at as string | null
-
-    if (existing._syncStatus === 'synced') {
-      updates._syncStatus = 'pending_update'
-    }
-
-    await db.goalTasks.update(localId, updates)
-    await enqueueOperation('goalTasks', 'update', localId, updates as Record<string, unknown>)
+    const saved = await saveLocalOperation<LocalGoalTask>('goalTasks', 'update', localId, updates, db)
     void syncEngine.syncAll()
-
-    const updated = await db.goalTasks.get(localId)
-    return updated ? toOfflineItem(updated) : null
+    return saved ? toOfflineItem(saved) : null
   }
 
   const deleteGoalTask = async (localId: string): Promise<boolean> => {
-    const existing = await db.goalTasks.get(localId)
-    if (!existing) return false
-    if (existing._syncStatus === 'conflicted') {
-      throw new Error('这个任务存在同步冲突，请先在账户菜单中处理')
-    }
-
-    const now = new Date().toISOString()
-
-    if (existing._syncStatus === 'pending_create' || !existing._serverId) {
-      // Not yet synced to server, just delete locally
-      await db.goalTasks.delete(localId)
-      await db.opQueue.where({ module: 'goalTasks', localId }).delete()
-      return true
-    }
-
-    if (isNetworkOnline()) {
-      await apiFetch(`/api/goals/tasks/${existing._serverId}`, { method: 'DELETE' })
-      await db.goalTasks.delete(localId)
-      await db.opQueue.where({ module: 'goalTasks', localId }).delete()
-    } else {
-      // Mark as pending_delete for sync
-      await db.goalTasks.update(localId, {
-        _syncStatus: 'pending_delete',
-        _updatedAt: now,
-      })
-      await enqueueOperation('goalTasks', 'delete', localId, {})
-      void syncEngine.syncAll()
-    }
-
-    return true
+    const saved = await saveLocalOperation<LocalGoalTask>('goalTasks', 'delete', localId, {}, db)
+    void syncEngine.syncAll()
+    return saved !== undefined
   }
 
   return { goalTasks, createGoalTask, updateGoalTask, deleteGoalTask }

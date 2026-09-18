@@ -31,6 +31,39 @@ class GeminiProvider(AIProvider):
         )
         self.client = genai.Client(api_key=api_key)
 
+    def configure_extraction(self, max_output_tokens: int) -> None:
+        """Use one HTTP attempt for extraction-only non-streaming requests."""
+        super().configure_extraction(max_output_tokens)
+        try:
+            retry_options = types.HttpRetryOptions(attempts=1)
+            http_options = types.HttpOptions(retry_options=retry_options)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Installed google-genai SDK does not support per-request retry control"
+            ) from exc
+        if (
+            getattr(http_options, "retry_options", None) is None
+            or getattr(http_options.retry_options, "attempts", None) != 1
+        ):
+            raise RuntimeError(
+                "Installed google-genai SDK does not support per-request retry control"
+            )
+        self._extraction_http_options = http_options
+
+    async def close_extraction(self) -> None:
+        """Close the async Gemini client used by this extraction run."""
+        await self.client.aio.aclose()
+
+    def _chat_config(self, system_prompt: str, temperature: float):
+        config_kwargs = {
+            "system_instruction": system_prompt,
+            "temperature": temperature,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        if hasattr(self, "_extraction_http_options"):
+            config_kwargs["http_options"] = self._extraction_http_options
+        return types.GenerateContentConfig(**config_kwargs)
+
     def _convert_messages(self, messages: List[Dict[str, str]]) -> str:
         conversation = []
         for msg in messages:
@@ -49,11 +82,7 @@ class GeminiProvider(AIProvider):
         response = await self.client.aio.models.generate_content(
             model=self.model,
             contents=self._convert_messages(messages),
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=temperature,
-                max_output_tokens=self.max_output_tokens,
-            ),
+            config=self._chat_config(system_prompt, temperature),
         )
         usage = getattr(response, "usage_metadata", None)
         self.record_last_usage(

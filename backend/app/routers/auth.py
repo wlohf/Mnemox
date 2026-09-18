@@ -10,7 +10,16 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import create_access_token, get_current_user, hash_password, is_secure_cookie_environment, verify_password
+from app.auth import (
+    MAX_BCRYPT_PASSWORD_BYTES,
+    create_access_token,
+    get_current_user,
+    hash_password,
+    is_secure_cookie_environment,
+    password_fits_bcrypt,
+    verify_password,
+)
+from starlette.concurrency import run_in_threadpool
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
@@ -126,6 +135,11 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="用户名仅允许字母、数字、下划线和中文")
     if len(body.password) < settings.AUTH_PASSWORD_MIN_LENGTH:
         raise HTTPException(status_code=400, detail=f"密码长度不能小于 {settings.AUTH_PASSWORD_MIN_LENGTH} 位")
+    if not password_fits_bcrypt(body.password):
+        raise HTTPException(
+            status_code=400,
+            detail=f"密码 UTF-8 编码后不能超过 {MAX_BCRYPT_PASSWORD_BYTES} 字节",
+        )
     if username.casefold() in body.password.casefold():
         raise HTTPException(status_code=400, detail="密码不能包含用户名")
 
@@ -138,7 +152,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     user = User(
         username=username,
         email=body.email.lower(),
-        hashed_password=hash_password(body.password),
+        hashed_password=await run_in_threadpool(hash_password, body.password),
     )
     db.add(user)
     await db.flush()
@@ -167,7 +181,8 @@ async def login(response: Response, form: OAuth2PasswordRequestForm = Depends(),
     )
     user = result.scalar_one_or_none()
     _ensure_login_not_throttled(form.username, user)
-    if not user or not verify_password(form.password, user.hashed_password):
+    password_matches = user and await run_in_threadpool(verify_password, form.password, user.hashed_password)
+    if not password_matches:
         if user:
             await _record_account_login_failure(db, user)
         else:

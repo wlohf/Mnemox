@@ -1,5 +1,5 @@
 """学习目标相关模型"""
-from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -27,6 +27,9 @@ class Goal(Base):
     
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+    sync_version = Column(Integer, nullable=False, server_default=text("1"), default=1, comment="离线同步版本")
+
+    __mapper_args__ = {"version_id_col": sync_version}
 
     # 关联关系
     material = relationship("Material", back_populates="goals")
@@ -49,6 +52,9 @@ class Task(Base):
     completed_at = Column(DateTime, comment="完成时间")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+    sync_version = Column(Integer, nullable=False, server_default=text("1"), default=1, comment="离线同步版本")
+
+    __mapper_args__ = {"version_id_col": sync_version}
 
     # 关联关系
     goal = relationship("Goal", back_populates="tasks")

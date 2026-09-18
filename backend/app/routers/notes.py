@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, or_, delete
 from sqlalchemy.orm import selectinload
@@ -30,6 +30,11 @@ from app.services.knowledge_source_service import delete_source, register_note_s
 from app.utils.error_safety import safe_exception_summary
 from app.utils.prompt_safety import wrap_untrusted_context
 from app.utils.pydantic_compat import provided_model_fields
+from app.utils.sync import (
+    IdempotencyOperation, begin_idempotent_operation, complete_idempotent_operation,
+    flush_sync_mutation, require_matching_version,
+)
+from app.utils.utc import to_utc_iso
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -128,8 +133,9 @@ def _to_item(note: Note) -> dict:
             {"id": l.id, "link_type": l.link_type, "link_id": l.link_id}
             for l in links
         ],
-        "created_at": created_at.isoformat() if created_at else None,
-        "updated_at": updated_at.isoformat() if updated_at else None,
+        "created_at": to_utc_iso(created_at) if created_at else None,
+        "updated_at": to_utc_iso(updated_at) if updated_at else None,
+        "sync_version": note.sync_version,
     }
 
 
@@ -364,7 +370,7 @@ async def _ensure_owned_note_links(
 
 
 async def _get_note_for_response(db: AsyncSession, note_id: int, user_id: int) -> Note | None:
-    query = select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == user_id)
+    query = select(Note).options(selectinload(Note.links)).where(Note.id == note_id, Note.user_id == user_id).execution_options(populate_existing=True)
     query = _scope_notes_to_owned_relations(query, user_id)
     result = await db.execute(query)
     return result.scalar_one_or_none()
@@ -461,9 +467,16 @@ async def get_note(
 @router.post("")
 async def create_note(
     body: NoteCreate,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="POST", path="/api/notes", body=body.dict(),
+    )
+    if operation.replay is not None:
+        return operation.replay
     await _ensure_owned_note_relations(db, int(current_user.id), body.material_id, body.chapter_id)
     await _ensure_owned_note_links(db, int(current_user.id), body.links)
     note = Note(
@@ -517,19 +530,23 @@ async def create_note(
 
     item = _to_item(saved)
     item["associations"] = associations
+    await complete_idempotent_operation(db, operation, item)
     return item
 
 
 async def _update_note_locked(
     note_id: int,
     body: NoteUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession,
+    current_user: User,
+    if_match: Optional[str] = None,
+    operation: IdempotencyOperation | None = None,
 ):
     user_id = int(current_user.id)
     note = await _get_note_for_write(db, note_id, user_id)
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
+    require_matching_version(note.sync_version, if_match)
     provided = body.provided_fields()
     await _ensure_owned_note_relations(db, user_id, body.material_id, body.chapter_id)
     await _ensure_owned_note_links(db, user_id, body.links)
@@ -554,8 +571,10 @@ async def _update_note_locked(
         await db.flush()
         for link in body.links:
             db.add(NoteLink(note_id=note.id, link_type=link.link_type, link_id=link.link_id))
+        # Relationship-only writes must still participate in the note CAS.
+        note.sync_version = int(note.sync_version or 0) + 1
 
-    await db.flush()
+    await flush_sync_mutation(db)
     if body.title is not None or body.content is not None:
         if settings.KNOWLEDGE_V2_ENABLED:
             await register_note_source(db, user_id=user_id, note_id=int(note.id))
@@ -583,20 +602,31 @@ async def _update_note_locked(
     saved = await _get_note_for_response(db, note.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="笔记保存失败")
+    item = _to_item(saved)
+    if operation is not None:
+        await complete_idempotent_operation(db, operation, item)
     if _uses_sqlite(db):
-        await db.commit()
-    return _to_item(saved)
+        await db.commit()  # Domain and completed receipt, still inside the note lock.
+    return item
 
 
 @router.put("/{note_id}")
 async def update_note(
     note_id: int,
     body: NoteUpdate,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="PUT", path=f"/api/notes/{note_id}", body=body.dict(exclude_unset=True), if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     async with _note_write_scope(db, note_id, int(current_user.id)):
-        return await _update_note_locked(note_id, body, db, current_user)
+        return await _update_note_locked(note_id, body, db, current_user, if_match, operation)
 
 
 @router.post("/{note_id}/ai/assist")
@@ -703,12 +733,15 @@ async def ask_agent_about_note(
 
 async def _delete_note_locked(
     note_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession,
+    current_user: User,
+    if_match: Optional[str] = None,
+    operation: IdempotencyOperation | None = None,
 ):
     note = await _get_note_for_write(db, note_id, int(current_user.id))
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
+    require_matching_version(note.sync_version, if_match)
     from app.services.association_service import detach_note_from_concepts
 
     await detach_note_from_concepts(db, int(current_user.id), int(note.id))
@@ -731,19 +764,31 @@ async def _delete_note_locked(
             source_record_id=int(note.id),
         )
     await db.delete(note)
+    await flush_sync_mutation(db)
+    item = {"ok": True}
+    if operation is not None:
+        await complete_idempotent_operation(db, operation, item)
     if _uses_sqlite(db):
-        await db.commit()
-    return {"ok": True}
+        await db.commit()  # Keep the idempotency receipt in the delete checkpoint.
+    return item
 
 
 @router.delete("/{note_id}")
 async def delete_note(
     note_id: int,
+    if_match: Optional[str] = Header(None, alias="If-Match"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await begin_idempotent_operation(
+        db, user_id=int(current_user.id), idempotency_key=idempotency_key,
+        method="DELETE", path=f"/api/notes/{note_id}", body={}, if_match=if_match,
+    )
+    if operation.replay is not None:
+        return operation.replay
     async with _note_write_scope(db, note_id, int(current_user.id)):
-        return await _delete_note_locked(note_id, db, current_user)
+        return await _delete_note_locked(note_id, db, current_user, if_match, operation)
 
 
 @router.post("/suggest-metadata")
