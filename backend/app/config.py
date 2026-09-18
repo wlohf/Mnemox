@@ -126,6 +126,8 @@ class Settings(BaseSettings):
     KNOWLEDGE_CLAIM_MAX_CHARS: int = Field(default=500, ge=80, le=2_000)
     KNOWLEDGE_EXTRACTION_MAX_OUTPUT_CHARS: int = Field(default=12_000, ge=1_000, le=100_000)
     KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS: float = Field(default=30.0, ge=1.0, le=300.0)
+    KNOWLEDGE_LLM_MAX_OUTPUT_TOKENS: int = Field(default=2048, ge=128, le=8192)
+    KNOWLEDGE_EXTRACTION_SHUTDOWN_GRACE_SECONDS: float = Field(default=5.0, gt=0, le=30.0)
     KNOWLEDGE_LLM_MAX_CALLS_PER_RUN: int = Field(default=64, ge=1, le=1_000)
     KNOWLEDGE_LLM_MAX_ESTIMATED_TOKENS_PER_RUN: int = Field(
         default=64_000,

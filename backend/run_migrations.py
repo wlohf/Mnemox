@@ -124,6 +124,9 @@ HEAD_ONLY_TABLES = frozenset(
         "claim_concept_links",
         "knowledge_embedding_projections",
         "knowledge_projection_outbox",
+        "sync_receipts",
+        "knowledge_extraction_daily_budgets",
+        "knowledge_extraction_calls",
     }
 )
 HEAD_ONLY_COLUMNS = {
@@ -144,7 +147,10 @@ HEAD_ONLY_COLUMNS = {
             "source_conflict_file_id",
         }
     ),
+    "knowledge_extraction_runs": frozenset({"lease_token", "lease_expires_at", "budget_review_required"}),
 }
+for _sync_table in ("notes", "goals", "tasks", "anki_cards", "wrong_questions"):
+    HEAD_ONLY_COLUMNS[_sync_table] = HEAD_ONLY_COLUMNS.get(_sync_table, frozenset()) | frozenset({"sync_version"})
 
 
 def _is_sqlite_url(database_url: str) -> bool:

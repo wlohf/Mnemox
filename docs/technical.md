@@ -190,7 +190,7 @@ venv/bin/python evaluate_knowledge.py --min-explicit-recall-at-5 0.95 --summary-
 
 V2/图实验开关继续默认关闭：`KNOWLEDGE_V2_ENABLED`、`KNOWLEDGE_LLM_EXTRACTION_ENABLED`、`ASSOCIATION_V2_ENABLED`、`ASSOCIATION_V2_SHADOW`、`KNOWLEDGE_SEMANTIC_AUTO_RESOLVE_ENABLED`、`NEO4J_GRAPH_ENABLED`、`NEO4J_GRAPH_SHADOW`、`GRAPHITI_ENABLED`、`GRAPHITI_SHADOW`；Stage 7 另新增默认值为 `sql` 的 `GRAPH_BACKEND=sql|neo4j`，它是产品 GraphStore 选择器，与历史 Shadow/Enabled flags 分离。Neo4j 可选运行时还有 `NEO4J_GRAPH_ROLLOUT_PERCENT`（0～100，默认 100，仅在明确选择 Neo4j 时生效）和 `NEO4J_GRAPH_ROLLOUT_USER_IDS`（逗号分隔 canary 用户 ID）；百分比采用稳定 SHA-256 user bucket，allowlist 可显式放行 canary，但二者都不能绕过 Projection readiness。Stage 3 另有默认关闭的 `KNOWLEDGE_EMBEDDING_ENABLED`；总开关控制来源、抽取和解析，embedding 开关单独控制知识 projection worker。选择 `GRAPH_BACKEND=neo4j` 时会同时把 `neo4j_graph` 纳入知识 Projection Outbox/worker target；缺少 Neo4j 凭据 fail closed。`KNOWLEDGE_SEMANTIC_AUTO_RESOLVE_ENABLED` 仍不执行自动语义合并；Stage 4 的 `/api/knowledge/associate` 只有在 `KNOWLEDGE_V2_ENABLED` 与 `ASSOCIATION_V2_ENABLED` 同时开启时可用，V1 保持不变。
 
-抽取安全默认值为 Unit `8,000` 字符、每 Unit `12` 个 Claim、Claim `500` 字符、结构化输出 `12,000` 字符、每次调用 `30` 秒、每 Run `64` 次模型调用与 `64,000` 估算 Token、每用户每日 `256,000` 估算 Token。Stage 2 已在 LLM 调用边界执行长度、调用次数、run/日 Token 与超时限制；确定性 extractor 不调用模型。
+抽取安全默认值为 Unit `8,000` 字符、每 Unit `12` 个 Claim、Claim `500` 字符、结构化输出 `12,000` 字符、每次调用 `30` 秒、每 Run `64` 次预留尝试与 `64,000` Token、每用户 UTC 日 `256,000` Token。2026-09-12 稳定化第三阶段在工作区改为持久预留/实际 usage 补差，并新增 LLM 输出上限 `2,048` Token 和 worker 停机宽限 `5` 秒；不是美元硬限额。确定性 extractor 不调用 LLM，可选 embedding 的预算另行治理。
 
 Stage 1 新增 `knowledge_sources`、`knowledge_source_revisions`、`knowledge_units`、`claims` 和 `claim_evidence`。Source 用 `user_id + source_type + source_record_id` 保持稳定身份；Revision 保存内容哈希并以部分唯一索引保证每个 Source 最多一个 current；Unit 使用有界字符切片和 JSON locator；Claim 在来源版本内用规范化 SHA-256 指纹去重，数据库默认审核状态保持 `pending`，手工服务只在 Evidence 定位成功后显式确认；Evidence 保存摘录和精确字符范围。服务层只 `flush`，事务由 Material/Note/Obsidian/Agent 等调用入口拥有。
 
@@ -198,7 +198,9 @@ Stage 1 新增 `knowledge_sources`、`knowledge_source_revisions`、`knowledge_u
 
 Stage 2 新增严格 `KnowledgeExtractionResult` Schema、`DeterministicKnowledgeExtractor` 与 `LLMKnowledgeExtractor`。LLM 优先使用 Provider 可选 strict structured output，不支持时回退 JSON 并用同一 Pydantic 模型验证。Grounding 先做精确匹配，再做 NFKC、空白和标点归一匹配，最终保存原始字符范围；没有 Evidence 或无法定位的候选不写入。自动 Claim 全部为 `pending`，来源版本内按指纹幂等，重叠 chunk 的 Evidence 按绝对来源位置去重。
 
-`knowledge_extraction_runs` 保存 extractor/schema/provider/model/input 身份、状态、尝试、可用时间、租约、脱敏错误、usage 和统计；唯一键保证同一输入只建一个 run。worker 以短事务取得租约，PostgreSQL 使用 `FOR UPDATE SKIP LOCKED`，SQLite 只启一个应用内消费者；过期租约可回收，失败有界退避，用户可查询、重试或取消。每个 Unit 在 savepoint 中处理，局部失败得到 `partial` 且不撤销成功 Unit。Material/Note 在总开关开启时创建确定性 run，LLM run 还要求独立开关；缺少 AI Key 只使 LLM run 失败。资料 API/UI 仅暴露状态和 pending 数量。
+`knowledge_extraction_runs` 保存 extractor/schema/provider/model/input 身份、状态、尝试、可用时间、租约、错误元数据、usage 和统计；唯一键保证同一输入只建一个 run。worker 以短事务领取，PostgreSQL 使用 `FOR UPDATE SKIP LOCKED`，每次领取生成新 UUID token 和到期时间；SQLite 仍只启一个应用内消费者。`ExtractionRuntime` 接收独立 session factory，模型等待和语义预取均在事务外；每个 Unit 的 Claim/Evidence/outbox/处理进度同事务提交，而不是用一个外层长事务包住全部 savepoint。检查点复核 SourceRevision、Unit 快照和未过期的 owner/token，迟到结果不能覆盖新 owner 或复活来源。失败得到 `partial`，重试保留成功 Unit；force 只重置进度，不清预算。停机有界等待、保留未协作任务并限制新调用，但远端撤销和进程硬停止仍需监督。Material/Note 在总开关开启时创建确定性 run，LLM 还需独立开关；缺少 Key 不影响规则抽取。
+
+`knowledge_extraction_daily_budgets` / `knowledge_extraction_calls` 以 Run→用户 UTC 日桶顺序锁定并条件加算，跨 run/进程原子仲裁。结构化请求的 chat 降级另占一次预留；OpenAI/Gemini extraction 禁用隐藏 SDK 重试，普通聊天不变。失败或 unknown 不退款，迟到实报可恰好一次最终化并补差到原日，不改变 run 结果。账本不含来源、prompt 或输出正文。迁移 `20260912_24` 保留旧 usage，并把所有升级前 LLM run 标记 `budget_review_required`；同用户新 run 也不得绕过。需停旧 worker、备份、升级、核对历史账本再恢复，不能通过清数据解锁。工作区状态、实际验收和未覆盖边界见[第三阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase3.md)。
 
 Stage 3 的 `entity_resolution_candidates` 保存 mention、关系类型、候选 Concept、exact/alias/lexical/vector/context/combined 分数与审核决定；`claim_concept_links` 只在 exact/alias、既有同来源人工决定或本次用户审核后建立 confirmed 链接。resolver 先查 canonical exact，再查 alias exact，再复用同来源人工决定，随后才计算词法与可选 embedding Top-K；所有向量结果必须回 SQL 确认 Concept 仍属于当前用户且 active/confirmed。词法或纯语义命中只创建 `pending` 候选，不自动新增别名、重命名或合并 Concept。
 
@@ -366,6 +368,11 @@ Pydantic 部分更新语义统一通过 `app/utils/pydantic_compat.py` 读取显
 4. AI Key 与搜索 Key 只可在后端配置/加密存储，不应存入浏览器持久化数据。
 5. 资料、笔记、搜索结果、工具返回值应作为不可信内容包装，禁止其改变系统策略、工具权限或确认流程。
 6. 公开部署前需设置随机 `SECRET_KEY`、关闭 `DEBUG`、收紧 `CORS_ORIGINS`，并补充速率限制、审计和恶意文件扫描策略。
+7. 浏览器离线库按 origin 内的用户 ID + 账号创建时间隔离；未归属的历史库不得自动归入当前账号。会话切换关闭旧库、取消旧请求并拒绝迟到结果；`X-Mnemox-User-Id` 由服务端与认证身份比较，仅用于检测共享 Cookie 账号变化，不作为授权凭据。
+8. OpenAI-compatible、Claude 和模型发现的 HTTP 请求禁止重定向与环境代理；公网/禁私网模式在建立 TCP 连接时重新校验并固定公网 IP，保留原始 Host、TLS SNI 与证书校验。旧平铺图片无归属时默认拒绝，资料附件必须精确匹配规范上传路径。
+9. 第一阶段修复与升级边界见 [P0/P1 稳定化第一阶段](updates/2026/2026-09-12_p0-p1-hardening-phase1.md)。离线同步第二阶段和知识抽取第三阶段均为工作区增量，未合入/未部署；本地验收不代表全部 P0/P1 或生产上线门禁完成。
+10. 浏览器同步 CRUD 采用原子本地写入/入队、不可变已领取 UUID、用户级幂等回执和 `sync_version`/`If-Match`。领域变更与回执同事务；旧客户端不带头仍兼容，新客户端遇旧服务端停止写入。同步结构引入于 `20260912_23`，当前迁移 head 为抽取治理的 `20260912_24`。同步协议/浏览器证据见[第二阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase2.md)，抽取租约/预算/历史隔离见[第三阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase3.md)。
+11. 同步回执在领域删除后保留原响应，因此可能保留已删除对象的正文；上线前需明确容量/隐私擦除与去重墓碑策略，不能简单清空回执。历史无 key 的 create 默认隔离，不自动重发。Anki/错题的分页结果不作为完整删除快照。
 
 ## 8. 本地开发与交付
 

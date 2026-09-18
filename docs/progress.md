@@ -2,12 +2,20 @@
 
 > 状态：维护中
 >
-> 更新日期：2026-09-04
+> 更新日期：2026-09-12
 >
 > 当前发布版本：v1.3.0
 > 当前阶段：正式发布候选验收准备 + Phase 2 受控纵向切片 + **Mnemox V2 Stage 7 工程收口完成**。Stage 6 的 Neo4j / Graphiti 默认 Runtime NO-GO 继续成立；Stage 7 在不改变 PostgreSQL / SQLite Canonical 的前提下完成 Optional Neo4j selector/readiness/fallback/rollout、Knowledge/Learning Path V1、Explainable Multi-hop Association V1 和 Graphiti Temporal/Episodic Slice。最终 Stage 0～7 Knowledge/Temporal 宽回归为 `149 passed, 1 warning`，真实 Neo4j/Graphiti 专项另有 `6 passed` 且显式真机运行，前端 `27 files / 93 tests`、production build 和 lint 全过；默认 Compose 不启动 Neo4j，`--profile graph` 才启用可选图服务。Graphiti 60/300 temporal declarations correctness 均 `1.0` 但显著慢于 SQL，继续 Experimental/default-off。下一步转入云端 WebUI dogfooding，导入用户自己的真实技术笔记做中文/双语产品人评，而不是继续堆 Stage 7 基础设施。
 
 需求范围见 [需求基线](requirements.md)，工程实现见 [技术基线](technical.md)，执行顺序以 [路线图](roadmap.md) 为唯一权威来源。
+
+## 2026-09-12：P0/P1 稳定化优先
+
+按工程审查进入止损修复，第一批工作区实现和本地回归完成，尚未提交或部署：离线账号分库、会话代次/共享 Cookie 预期账号核对、AI 出站连接固定与禁重定向、删除失败保留、密码字节校验与线程池、历史图片默认拒绝和资料路径精确授权。后端定向 `83 passed, 2 subtests passed`，前端 `31 files / 122 tests`，类型检查/lint/build 与 mock API Chromium 五项验收通过。旧离线库和附件未删除、未自动迁移。详见 [第一阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase1.md)。
+
+同日完成第二批同步协议工作区实现和本地验收：原子本地写入/入队、不可变领取与精准确认、五模块幂等回执与版本检查、UTC 边界、明确冲突处理及分页防误删。新增迁移 head `20260912_23`。前端全量 `32 files / 141 tests`，后端协议/迁移/事务 `31 passed, 10 subtests passed`，安全/兼容宽回归 `98 passed, 2 subtests passed`；SQLite 实际升级/降级/再升级及 drift 检查、类型/lint/build 通过。真实 Chromium + 独立 FastAPI + SQLite 五项同步验收通过，含实际提交后响应丢失、刷新重放、版本冲突与 UI 删除确认；不是生产多设备验收。回执隐私/容量策略、旧队列恢复、完整分页/多标签页、PostgreSQL 和 Electron 仍待收口。下一批为知识抽取 Unit 事务、租约/取消和执行日预算。未提交、合入或部署，未修改真实数据；详见 [第二阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase2.md)。
+
+第三批知识抽取治理完成工作区实现与本地验收：独立 session factory、事务外模型调用/语义预取、逐 Unit 持久检查点、新 UUID 租约与来源 fencing、worker 有界停止、UTC 执行日原子预留、降级独立计费及迟到 usage 最终化。新增迁移 head `20260912_24`；旧 LLM 记录保留并标记待核账，同用户新 run 不能绕过，不自动恢复额度。最新 24 模块宽回归 **179 passed、12 subtests passed、97 warnings**；独立 PostgreSQL 16 **26 passed**（含两个 Python 进程竞争预算）；两库合成历史升级/降级/再升级及最终 drift 检查通过。模型均为替身，未验收真实供应商账单、正式生产库或完整后端；账本恢复/保留与可选 embedding 资源治理单列待办。未提交/部署，前端既有修改保留。详见[第三阶段记录](updates/2026/2026-09-12_p0-p1-hardening-phase3.md)。
 
 ## 1. 当前阶段
 

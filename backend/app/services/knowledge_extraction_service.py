@@ -4,15 +4,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import re
-import time
+import uuid
 import unicodedata
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Iterable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -222,8 +221,17 @@ class LLMKnowledgeExtractor:
     extractor_type = "llm"
     version = LLM_EXTRACTOR_VERSION
 
-    def __init__(self, provider: Any):
+    def __init__(self, provider: Any, invoke=None):
         self.provider = provider
+        self.invoke = invoke
+
+    async def _call(self, method: str, **kwargs):
+        if self.invoke is not None:
+            return await self.invoke(method, kwargs)
+        return await asyncio.wait_for(
+            getattr(self.provider, method)(**kwargs),
+            timeout=float(settings.KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS),
+        )
 
     @staticmethod
     def _prompt(unit: KnowledgeUnit) -> str:
@@ -271,26 +279,17 @@ class LLMKnowledgeExtractor:
         )
         if supports_structured:
             try:
-                response = await asyncio.wait_for(
-                    self.provider.chat_structured(
-                        messages=messages,
-                        response_model=KnowledgeExtractionResult,
-                        system_prompt="你是保守的知识 Claim 抽取器。只返回指定结构。",
-                        temperature=0.1,
-                    ),
-                    timeout=float(settings.KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS),
+                response = await self._call(
+                    'chat_structured', messages=messages, response_model=KnowledgeExtractionResult,
+                    system_prompt='你是保守的知识 Claim 抽取器。只返回指定结构。', temperature=0.1,
                 )
             except Exception as exc:
                 if not self._structured_unsupported(exc):
                     raise
         if response is None:
-            response = await asyncio.wait_for(
-                self.provider.chat(
-                    messages=messages,
-                    system_prompt="你是保守的知识 Claim 抽取器，只输出 JSON。",
-                    temperature=0.1,
-                ),
-                timeout=float(settings.KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS),
+            response = await self._call(
+                'chat', messages=messages, system_prompt='你是保守的知识 Claim 抽取器，只输出 JSON。',
+                temperature=0.1,
             )
         if isinstance(response, KnowledgeExtractionResult):
             result = response
@@ -576,37 +575,34 @@ async def ensure_default_extraction_runs(
     return runs
 
 
+def _expired_lease(observed, legacy_cutoff):
+    return or_(
+        KnowledgeExtractionRun.lease_expires_at <= observed,
+        (KnowledgeExtractionRun.lease_expires_at.is_(None)
+         & (KnowledgeExtractionRun.locked_at <= legacy_cutoff)),
+    )
+
+
 async def recover_expired_extraction_runs(
-    db: AsyncSession,
-    *,
-    now=None,
-    lease_seconds: int | None = None,
-) -> int:
+    db: AsyncSession, *, now=None, lease_seconds: int | None = None,
+    max_attempts: int | None = None,
+ ) -> int:
     observed = now or utc_now_db()
-    cutoff = observed - timedelta(
-        seconds=int(lease_seconds or settings.KNOWLEDGE_EXTRACTION_LEASE_SECONDS)
+    cutoff = observed - timedelta(seconds=lease_seconds or settings.KNOWLEDGE_EXTRACTION_LEASE_SECONDS)
+    exhausted = KnowledgeExtractionRun.attempt_count >= (max_attempts or settings.KNOWLEDGE_EXTRACTION_MAX_ATTEMPTS)
+    result = await db.execute(
+        update(KnowledgeExtractionRun)
+        .where(KnowledgeExtractionRun.status == 'running', _expired_lease(observed, cutoff))
+        .values(
+            status=case((exhausted, 'failed'), else_='queued'), available_at=observed,
+            locked_at=None, lease_owner=None, lease_token=None, lease_expires_at=None,
+            finished_at=case((exhausted, observed), else_=None),
+            last_error='Extraction lease expired; unconfirmed calls remain charged.',
+        )
+        .returning(KnowledgeExtractionRun.id)
+        .execution_options(synchronize_session=False)
     )
-    rows = list(
-        (
-            await db.scalars(
-                select(KnowledgeExtractionRun)
-                .where(
-                    KnowledgeExtractionRun.status == "running",
-                    KnowledgeExtractionRun.locked_at.is_not(None),
-                    KnowledgeExtractionRun.locked_at <= cutoff,
-                )
-                .with_for_update(skip_locked=True)
-            )
-        ).all()
-    )
-    for run in rows:
-        run.status = "queued"
-        run.available_at = observed
-        run.locked_at = None
-        run.lease_owner = None
-        run.last_error = "Extraction lease expired; queued for recovery."
-    await db.flush()
-    return len(rows)
+    return len(result.all())
 
 
 async def claim_next_extraction_run(
@@ -627,11 +623,7 @@ async def claim_next_extraction_run(
             KnowledgeExtractionRun.status.in_(("queued", "failed"))
             & (KnowledgeExtractionRun.available_at <= observed)
         ),
-        (
-            (KnowledgeExtractionRun.status == "running")
-            & (KnowledgeExtractionRun.locked_at.is_not(None))
-            & (KnowledgeExtractionRun.locked_at <= lease_cutoff)
-        ),
+        ((KnowledgeExtractionRun.status == 'running') & _expired_lease(observed, lease_cutoff)),
     )
     run = await db.scalar(
         select(KnowledgeExtractionRun)
@@ -642,15 +634,29 @@ async def claim_next_extraction_run(
     )
     if run is None:
         return None
-    run.status = "running"
-    run.attempt_count = int(run.attempt_count or 0) + 1
-    run.locked_at = observed
-    run.lease_owner = str(worker_id)[:120]
-    run.started_at = run.started_at or observed
-    run.finished_at = None
-    run.last_error = None
-    await db.flush()
-    return run
+    claimed_id = await db.scalar(
+        update(KnowledgeExtractionRun)
+        .where(
+            KnowledgeExtractionRun.id == run.id, eligible,
+            KnowledgeExtractionRun.attempt_count == int(run.attempt_count or 0),
+            KnowledgeExtractionRun.attempt_count < attempts,
+        )
+        .values(
+            status='running', attempt_count=KnowledgeExtractionRun.attempt_count + 1,
+            locked_at=observed, lease_owner=str(worker_id)[:120], lease_token=str(uuid.uuid4()),
+            lease_expires_at=observed + timedelta(seconds=lease_seconds or settings.KNOWLEDGE_EXTRACTION_LEASE_SECONDS),
+            started_at=func.coalesce(KnowledgeExtractionRun.started_at, observed),
+            finished_at=None, last_error=None,
+        )
+        .returning(KnowledgeExtractionRun.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_id is None:
+        return None
+    return await db.scalar(
+        select(KnowledgeExtractionRun).where(KnowledgeExtractionRun.id == claimed_id)
+        .execution_options(populate_existing=True)
+    )
 
 
 async def retry_extraction_run(
@@ -680,12 +686,14 @@ async def retry_extraction_run(
     run.available_at = utc_now_db()
     run.locked_at = None
     run.lease_owner = None
+    run.lease_token = None
+    run.lease_expires_at = None
     run.finished_at = None
     run.last_error = None
     run.attempt_count = 0
     if force:
         run.stats = {}
-        run.usage = {}
+        # Force re-extraction never resets paid-call accounting or legacy usage.
     await db.flush()
     return run
 
@@ -712,43 +720,47 @@ async def cancel_extraction_run(
     run.finished_at = utc_now_db()
     run.locked_at = None
     run.lease_owner = None
+    run.lease_token = None
+    run.lease_expires_at = None
     await db.flush()
     return run
 
 
 async def mark_extraction_run_failed(
-    db: AsyncSession,
-    *,
-    run_id: int,
-    worker_id: str,
-    error: BaseException | str,
-    retry_delay_seconds: float,
-) -> bool:
-    run = await db.scalar(
-        select(KnowledgeExtractionRun)
-        .where(
-            KnowledgeExtractionRun.id == int(run_id),
-            KnowledgeExtractionRun.status == "running",
-            KnowledgeExtractionRun.lease_owner == str(worker_id)[:120],
-        )
-        .with_for_update()
-    )
-    if run is None:
-        return False
-    summary = (
-        safe_exception_summary(error)
-        if isinstance(error, BaseException)
-        else safe_exception_summary(RuntimeError(str(error)))
-    )
+    db: AsyncSession, *, run_id: int, worker_id: str, lease_token: str,
+    error: BaseException | str, retry_delay_seconds: float,
+ ) -> bool:
+    summary = safe_exception_summary(error if isinstance(error, BaseException) else RuntimeError(str(error)))
     now = utc_now_db()
-    run.status = "failed"
-    run.last_error = summary[:500]
-    run.available_at = now + timedelta(seconds=max(0.0, float(retry_delay_seconds)))
-    run.finished_at = now
-    run.locked_at = None
-    run.lease_owner = None
-    await db.flush()
-    return True
+    result = await db.scalar(
+        update(KnowledgeExtractionRun).where(
+            KnowledgeExtractionRun.id == run_id, KnowledgeExtractionRun.status == 'running',
+            KnowledgeExtractionRun.lease_owner == str(worker_id)[:120],
+            KnowledgeExtractionRun.lease_token == lease_token,
+            KnowledgeExtractionRun.lease_expires_at > now,
+        ).values(
+            status='failed', last_error=summary[:500],
+            available_at=now + timedelta(seconds=max(0.0, float(retry_delay_seconds))),
+            finished_at=now, locked_at=None, lease_owner=None, lease_token=None, lease_expires_at=None,
+        ).returning(KnowledgeExtractionRun.id).execution_options(synchronize_session=False)
+    )
+    return result is not None
+
+
+async def release_extraction_run(db: AsyncSession, *, run_id: int, lease_token: str) -> bool:
+    """Fence shutdown work out immediately; preserve completed Unit checkpoints."""
+    now = utc_now_db()
+    result = await db.scalar(
+        update(KnowledgeExtractionRun).where(
+            KnowledgeExtractionRun.id == run_id, KnowledgeExtractionRun.status == 'running',
+            KnowledgeExtractionRun.lease_token == lease_token,
+            KnowledgeExtractionRun.lease_expires_at > now,
+        ).values(
+            status='queued', available_at=now, locked_at=None, lease_owner=None,
+            lease_token=None, lease_expires_at=None,
+        ).returning(KnowledgeExtractionRun.id).execution_options(synchronize_session=False)
+    )
+    return result is not None
 
 
 async def _persist_grounded_claims(
@@ -758,6 +770,7 @@ async def _persist_grounded_claims(
     unit: KnowledgeUnit,
     grounding: GroundingResult,
     model_version: str | None,
+    embedding_index: Any | None = None,
 ) -> tuple[int, int]:
     from app.services.entity_resolution_service import resolve_claim_mentions
     from app.services.knowledge_projection_service import enqueue_knowledge_object_projection
@@ -867,6 +880,7 @@ async def _persist_grounded_claims(
             unit=unit,
             claim=claim,
             mentions=grounded.candidate.concepts,
+            embedding_index=embedding_index,
         )
     return claim_count, evidence_count
 
@@ -886,193 +900,30 @@ def _usage_add(total: dict[str, Any], current: dict[str, Any], elapsed_ms: float
     return result
 
 
-async def _daily_llm_tokens(db: AsyncSession, user_id: int) -> int:
-    start = utc_now_db().replace(hour=0, minute=0, second=0, microsecond=0)
-    usages = list(
-        (
-            await db.scalars(
-                select(KnowledgeExtractionRun.usage).where(
-                    KnowledgeExtractionRun.user_id == int(user_id),
-                    KnowledgeExtractionRun.extractor_type == "llm",
-                    KnowledgeExtractionRun.created_at >= start,
-                )
-            )
-        ).all()
-    )
-    return sum(int((usage or {}).get("total_tokens") or 0) for usage in usages)
-
 
 async def process_claimed_extraction_run(
-    db: AsyncSession,
+    session_factory,
     *,
     run_id: int,
     worker_id: str,
+    lease_token: str,
     provider: Any | None = None,
     extractor: Any | None = None,
+    stop_event: asyncio.Event | None = None,
+    lease_seconds: float | None = None,
+    orphan_tasks: set | None = None,
 ) -> KnowledgeExtractionRun:
-    """Process one leased run; Unit failures are isolated and produce partial."""
+    """Run through explicit, short checkpoint transactions; never accept a live session."""
+    from app.services.knowledge_extraction_runtime import ExtractionRuntime
 
-    run = await db.scalar(
-        select(KnowledgeExtractionRun)
-        .where(
-            KnowledgeExtractionRun.id == int(run_id),
-            KnowledgeExtractionRun.status == "running",
-            KnowledgeExtractionRun.lease_owner == str(worker_id)[:120],
-        )
-        .with_for_update()
+    if isinstance(session_factory, AsyncSession):
+        raise TypeError('Extraction requires a session factory, not a caller-owned transaction')
+    runner = ExtractionRuntime(
+        session_factory, run_id=run_id, worker_id=worker_id, lease_token=lease_token,
+        provider=provider, extractor=extractor, stop_event=stop_event,
+        lease_seconds=lease_seconds, orphan_tasks=orphan_tasks,
     )
-    if run is None:
-        raise LookupError("Extraction Run 不存在、未运行或租约不属于当前 worker。")
-    revision = await db.scalar(
-        select(KnowledgeSourceRevision)
-        .join(KnowledgeSource, KnowledgeSource.id == KnowledgeSourceRevision.knowledge_source_id)
-        .where(
-            KnowledgeSourceRevision.id == int(run.source_revision_id),
-            KnowledgeSourceRevision.user_id == int(run.user_id),
-            KnowledgeSourceRevision.status == "current",
-            KnowledgeSource.status == "active",
-        )
-        .with_for_update()
-    )
-    if revision is None:
-        run.status = "cancelled"
-        run.finished_at = utc_now_db()
-        run.locked_at = None
-        run.lease_owner = None
-        run.last_error = "Source revision is no longer current."
-        await db.flush()
-        return run
-    units = list(
-        (
-            await db.scalars(
-                select(KnowledgeUnit)
-                .where(
-                    KnowledgeUnit.user_id == int(run.user_id),
-                    KnowledgeUnit.source_revision_id == int(run.source_revision_id),
-                )
-                .order_by(KnowledgeUnit.ordinal, KnowledgeUnit.id)
-            )
-        ).all()
-    )
-    stats = dict(run.stats or {})
-    processed_ids = {int(value) for value in stats.get("processed_unit_ids", [])}
-    failures = [
-        item
-        for item in stats.get("failed_units", [])
-        if isinstance(item, dict) and int(item.get("unit_id") or -1) not in processed_ids
-    ]
-    stats.update(
-        {
-            "total_units": len(units),
-            "processed_unit_ids": sorted(processed_ids),
-            "failed_units": failures,
-            "claims": int(stats.get("claims") or 0),
-            "evidence": int(stats.get("evidence") or 0),
-            "mentions": int(stats.get("mentions") or 0),
-            "relations": int(stats.get("relations") or 0),
-            "rejected": int(stats.get("rejected") or 0),
-            "rejected_evidence": int(stats.get("rejected_evidence") or 0),
-        }
-    )
-    if extractor is None:
-        if run.extractor_type == "deterministic":
-            extractor = DeterministicKnowledgeExtractor()
-        elif run.extractor_type == "llm":
-            if provider is None:
-                from app.ai.factory import AIProviderFactory
-
-                provider = await AIProviderFactory.create_provider(
-                    db=db,
-                    scenario="material_analyze",
-                    user_id=int(run.user_id),
-                )
-            extractor = LLMKnowledgeExtractor(provider)
-        else:
-            raise ValueError("不支持的自动 extractor_type。")
-
-    model_version = str(getattr(provider, "model", "") or "") or None
-    if provider is not None:
-        run.provider = str(getattr(provider, "provider_name", type(provider).__name__))[:80]
-        run.model = str(getattr(provider, "model", ""))[:120] or None
-    usage = dict(run.usage or {})
-    call_count = int(usage.get("call_count") or 0)
-    estimated_tokens = int(usage.get("estimated_tokens") or 0)
-    daily_tokens = await _daily_llm_tokens(db, int(run.user_id)) if run.extractor_type == "llm" else 0
-
-    for unit in units:
-        unit_id = int(unit.id)
-        if unit_id in processed_ids:
-            continue
-        if run.extractor_type == "llm":
-            estimate = max(1, math.ceil(len(str(unit.text or "")) / 4))
-            if (
-                call_count >= int(settings.KNOWLEDGE_LLM_MAX_CALLS_PER_RUN)
-                or estimated_tokens + estimate > int(settings.KNOWLEDGE_LLM_MAX_ESTIMATED_TOKENS_PER_RUN)
-                or daily_tokens + estimated_tokens + estimate
-                > int(settings.KNOWLEDGE_LLM_DAILY_ESTIMATED_TOKENS_PER_USER)
-            ):
-                failures.append({"unit_id": unit_id, "error": "knowledge_extraction_budget_exhausted"})
-                continue
-            estimated_tokens += estimate
-            call_count += 1
-        started = time.perf_counter()
-        try:
-            async with db.begin_nested():
-                candidate = await extractor.extract(unit)
-                if not isinstance(candidate, KnowledgeExtractionResult):
-                    candidate = KnowledgeExtractionResult.model_validate(candidate)
-                grounding = ground_extraction_result(str(unit.text or ""), candidate)
-                written_claims, written_evidence = await _persist_grounded_claims(
-                    db,
-                    run=run,
-                    unit=unit,
-                    grounding=grounding,
-                    model_version=model_version,
-                )
-                stats["claims"] += written_claims
-                stats["evidence"] += written_evidence
-                stats["mentions"] += sum(
-                    len(claim.candidate.concepts) for claim in grounding.claims
-                )
-                stats["relations"] += grounding.accepted_relations
-                stats["rejected"] += grounding.rejected_claims
-                stats["rejected_evidence"] += grounding.rejected_evidence
-            processed_ids.add(unit_id)
-            failures = [item for item in failures if int(item.get("unit_id") or -1) != unit_id]
-        except Exception as exc:
-            failures.append(
-                {
-                    "unit_id": unit_id,
-                    "error": safe_exception_summary(exc, max_chars=240),
-                }
-            )
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if provider is not None:
-            get_usage = getattr(provider, "get_last_usage", lambda: {})
-            usage = _usage_add(usage, dict(get_usage() or {}), elapsed_ms)
-
-    stats["processed_unit_ids"] = sorted(processed_ids)
-    deduped_failures: dict[int, dict[str, Any]] = {}
-    for failure in failures:
-        failure_id = int(failure.get("unit_id") or -1)
-        if failure_id not in processed_ids:
-            deduped_failures[failure_id] = failure
-    stats["failed_units"] = list(deduped_failures.values())
-    usage["call_count"] = call_count
-    usage["estimated_tokens"] = estimated_tokens
-    run.stats = stats
-    run.usage = usage
-    run.status = "partial" if stats["failed_units"] else "succeeded"
-    run.finished_at = utc_now_db()
-    run.locked_at = None
-    run.lease_owner = None
-    run.last_error = (
-        f"{len(stats['failed_units'])} Unit(s) failed; successful Units were retained."
-        if stats["failed_units"]
-        else None
-    )
-    await db.flush()
-    return run
+    return await runner.run()
 
 
 def serialize_extraction_run(run: KnowledgeExtractionRun) -> dict[str, Any]:
@@ -1086,6 +937,7 @@ def serialize_extraction_run(run: KnowledgeExtractionRun) -> dict[str, Any]:
         "model": run.model,
         "status": str(run.status),
         "attempt_count": int(run.attempt_count or 0),
+        "budget_review_required": bool(run.budget_review_required),
         "available_at": to_utc_iso(run.available_at) if run.available_at else None,
         "started_at": to_utc_iso(run.started_at) if run.started_at else None,
         "finished_at": to_utc_iso(run.finished_at) if run.finished_at else None,

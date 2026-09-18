@@ -243,6 +243,30 @@ async def _same_source_user_mapping(
     )
 
 
+async def find_known_concept_identity(
+    db: AsyncSession, *, user_id: int, source_revision_id: int,
+    normalized: str, relation_type: str,
+) -> tuple[Concept | None, str]:
+    """SQL-only fast path shared by preflight and fenced checkpoint resolution."""
+    concept = await db.scalar(select(Concept).where(
+        Concept.user_id == user_id, Concept.name_normalized == normalized,
+        Concept.review_status == 'confirmed',
+    ))
+    if concept is not None:
+        return concept, 'canonical_exact'
+    concept = await db.scalar(select(Concept).join(ConceptAlias, ConceptAlias.concept_id == Concept.id).where(
+        Concept.user_id == user_id, Concept.review_status == 'confirmed',
+        ConceptAlias.user_id == user_id, ConceptAlias.alias_normalized == normalized,
+    ))
+    if concept is not None:
+        return concept, 'alias_exact'
+    concept = await _same_source_user_mapping(
+        db, user_id=user_id, source_revision_id=source_revision_id,
+        mention_normalized=normalized, relation_type=relation_type,
+    )
+    return concept, 'user'
+
+
 async def resolve_claim_mentions(
     db: AsyncSession,
     *,
@@ -263,35 +287,10 @@ async def resolve_claim_mentions(
             continue
         seen.add(identity)
         stats["mentions"] += 1
-        concept = await db.scalar(
-            select(Concept).where(
-                Concept.user_id == int(run.user_id),
-                Concept.name_normalized == normalized,
-                Concept.review_status == "confirmed",
-            )
+        concept, derivation = await find_known_concept_identity(
+            db, user_id=int(run.user_id), source_revision_id=int(run.source_revision_id),
+            normalized=normalized, relation_type=str(mention.relation_type),
         )
-        derivation = "canonical_exact"
-        if concept is None:
-            concept = await db.scalar(
-                select(Concept)
-                .join(ConceptAlias, ConceptAlias.concept_id == Concept.id)
-                .where(
-                    Concept.user_id == int(run.user_id),
-                    Concept.review_status == "confirmed",
-                    ConceptAlias.user_id == int(run.user_id),
-                    ConceptAlias.alias_normalized == normalized,
-                )
-            )
-            derivation = "alias_exact"
-        if concept is None:
-            concept = await _same_source_user_mapping(
-                db,
-                user_id=int(run.user_id),
-                source_revision_id=int(run.source_revision_id),
-                mention_normalized=normalized,
-                relation_type=str(mention.relation_type),
-            )
-            derivation = "user"
         if concept is not None:
             candidate = await _ensure_candidate(
                 db,

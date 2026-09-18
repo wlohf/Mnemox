@@ -223,9 +223,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         )
         async with self.sessions() as db:
             finished = await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(run.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=run.lease_token,
                 extractor=StaticExtractor(candidate),
             )
             await db.commit()
@@ -245,9 +245,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         first = await self._claim_run(revision_id)
         async with self.sessions() as db:
             await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(first.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=first.lease_token,
                 extractor=StaticExtractor(candidate),
             )
             await db.commit()
@@ -256,9 +256,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(first.id), int(second.id))
         async with self.sessions() as db:
             await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(second.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=second.lease_token,
                 extractor=StaticExtractor(candidate),
             )
             await db.commit()
@@ -285,9 +285,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         async with self.sessions() as db:
             await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(run.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=run.lease_token,
                 extractor=OverlapExtractor(),
             )
             await db.commit()
@@ -318,9 +318,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         first_extractor = PartialExtractor(0)
         async with self.sessions() as db:
             partial = await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(run.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=run.lease_token,
                 extractor=first_extractor,
             )
             await db.commit()
@@ -334,9 +334,9 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         retry_extractor = PartialExtractor(None)
         async with self.sessions() as db:
             finished = await process_claimed_extraction_run(
-                db,
+                self.sessions,
                 run_id=int(resumed.id),
-                worker_id="test-worker",
+                worker_id="test-worker", lease_token=resumed.lease_token,
                 extractor=retry_extractor,
             )
             await db.commit()
@@ -350,6 +350,7 @@ class KnowledgeExtractionPersistenceTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as db:
             stored = await db.get(KnowledgeExtractionRun, int(run.id))
             stored.locked_at = stale_at
+            stored.lease_expires_at = stale_at
             await db.commit()
         async with self.sessions() as db:
             recovered = await recover_expired_extraction_runs(

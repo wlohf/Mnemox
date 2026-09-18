@@ -86,9 +86,13 @@ TRANSACTION_OWNERS: dict[str, TransactionOwner] = {
         TransactionOwnerKind.INDEPENDENT_WORKER,
         "Commits a short extraction lease before any provider call so process crashes remain recoverable.",
     ),
-    "app.services.knowledge_extraction_worker.KnowledgeExtractionWorker._finish_one": TransactionOwner(
+    "app.services.knowledge_extraction_runtime.ExtractionRuntime._transaction": TransactionOwner(
         TransactionOwnerKind.INDEPENDENT_WORKER,
-        "Commits one leased extraction outcome while preserving successful Unit savepoints on partial runs.",
+        "Owns short source/lease-fenced Unit checkpoints and call reservations, never provider I/O.",
+    ),
+    "app.services.knowledge_extraction_worker.KnowledgeExtractionWorker._release_one": TransactionOwner(
+        TransactionOwnerKind.INDEPENDENT_WORKER,
+        "Requeues only the still-owned lease on shutdown while retaining committed Unit checkpoints.",
     ),
     "app.services.knowledge_extraction_worker.KnowledgeExtractionWorker._record_failure": TransactionOwner(
         TransactionOwnerKind.INDEPENDENT_WORKER,

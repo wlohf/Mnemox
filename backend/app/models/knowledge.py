@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from sqlalchemy import (
     JSON,
+    Boolean,
+    false,
     CheckConstraint,
     Column,
     DateTime,
@@ -265,6 +267,9 @@ class KnowledgeExtractionRun(Base):
     available_at = Column(DateTime, nullable=False, server_default=func.now())
     locked_at = Column(DateTime, nullable=True)
     lease_owner = Column(String(120), nullable=True)
+    lease_token = Column(String(36), nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    budget_review_required = Column(Boolean, nullable=False, default=False, server_default=false())
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     last_error = Column(String(500), nullable=True)

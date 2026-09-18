@@ -131,6 +131,14 @@ async def _run_lightweight_migrations(conn):
         ("conversation_summaries", "reflection_turn_count", "INTEGER DEFAULT 0"),
         ("goals", "updated_at", "DATETIME"),
         ("tasks", "updated_at", "DATETIME"),
+        # Offline sync CAS versions. Existing rows begin at version 1.
+        ("notes", "sync_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("goals", "sync_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("tasks", "sync_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("anki_cards", "sync_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("wrong_questions", "sync_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("knowledge_extraction_runs", "lease_token", "VARCHAR(36)"),
+        ("knowledge_extraction_runs", "lease_expires_at", "DATETIME"),
         ("notes", "note_type", "VARCHAR(20)"),
         ("notes", "material_id", "INTEGER"),
         ("notes", "chapter_id", "INTEGER"),
@@ -212,6 +220,15 @@ async def _run_lightweight_migrations(conn):
         ("notes", "source_conflict_vault_id", "VARCHAR(160)"),
         ("notes", "source_conflict_file_id", "VARCHAR(160)"),
     ]
+
+    # Accounting upgrades must fail closed, not use the best-effort legacy loop.
+    result = await conn.execute(sqlalchemy.text('PRAGMA table_info(knowledge_extraction_runs)'))
+    extraction_columns = {row[1] for row in result}
+    if extraction_columns and 'budget_review_required' not in extraction_columns:
+        # Establish a physical transaction before SQLite ALTER/backfill.
+        await conn.execute(sqlalchemy.text('UPDATE knowledge_extraction_runs SET id = id WHERE 1 = 0'))
+        await conn.execute(sqlalchemy.text('ALTER TABLE knowledge_extraction_runs ADD COLUMN budget_review_required BOOLEAN NOT NULL DEFAULT 0'))
+        await conn.execute(sqlalchemy.text("UPDATE knowledge_extraction_runs SET budget_review_required = 1 WHERE extractor_type = 'llm'"))
 
     for table, column, col_type in other_migrations:
         try:
@@ -815,6 +832,8 @@ async def _run_lightweight_migrations(conn):
             KnowledgeUnit,
         )
 
+        from app.models.extraction_budget import ExtractionCall, ExtractionDailyBudget
+
         knowledge_tables = [
             KnowledgeSource.__table__,
             KnowledgeSourceRevision.__table__,
@@ -823,6 +842,8 @@ async def _run_lightweight_migrations(conn):
             ClaimEvidence.__table__,
             ClaimRelation.__table__,
             KnowledgeExtractionRun.__table__,
+            ExtractionDailyBudget.__table__,
+            ExtractionCall.__table__,
             EntityResolutionCandidate.__table__,
             ClaimConceptLink.__table__,
             KnowledgeEmbeddingProjection.__table__,
@@ -872,7 +893,15 @@ async def _run_lightweight_migrations(conn):
                 "prompt_hash", "input_hash", "status", "attempt_count",
                 "available_at", "locked_at", "lease_owner", "started_at",
                 "finished_at", "last_error", "usage", "stats", "created_at",
-                "updated_at",
+                "updated_at", "lease_token", "lease_expires_at", "budget_review_required",
+            },
+            "knowledge_extraction_daily_budgets": {
+                "id", "user_id", "execution_day", "charged_tokens", "created_at", "updated_at",
+            },
+            "knowledge_extraction_calls": {
+                "id", "user_id", "run_id", "unit_id", "lease_token", "execution_day",
+                "estimated_tokens", "charged_tokens", "state", "usage", "provider", "model",
+                "started_at", "finished_at",
             },
             "entity_resolution_candidates": {
                 "id", "user_id", "extraction_run_id", "knowledge_unit_id", "claim_id",
