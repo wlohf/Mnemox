@@ -22,7 +22,7 @@ function resolve(mode: ThemeMode): 'warm' | 'dark' {
   return mode as 'warm' | 'dark'
 }
 
-const saved = (localStorage.getItem('theme_mode') as ThemeMode) || 'system'
+const saved = (localStorage.getItem('theme_mode') as ThemeMode) || 'warm'
 const savedBgImage = localStorage.getItem('bg_image') || null
 const savedBgOpacity = parseFloat(localStorage.getItem('bg_opacity') || '0.15')
 
@@ -50,14 +50,14 @@ export const useThemeStore = create<ThemeStore>((set) => ({
     localStorage.removeItem('theme_mode')
     localStorage.removeItem('bg_image')
     localStorage.removeItem('bg_opacity')
-    const resolved = resolve('system')
+    const resolved = resolve('warm')
     document.documentElement.setAttribute('data-theme', resolved)
-    set({ mode: 'system', resolvedTheme: resolved, bgImage: null, bgOpacity: 0.15 })
+    set({ mode: 'warm', resolvedTheme: resolved, bgImage: null, bgOpacity: 0.15 })
   }
 }))
 
 // Init on load
-const initMode = (localStorage.getItem('theme_mode') as ThemeMode) || 'system'
+const initMode = (localStorage.getItem('theme_mode') as ThemeMode) || 'warm'
 document.documentElement.setAttribute('data-theme', resolve(initMode))
 
 // Listen for system changes

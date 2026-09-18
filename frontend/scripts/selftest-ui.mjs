@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
@@ -23,7 +24,7 @@ function json(body, status = 200) {
   }
 }
 
-async function mockRoutes(page) {
+export async function mockRoutes(page) {
   const state = {
     agentExecuteCount: 0,
     nextConversationId: 41,
@@ -406,7 +407,9 @@ async function run() {
   }
 }
 
-run().catch(async (error) => {
-  console.error(JSON.stringify({ ok: false, error: String(error) }, null, 2))
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  run().catch(async (error) => {
+    console.error(JSON.stringify({ ok: false, error: String(error) }, null, 2))
+    process.exitCode = 1
+  })
+}

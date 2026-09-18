@@ -8,10 +8,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "node scripts/selftest-ui.mjs",
+    "test:e2e:home": "node scripts/selftest-home.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
     "@ant-design/icons": "^5.2.6",
+    "@gsap/react": "^2.1.2",
     "@toast-ui/editor": "^3.2.2",
     "@types/react-grid-layout": "^1.3.6",
     "@uiw/react-md-editor": "^4.0.1",
@@ -23,6 +25,7 @@
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.2",
     "follow-redirects": "^1.16.0",
+    "gsap": "^3.15.0",
     "katex": "^0.16.28",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -44,6 +47,7 @@
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
+    "fake-indexeddb": "6.2.4",
     "jsdom": "^29.1.1",
     "playwright": "^1.62.1",
     "typescript": "^5.2.2",

@@ -1,6 +1,7 @@
 import { getDesktopPreference, setDesktopPreference } from '../../services/desktopPreferences'
 
 export const DEFAULT_RIGHT_CARD_ORDER = ['current', 'review', 'progress', 'pomodoro', 'calendar', 'motivation']
+export const DEFAULT_RIGHT_VISIBLE_CARDS = ['current', 'review', 'pomodoro']
 export const RIGHT_SIDEBAR_CARDS = [
   { id: 'motivation', label: '每日格言' },
   { id: 'calendar', label: '今天与计划' },
@@ -12,7 +13,7 @@ export const RIGHT_SIDEBAR_CARDS = [
 export const RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY = 'layout.rightSidebar'
 
 const RIGHT_CARD_ID_SET = new Set(RIGHT_SIDEBAR_CARDS.map(card => card.id))
-const DEFAULT_RIGHT_SIDEBAR_WIDTH = 320
+const DEFAULT_RIGHT_SIDEBAR_WIDTH = 304
 
 const RIGHT_SIDEBAR_LOCAL_STORAGE_KEYS = {
   cardOrder: 'right_card_order',
@@ -32,7 +33,7 @@ export interface RightSidebarLayoutPreference {
 
 const DEFAULT_RIGHT_SIDEBAR_LAYOUT: RightSidebarLayoutPreference = {
   cardOrder: DEFAULT_RIGHT_CARD_ORDER,
-  visibleCards: DEFAULT_RIGHT_CARD_ORDER,
+  visibleCards: DEFAULT_RIGHT_VISIBLE_CARDS,
   collapsed: false,
   width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
   calendarExpanded: false,
@@ -58,11 +59,12 @@ export function normalizeRightCardOrder(ids: unknown): string[] {
 }
 
 export function normalizeRightVisibleCards(ids: unknown): string[] {
-  if (!Array.isArray(ids)) return [...DEFAULT_RIGHT_CARD_ORDER]
+  if (!Array.isArray(ids)) return [...DEFAULT_RIGHT_VISIBLE_CARDS]
   return ids.filter((id, index) => typeof id === 'string' && RIGHT_CARD_ID_SET.has(id) && ids.indexOf(id) === index)
 }
 
 export function clampRightSidebarWidth(value: unknown): number {
+  if (value === null || value === undefined || value === '') return DEFAULT_RIGHT_SIDEBAR_WIDTH
   const width = Number(value)
   if (!Number.isFinite(width)) return DEFAULT_RIGHT_SIDEBAR_WIDTH
   return Math.min(480, Math.max(200, width))

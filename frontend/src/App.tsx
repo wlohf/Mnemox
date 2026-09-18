@@ -73,6 +73,7 @@ function notifyUpdateIfPossible(latestVersion: string) {
 function App() {
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const userId = useAuthStore((s) => s.user?.id)
   const refreshPomodoroRecords = usePomodoroStore((s) => s.refreshRecordsFromBackend)
   const autoCheckTimer = useRef<number | null>(null)
 
@@ -92,7 +93,7 @@ function App() {
       syncEngine.stop()
     }
     return () => syncEngine.stop()
-  }, [isAuthenticated, refreshPomodoroRecords])
+  }, [isAuthenticated, userId, refreshPomodoroRecords])
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -171,54 +172,43 @@ function App() {
     }
   }, [isAuthenticated])
 
-  const isDark = resolvedTheme === 'dark'
-  const antdTheme = useMemo(() => ({
-    algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
-    token: isDark ? {
-      colorPrimary: '#5d9c8e',
-      colorBgContainer: '#111922',
-      colorBgLayout: '#0b1117',
-      colorBgElevated: '#17232d',
-      colorBorder: 'rgba(196, 222, 216, 0.12)',
-      colorBorderSecondary: 'rgba(196, 222, 216, 0.07)',
-      colorText: '#eef4f1',
-      colorTextSecondary: '#a8b9b4',
-      colorTextTertiary: '#718781',
-      borderRadius: 12,
-      colorLink: '#7bb7a8',
-      colorSuccess: '#72c9ba',
-      colorError: '#d9838d',
-      colorWarning: '#d9b56a',
-      colorInfo: '#7bb7a8',
-      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
-    } : {
-      colorPrimary: '#3f4a43',
-      colorBgContainer: '#fffaf2',
-      colorBgLayout: '#f4efe5',
-      colorBgElevated: '#fffdf8',
-      colorBorder: '#ddd3c2',
-      colorBorderSecondary: '#eadfce',
-      colorText: '#282721',
-      colorTextSecondary: '#6d685d',
-      colorTextTertiary: '#9a9284',
-      borderRadius: 12,
-      colorLink: '#3f4a43',
-      colorSuccess: '#3f7d68',
-      colorError: '#b85f68',
-      colorWarning: '#a87332',
-      colorInfo: '#637267',
-      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Roboto, Arial, sans-serif",
-    },
-    components: {
-      Card: {
-        colorBgContainer: isDark ? '#111922' : '#fffaf2',
+  const antdTheme = useMemo(() => {
+    // CSS is the single palette source for native and Ant Design controls.
+    const styles = getComputedStyle(document.documentElement)
+    const color = (name: string) => styles.getPropertyValue(name).trim()
+    return {
+      algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+      token: {
+        colorPrimary: color('--brand-500'),
+        colorPrimaryHover: color('--brand-600'),
+        colorPrimaryActive: color('--brand-400'),
+        colorPrimaryBg: color('--bg-elevated'),
+        colorTextLightSolid: color('--text-inverse'),
+        colorBgContainer: color('--bg-surface'),
+        colorBgLayout: color('--bg-base'),
+        colorBgElevated: color('--bg-surface'),
+        colorBorder: color('--border-color'),
+        colorBorderSecondary: color('--border-light'),
+        colorText: color('--text-primary'),
+        colorTextSecondary: color('--text-secondary'),
+        colorTextTertiary: color('--text-tertiary'),
+        colorTextDisabled: color('--text-muted'),
+        colorLink: color('--text-primary'),
+        colorLinkHover: color('--text-secondary'),
+        colorLinkActive: color('--text-primary'),
+        colorSuccess: color('--success'),
+        colorError: color('--error'),
+        colorWarning: color('--warning'),
+        colorInfo: color('--info'),
+        borderRadius: 10,
+        fontFamily: styles.fontFamily,
       },
-      Layout: {
-        siderBg: isDark ? '#111922' : '#fffaf2',
-        headerBg: isDark ? '#111922' : '#fffaf2',
-      }
+      components: {
+        Button: { primaryShadow: 'none', defaultShadow: 'none' },
+        Layout: { siderBg: color('--bg-sidebar'), headerBg: color('--bg-base') },
+      },
     }
-  }), [isDark])
+  }, [resolvedTheme])
 
   useEffect(() => {
     ConfigProvider.config({
@@ -239,7 +229,7 @@ function App() {
         <PomodoroTicker />
         <BrowserRouter>
           <Suspense fallback={<PageSpinner />}>
-            <Routes>
+            <Routes key={userId ?? 'guest'}>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
               <Route path="/conversations/:conversationId" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />

@@ -95,13 +95,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     },
     {
       value: 'warm',
-      label: <span><SunOutlined style={{ marginRight: 6 }} />白天 · 暖灰工作台</span>,
-      desc: '暖灰纸感背景，适合日间专注学习',
+      label: <span><SunOutlined style={{ marginRight: 6 }} />浅白</span>,
+      desc: '白色背景与中性灰层次，清晰、简洁的学习空间',
     },
     {
       value: 'dark',
-      label: <span><MoonOutlined style={{ marginRight: 6 }} />黑夜 · 深色研究舱</span>,
-      desc: '石墨深色界面，适合夜间阅读和长时间研究',
+      label: <span><MoonOutlined style={{ marginRight: 6 }} />深色</span>,
+      desc: '中性深灰界面，适合夜间阅读',
     },
   ]
 

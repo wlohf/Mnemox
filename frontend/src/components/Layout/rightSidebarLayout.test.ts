@@ -9,6 +9,7 @@ vi.mock('../../services/desktopPreferences', () => desktopPreferencesMock)
 
 import {
   loadRightSidebarLayoutPreference,
+  readLocalRightSidebarLayoutPreference,
   RIGHT_SIDEBAR_LAYOUT_PREFERENCE_KEY,
   saveRightSidebarLayoutPreference,
 } from './rightSidebarLayout'
@@ -19,6 +20,13 @@ describe('right sidebar layout persistence', () => {
     vi.clearAllMocks()
     desktopPreferencesMock.getDesktopPreference.mockResolvedValue(null)
     desktopPreferencesMock.setDesktopPreference.mockResolvedValue(true)
+  })
+
+  it('uses the intended width and focused widgets when no preferences have been saved', () => {
+    const layout = readLocalRightSidebarLayoutPreference()
+    expect(layout.width).toBe(304)
+    expect(layout.visibleCards).toEqual(['current', 'review', 'pomodoro'])
+    expect(layout.collapsed).toBe(false)
   })
 
   it('prefers desktop preferences over current-origin local storage', async () => {

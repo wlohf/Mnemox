@@ -1,10 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Layout,
   Card,
   List,
-  Button,
   Input,
   InputNumber,
   DatePicker,
@@ -28,6 +27,7 @@ import {
   Tooltip,
   Space,
   Dropdown,
+  Popover,
 } from 'antd'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -39,8 +39,6 @@ import {
   FileOutlined,
   DeleteOutlined,
   CalendarOutlined,
-  DownOutlined,
-  UpOutlined,
   BarChartOutlined,
   SettingOutlined,
   MessageOutlined,
@@ -55,6 +53,11 @@ import {
   SendOutlined,
   EditOutlined,
   ReloadOutlined,
+  ClockCircleOutlined,
+  BulbOutlined,
+  ArrowRightOutlined,
+  FullscreenOutlined,
+  FullscreenExitOutlined,
 } from '@ant-design/icons'
 import remarkGfm from 'remark-gfm'
 import { usePomodoroStore, type DateRange } from '../../stores/pomodoroStore'
@@ -110,6 +113,11 @@ import { SyncStatusIndicator } from '../SyncStatusIndicator'
 import { SyncConflictModal } from '../SyncConflictModal'
 import { BackendLoadingOverlay } from './BackendLoadingOverlay'
 import { GlobalNavRail } from './GlobalNavRail'
+import { ActionButton as Button } from '../ui/ActionButton'
+import { FoldPanel } from '../ui/FoldPanel'
+import ClickSpark from '../ui/ClickSpark'
+import { HomeWelcome } from './HomeWelcome'
+import './HomeWorkspace.css'
 import { dismissOnboarding, getOnboardingStatus, seedDemoWorkspace, type OnboardingStatus } from '../../services/systemApi'
 import {
   AI_PROVIDERS_UPDATED_EVENT,
@@ -443,7 +451,6 @@ export function ObsidianLayout() {
   const [editingProjectId, setEditingProjectId] = useState<number | undefined>()
   const [leftSidebarTab, setLeftSidebarTab] = useState<string>('conversations')
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('layout_left_collapsed') === 'true')
-  const [leftExpandTarget, setLeftExpandTarget] = useState<'default' | 'search' | 'categories' | 'history' | null>(null)
   const [projectMaterialsOpen, setProjectMaterialsOpen] = useState(false)
   const [knowledgeResolutionMaterial, setKnowledgeResolutionMaterial] = useState<{
     id: number
@@ -454,17 +461,87 @@ export function ObsidianLayout() {
   // Draggable panel splitter state
   const [leftWidth, setLeftWidth] = useState<number>(() => {
     const saved = localStorage.getItem('layout_left_width')
-    return saved ? Number(saved) : 280
+    return saved ? Number(saved) : 240
   })
   const [rightWidth, setRightWidth] = useState<number>(() => readLocalRightSidebarLayoutPreference().width)
   const [dragging, setDragging] = useState<'left' | 'right' | null>(null)
-  const effectiveLeftWidth = leftCollapsed ? 72 : leftWidth
-  const effectiveRightWidth = rightCollapsed ? 0 : rightWidth
+  const [compactViewport, setCompactViewport] = useState(() => window.matchMedia('(max-width: 1180px)').matches)
+  const [mobilePanel, setMobilePanel] = useState<'left' | 'right' | null>(null)
+  // Immersion is independent of saved panel preferences, so exiting restores the workspace.
+  const [immersive, setImmersive] = useState(() => localStorage.getItem('layout_immersive') === 'true')
+  const leftPanelCollapsed = immersive || (compactViewport ? mobilePanel !== 'left' : leftCollapsed)
+  const rightPanelCollapsed = immersive || (compactViewport ? mobilePanel !== 'right' : rightCollapsed)
+  const effectiveLeftWidth = compactViewport ? leftWidth : leftPanelCollapsed ? 0 : leftWidth
+  const effectiveRightWidth = compactViewport ? rightWidth : rightPanelCollapsed ? 0 : rightWidth
+  const rightContentRef = useRef<HTMLDivElement | null>(null)
+  const leftPanelRef = useRef<HTMLDivElement | null>(null)
+  const leftToggleRef = useRef<HTMLButtonElement>(null)
+  const rightToggleRef = useRef<HTMLButtonElement>(null)
+  const immersiveToggleRef = useRef<HTMLButtonElement>(null)
+
+  const toggleImmersive = () => {
+    setMobilePanel(null)
+    setImmersive((value) => !value)
+  }
+
+  const changeLeftPanel = (collapsed: boolean) => {
+    if (!collapsed) setImmersive(false)
+    if (compactViewport) setMobilePanel(collapsed ? null : 'left')
+    else setLeftCollapsed(collapsed)
+  }
+  const changeRightPanel = (collapsed: boolean) => {
+    if (!collapsed) setImmersive(false)
+    if (compactViewport) setMobilePanel(collapsed ? null : 'right')
+    else setRightCollapsed(collapsed)
+  }
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1180px)')
+    const update = () => { setCompactViewport(media.matches); setMobilePanel(null) }
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  useEffect(() => {
+    setMobilePanel(null)
+  }, [location.pathname])
+  useEffect(() => {
+    try { localStorage.setItem('layout_immersive', String(immersive)) } catch { /* Session-only when storage is unavailable. */ }
+  }, [immersive])
+  useEffect(() => {
+    if (!mobilePanel && !immersive) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      // Escape belongs to an open dialog or picker before it belongs to the workspace.
+      const overlay = document.querySelector('.ant-modal-wrap:not([style*="display: none"]), .ant-drawer-open, .ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-dropdown:not(.ant-dropdown-hidden), .ant-popover:not(.ant-popover-hidden), .ant-picker-dropdown:not(.ant-picker-dropdown-hidden)')
+      if (overlay) return
+      if (mobilePanel) {
+        setMobilePanel(null)
+        ;(mobilePanel === 'left' ? leftToggleRef : rightToggleRef).current?.focus()
+      } else {
+        setImmersive(false)
+        immersiveToggleRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [mobilePanel, immersive])
+  useLayoutEffect(() => {
+    const right = rightContentRef.current
+    if (right) {
+      if (rightPanelCollapsed && right.contains(document.activeElement)) (immersive ? immersiveToggleRef : rightToggleRef).current?.focus()
+      right.inert = rightPanelCollapsed
+    }
+    const left = leftPanelRef.current
+    if (left) {
+      if (leftPanelCollapsed && left.contains(document.activeElement)) (immersive ? immersiveToggleRef : leftToggleRef).current?.focus()
+      left.inert = leftPanelCollapsed
+    }
+  }, [immersive, leftPanelCollapsed, rightPanelCollapsed])
   const [activeProjectMaterialIds, setActiveProjectMaterialIds] = useState<number[]>([])
   const [, setWrongQuestions] = useState<WrongQuestionPreview[]>([])
   const [reviewDueCount, setReviewDueCount] = useState(0)
   const [reviewPreviewTasks, setReviewPreviewTasks] = useState<ReviewTaskItem[]>([])
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
+  const [dashboardStatus, setDashboardStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [updatingTodayTaskKeys, setUpdatingTodayTaskKeys] = useState<Set<string>>(() => new Set())
   const [coachPreferences, setCoachPreferences] = useState<CoachPreferences | null>(null)
   // Backend readiness polling (Feature 1)
@@ -1012,7 +1089,7 @@ export function ObsidianLayout() {
 
   const openOnboardingMaterials = () => {
     markOnboardingDismissed()
-    setLeftCollapsed(false)
+    changeLeftPanel(false)
     setLeftSidebarTab('materials')
     setShowOnboarding(false)
   }
@@ -1464,10 +1541,13 @@ export function ObsidianLayout() {
 
   const loadDashboardOverview = async () => {
     try {
+      setDashboardStatus('loading')
       const d = await getDashboard()
       setDashboardData(d)
+      setDashboardStatus('ready')
     } catch {
       setDashboardData(null)
+      setDashboardStatus('error')
     }
   }
 
@@ -2172,7 +2252,10 @@ export function ObsidianLayout() {
   const canSendMessage = Boolean(chatInput.trim()) && !chatLoading && !agentWriteLoading
 
   return (
-    <Layout style={{ minHeight: '100vh', position: 'relative' }}>
+    <ClickSpark>
+    <Layout className={`mnemox-home${immersive ? ' is-immersive' : ''}${dragging ? ' is-resizing' : ''}`} style={{ minHeight: '100vh', position: 'relative' }}>
+      <div className="mnemox-home-navigation" aria-hidden={immersive}
+        ref={(node) => { if (node) node.inert = immersive }}>
       <GlobalNavRail
         pathname={location.pathname}
         isRunning={isRunning}
@@ -2184,6 +2267,7 @@ export function ObsidianLayout() {
         beginnerMode={beginnerMode}
         onToggleBeginnerMode={() => setBeginnerMode((v) => !v)}
       />
+      </div>
 
       {bgImageUrl && (
         <div style={{
@@ -2195,7 +2279,11 @@ export function ObsidianLayout() {
       )}
       {/* 第二层左侧边栏（对话/资料库） */}
       <Sider
-        className={`mnemox-left-sidebar${leftCollapsed ? ' is-collapsed' : ''}`}
+        id="home-conversations"
+        ref={(node) => { leftPanelRef.current = node; if (node) node.inert = leftPanelCollapsed }}
+        aria-label="对话与资料"
+        aria-hidden={leftPanelCollapsed}
+        className={`mnemox-left-sidebar${leftPanelCollapsed ? ' is-collapsed' : ''}`}
         width={effectiveLeftWidth}
         style={{
           background: 'var(--bg-surface)',
@@ -2209,36 +2297,12 @@ export function ObsidianLayout() {
           transition: 'width var(--duration-normal) var(--ease-out)',
         }}
       >
-        {leftCollapsed ? (
-          <div style={{ height: '100%', paddingBottom: 52 }}>
-            <ConversationSidebar
-              collapsed
-              onExpandSidebar={(target) => {
-                setLeftSidebarTab('conversations')
-                setLeftExpandTarget(target || 'default')
-                setLeftCollapsed(false)
-              }}
-              onConversationOpened={(conversationId) => {
-                setLeftSidebarTab('conversations')
-                navigate(getConversationPath(conversationId))
-              }}
-              onOpenProjectSettings={(projectId) => {
-                setEditingProjectId(projectId)
-                setProjectSettingsOpen(true)
-              }}
-              onOpenProjectMaterials={() => {
-                setProjectMaterialsOpen(true)
-                setLeftSidebarTab('conversations')
-              }}
-            />
-          </div>
-        ) : (
           <Tabs
             activeKey={leftSidebarTab}
             onChange={setLeftSidebarTab}
             size="small"
             centered
-            style={{ height: '100%' }}
+            style={{ height: '100%', width: leftWidth }}
             items={[
               {
                 key: 'conversations',
@@ -2248,10 +2312,8 @@ export function ObsidianLayout() {
                   </span>
                 ),
                 children: (
-                  <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-primary)' }}>
+                  <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-sidebar)' }}>
                     <ConversationSidebar
-                      expandTarget={leftExpandTarget}
-                      onExpandTargetHandled={() => setLeftExpandTarget(null)}
                       onConversationOpened={(conversationId) => {
                         setLeftSidebarTab('conversations')
                         navigate(getConversationPath(conversationId))
@@ -2276,7 +2338,7 @@ export function ObsidianLayout() {
                   </span>
                 ),
                 children: (
-                <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-primary)' }}>
+                <div style={{ height: 'calc(100vh - 46px)', overflow: 'auto', background: 'var(--bg-sidebar)' }}>
                   {/* 资料 */}
                   <div style={{ padding: '16px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
@@ -2709,11 +2771,10 @@ export function ObsidianLayout() {
               },
             ]}
           />
-        )}
-        <div className="mnemox-account-dock">
+        <div className="mnemox-account-dock" style={{ width: leftWidth }}>
           <Dropdown
             trigger={['click']}
-            placement={leftCollapsed ? 'topRight' : 'topLeft'}
+            placement={leftPanelCollapsed ? 'topRight' : 'topLeft'}
             menu={{
               items: [
                 {
@@ -2743,11 +2804,11 @@ export function ObsidianLayout() {
           >
             <button
               type="button"
-              className={`mnemox-account-button${leftCollapsed ? ' is-collapsed' : ''}`}
+              className={`mnemox-account-button${leftPanelCollapsed ? ' is-collapsed' : ''}`}
               aria-label="账户和设置"
             >
               <span className="mnemox-account-avatar">{(user?.username || '用')[0]}</span>
-              {!leftCollapsed && (
+              {!leftPanelCollapsed && (
                 <>
                   <span className="mnemox-account-meta">
                     <strong>{user?.username || '用户'}</strong>
@@ -2764,20 +2825,20 @@ export function ObsidianLayout() {
         </div>
       </Sider>
 
-      <Tooltip title={leftCollapsed ? '展开左侧栏' : '收起左侧栏'} placement="right">
+      <Tooltip title={leftPanelCollapsed ? '展开左侧栏' : '收起左侧栏'} placement="right">
         <Button
           type="text"
           shape="circle"
-          icon={leftCollapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}
+          icon={leftPanelCollapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}
           className="mnemox-sidebar-toggle mnemox-sidebar-toggle-left"
-          onClick={() => setLeftCollapsed((value) => !value)}
+          onClick={() => changeLeftPanel(!leftPanelCollapsed)}
           style={{ left: 64 + effectiveLeftWidth - 14 }}
-          aria-label={leftCollapsed ? '展开左侧栏' : '收起左侧栏'}
+          aria-label={leftPanelCollapsed ? '展开左侧栏' : '收起左侧栏'}
         />
       </Tooltip>
 
       {/* 左侧拖拽分割线 */}
-      {!leftCollapsed && (
+      {!leftPanelCollapsed && !compactViewport && (
         <div
           className={`panel-splitter${dragging === 'left' ? ' active' : ''}`}
           style={{
@@ -2798,8 +2859,8 @@ export function ObsidianLayout() {
       <Layout
         className="mnemox-main-layout"
         style={{
-          marginLeft: effectiveLeftWidth + 64,
-          marginRight: effectiveRightWidth,
+          marginLeft: immersive ? 0 : compactViewport ? 64 : effectiveLeftWidth + 64,
+          marginRight: immersive || compactViewport ? 0 : effectiveRightWidth,
           height: '100vh',
           minHeight: 0,
           overflow: 'hidden',
@@ -2809,10 +2870,32 @@ export function ObsidianLayout() {
       >
         <Content style={{ padding: '0', background: 'transparent', height: '100vh', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <div className={`mnemox-chat-frame${isChatEmpty ? ' is-empty' : ' has-messages'}`}>
-            {/* Top toolbar removed, replaced by PageShell global nav */}
-            <div style={{ height: 16 }} />
+            <header className="mnemox-home-header">
+              <div className="mnemox-home-header-start">
+                {!immersive && <Button ref={leftToggleRef} type="text" icon={<MenuOutlined />}
+                  aria-label={leftPanelCollapsed ? '展开对话与资料' : '收起对话与资料'}
+                  aria-expanded={!leftPanelCollapsed} aria-controls="home-conversations"
+                  onClick={() => changeLeftPanel(!leftPanelCollapsed)} />}
+                <span>{immersive ? '沉浸学习' : '学习工作台'}</span>
+              </div>
+              <div className="mnemox-home-header-end">
+                {!immersive && (isRunning || isPaused) && <button type="button" className="mnemox-live-timer" data-click-spark
+                  onClick={() => { changeRightPanel(false) }}>
+                  <ClockCircleOutlined />{formatTime(remainingTime)}{isPaused ? ' · 已暂停' : ''}
+                </button>}
+                {!immersive && <Button ref={rightToggleRef} type="text" icon={<CalendarOutlined />}
+                  aria-label={rightPanelCollapsed ? '展开今日安排' : '收起今日安排'}
+                  aria-expanded={!rightPanelCollapsed} aria-controls="home-today"
+                  onClick={() => changeRightPanel(!rightPanelCollapsed)}>今日安排</Button>}
+                <Button ref={immersiveToggleRef} type="text" className="mnemox-immersive-toggle"
+                  icon={immersive ? <FullscreenExitOutlined aria-hidden /> : <FullscreenOutlined aria-hidden />}
+                  aria-label={immersive ? '退出沉浸模式' : '进入沉浸模式'} aria-pressed={immersive}
+                  title={immersive ? '退出沉浸模式（Esc）' : '收起两侧栏，专注聊天'}
+                  onClick={toggleImmersive}>{immersive ? '退出沉浸' : '沉浸模式'}</Button>
+              </div>
+            </header>
 
-            {!focusMode && <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8, padding: '6px 0' }}>
+            {!focusMode && !immersive && <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8, padding: '6px 0' }}>
               <Tag style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>{activeConversationId ? `对话 #${activeConversationId}` : '未选择对话'}</Tag>
               <Tag color={activeProjectId ? 'blue' : 'default'} style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>{activeProjectId ? `项目 #${activeProjectId}` : '未分配项目'}</Tag>
               {chatLoading && <Tag color="orange" style={{ fontSize: 11, borderRadius: 'var(--radius-sm)' }}>正在生成</Tag>}
@@ -2841,7 +2924,7 @@ export function ObsidianLayout() {
               </Button>
             </div>}
 
-            {!focusMode && activeProjectId && (
+            {!focusMode && !immersive && activeProjectId && (
               <div style={{ marginBottom: 8, padding: '8px 10px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)', background: 'var(--bg-tertiary)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                   <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>当前项目默认资料（自动注入）</span>
@@ -2924,12 +3007,15 @@ export function ObsidianLayout() {
               </div>
             )}
 
-            {isChatEmpty ? (
-              <div className="mnemox-start-screen" aria-label="聊天开始区">
-                <h1 className="mnemox-start-title">
-                  今天想从哪里开始？
-                </h1>
+            {isChatEmpty ? immersive ? (
+              <div className="mnemox-immersive-welcome">
+                <h1>专注当下，聊透一个问题。</h1>
               </div>
+            ) : (
+              <HomeWelcome dashboard={dashboardData} status={dashboardStatus}
+                onNavigate={navigate} onOpenPlan={() => openPlanDocument(dayjs())}
+                onOpenMaterials={() => { setLeftSidebarTab('materials'); setShowUploadArea(true); changeLeftPanel(false) }}
+                onRetry={() => void loadDashboardOverview()} />
             ) : (
               <div
                 ref={chatScrollRef}
@@ -2972,6 +3058,7 @@ export function ObsidianLayout() {
 
             {/* 输入区域 */}
             <div className="mnemox-chat-composer">
+              {isChatEmpty && <div className="mnemox-composer-heading"><span>和学习教练聊聊</span><span>提问 · 理解 · 整理思路</span></div>}
               <div className="mnemox-input-shell">
                 <div className="mnemox-composer-row">
                   <Tooltip title="上传图片">
@@ -3090,7 +3177,6 @@ export function ObsidianLayout() {
                   {chatLoading ? (
                     <Button
                       type="primary"
-                      danger
                       size="middle"
                       className="mnemox-stop-button"
                       onClick={handleStopStreaming}
@@ -3127,7 +3213,7 @@ export function ObsidianLayout() {
                         : 'var(--text-secondary)',
                     }}
                   >
-                    <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'green' : 'orange'} style={{ margin: 0 }}>
+                    <Tag color={ragStatus.enabled && ragStatus.rag_online ? 'default' : 'orange'} style={{ margin: 0 }}>
                       资料检索：{ragStatus.enabled && ragStatus.rag_online ? '语义 + 关键词' : '关键词保底'}
                     </Tag>
                     <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
@@ -3147,9 +3233,10 @@ export function ObsidianLayout() {
                       key={label}
                       className="mnemox-prompt-chip"
                       type="button"
-                      onClick={() => setChatInput(label)}
+                      data-click-spark
+                      onClick={() => { setChatInput(label); document.getElementById('mnemox-chat-input')?.focus() }}
                     >
-                      {label}
+                      <span>{label}</span><ArrowRightOutlined aria-hidden />
                     </button>
                   ))}
                 </div>
@@ -3159,20 +3246,20 @@ export function ObsidianLayout() {
         </Content>
       </Layout>
 
-      <Tooltip title={rightCollapsed ? '展开右侧栏' : '收起右侧栏'} placement="left">
+      <Tooltip title={rightPanelCollapsed ? '展开右侧栏' : '收起右侧栏'} placement="left">
         <Button
           type="text"
           shape="circle"
-          icon={rightCollapsed ? <DoubleLeftOutlined /> : <DoubleRightOutlined />}
+          icon={rightPanelCollapsed ? <DoubleLeftOutlined /> : <DoubleRightOutlined />}
           className="mnemox-sidebar-toggle mnemox-sidebar-toggle-right"
-          onClick={() => setRightCollapsed((value) => !value)}
-          style={{ right: rightCollapsed ? 12 : effectiveRightWidth - 14 }}
-          aria-label={rightCollapsed ? '展开右侧栏' : '收起右侧栏'}
+          onClick={() => changeRightPanel(!rightPanelCollapsed)}
+          style={{ right: rightPanelCollapsed ? 12 : effectiveRightWidth - 14 }}
+          aria-label={rightPanelCollapsed ? '展开右侧栏' : '收起右侧栏'}
         />
       </Tooltip>
 
       {/* 右侧拖拽分割线 */}
-      {!rightCollapsed && (
+      {!rightPanelCollapsed && !compactViewport && (
         <div
           className={`panel-splitter${dragging === 'right' ? ' active' : ''}`}
           style={{
@@ -3189,9 +3276,16 @@ export function ObsidianLayout() {
         />
       )}
 
+      {compactViewport && mobilePanel && <button type="button" className="mnemox-panel-backdrop"
+        aria-label="关闭侧栏" onClick={() => {
+          setMobilePanel(null)
+          ;(mobilePanel === 'left' ? leftToggleRef : rightToggleRef).current?.focus()
+        }} />}
       {/* 右侧信息栏 */}
       <Sider
-        className={`mnemox-right-sidebar${rightCollapsed ? ' is-collapsed' : ''}`}
+        id="home-today"
+        aria-label="今日安排"
+        className={`mnemox-right-sidebar${rightPanelCollapsed ? ' is-collapsed' : ''}`}
         width={effectiveRightWidth}
         style={{
           overflow: 'hidden',
@@ -3201,33 +3295,16 @@ export function ObsidianLayout() {
           transition: 'width var(--duration-normal) var(--ease-out)',
         }}
       >
-        {!rightCollapsed && (
-        <div className="mnemox-right-sidebar-content" style={{ height: '100%', overflowY: 'auto', padding: '16px' }}>
-        {/* 设置小组件按钮 */}
-        <div style={{ position: 'relative', display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-          <Button
-            size="small"
-            type={sortMode || customizeOpen ? 'primary' : 'text'}
-            icon={<SettingOutlined />}
-            onClick={() => setCustomizeOpen(value => !value)}
-          >
-            {sortMode ? '完成排序' : '自定义'}
-          </Button>
-          {customizeOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 34,
-                right: 0,
-                zIndex: 20,
-                width: 236,
-                padding: 8,
-                borderRadius: 12,
-                background: 'var(--bg-elevated)',
-                border: '1px solid var(--border-color)',
-                boxShadow: 'var(--shadow-lg)',
-              }}
-            >
+        <div ref={(node) => { rightContentRef.current = node; if (node) node.inert = rightPanelCollapsed }}
+          aria-hidden={rightPanelCollapsed} className="mnemox-right-sidebar-content"
+          style={{ height: '100%', overflowY: 'auto', padding: '20px 16px', width: rightWidth }}>
+        <div className="mnemox-today-heading"><h2>今日安排</h2><time>{dayjs().format('M月D日')}</time></div>
+        <div className="mnemox-today-summary"><span>{todayTaskItems.filter(task => task.status === 'completed').length} / {todayTaskItems.length} 项已完成</span>
+          <button type="button" data-click-spark onClick={() => navigate('/dashboard')}>查看概览 <ArrowRightOutlined /></button>
+        </div>
+        <div className="mnemox-widget-customize">
+          <Popover trigger="click" placement="bottomRight" open={customizeOpen} onOpenChange={setCustomizeOpen}
+            content={<div className="mnemox-widget-options">
                 <Button
                   type="text"
                   block
@@ -3258,11 +3335,21 @@ export function ObsidianLayout() {
                     />
                   </div>
                 ))}
-              </div>
-          )}
+              </div>}>
+            <Button size="small" type="text" icon={<SettingOutlined />}>
+              {sortMode ? '完成排序' : '自定义面板'}
+            </Button>
+          </Popover>
         </div>
         {/* 右侧卡片按 cardOrder 动态渲染 */}
         {cardOrder.filter(id => visibleCards.includes(id)).map(cardId => {
+          const panelProps = {
+            storageKey: `home.panel.${cardId}`,
+            defaultOpen: cardId === 'current' || (cardId === 'pomodoro' && (isRunning || isPaused)),
+            summary: cardId === 'current' ? `${todayTaskItems.filter(task => task.status !== 'completed').length} 待办`
+              : cardId === 'review' ? `${reviewDueCount} 待复习`
+              : cardId === 'pomodoro' ? formatTime(remainingTime) : undefined,
+          }
           const dragProps = sortMode ? {
             draggable: true,
             onDragStart: () => { dragCardRef.current = cardId },
@@ -3285,18 +3372,17 @@ export function ObsidianLayout() {
 
           if (cardId === 'motivation') return (
             <div key="motivation" {...dragProps}>
-            <Card
-              size="small"
+            <FoldPanel {...panelProps}
               title={
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 14 }}>💪</span>
+                  <BulbOutlined />
                   <span style={{ fontSize: 13, fontWeight: 500 }}>今日激励</span>
                 </div>
               }
               extra={
                 <div style={{ display: 'flex', gap: 2 }}>
-                  <Button type="text" size="small" onClick={handleRefreshQuote} title="换一句" style={{ fontSize: 13 }}>🔄</Button>
-                  <Button type="text" size="small" onClick={() => { setShowMotivationModal(true); void loadMotivationSettings(); void loadAllQuotes() }} title="管理" style={{ fontSize: 13 }}>⚙️</Button>
+                  <Button type="text" size="small" onClick={handleRefreshQuote} aria-label="换一句" icon={<ReloadOutlined />} />
+                  <Button type="text" size="small" onClick={() => { setShowMotivationModal(true); void loadMotivationSettings(); void loadAllQuotes() }} aria-label="管理格言" icon={<SettingOutlined />} />
                 </div>
               }
               style={{ marginBottom: 12 }}
@@ -3305,19 +3391,17 @@ export function ObsidianLayout() {
                 <div style={{ fontSize: 14, fontStyle: 'italic', color: 'var(--text-secondary)', lineHeight: 1.7 }}>{motivationQuote?.content || '加载中...'}</div>
                 {motivationQuote?.author && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>—— {motivationQuote.author}</div>}
               </div>
-            </Card>
+            </FoldPanel>
             </div>
           )
 
           if (cardId === 'calendar') return (
             <div key="calendar" {...dragProps}>
-            <Card
-              size="small"
+            <FoldPanel {...panelProps}
               title={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><CalendarOutlined style={{ color: 'var(--accent-600)' }} /><span style={{ fontSize: 13, fontWeight: 500 }}>日历</span></div>}
-              extra={<Button type="text" size="small" icon={calendarExpanded ? <UpOutlined /> : <DownOutlined />} onClick={() => setCalendarExpanded(!calendarExpanded)} />}
+              open={calendarExpanded} onOpenChange={setCalendarExpanded}
               style={{ marginBottom: 12 }}
             >
-              {calendarExpanded ? (
                 <div className="compact-calendar">
                   <Calendar
                     fullscreen={false}
@@ -3327,17 +3411,13 @@ export function ObsidianLayout() {
                     )}
                   />
                 </div>
-              ) : (
-                <div style={{ textAlign: 'center', padding: '4px 0', color: 'var(--text-tertiary)', fontSize: 12 }}>点击展开查看完整日历</div>
-              )}
-            </Card>
+            </FoldPanel>
             </div>
           )
 
           if (cardId === 'current') return (
             <div key="current" {...dragProps}>
-            <Card
-              size="small"
+            <FoldPanel {...panelProps}
               title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日任务</span>}
               extra={<Button type="link" size="small" icon={<EditOutlined />} onClick={() => openPlanDocument(dayjs())} style={{ fontSize: 12 }}>编辑</Button>}
               style={{ marginBottom: 12 }}
@@ -3390,8 +3470,8 @@ export function ObsidianLayout() {
                               alignItems: 'center',
                               justifyContent: 'center',
                               borderRadius: 4,
-                              border: `1px solid ${done ? 'var(--success)' : 'var(--border-color)'}`,
-                              background: done ? 'var(--success)' : 'transparent',
+                              border: `1px solid ${done ? 'var(--brand-500)' : 'var(--border-color)'}`,
+                              background: done ? 'var(--brand-500)' : 'transparent',
                               marginTop: 2,
                               padding: 0,
                               cursor: updating ? 'wait' : 'pointer',
@@ -3399,7 +3479,7 @@ export function ObsidianLayout() {
                               transition: 'background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out)',
                             }}
                           >
-                            {done && <CheckOutlined style={{ fontSize: 11, color: '#fff' }} />}
+                            {done && <CheckOutlined style={{ fontSize: 11, color: 'var(--text-inverse)' }} />}
                           </button>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div
@@ -3426,13 +3506,13 @@ export function ObsidianLayout() {
                   )
                 }}
               />
-            </Card>
+            </FoldPanel>
             </div>
           )
 
           if (cardId === 'review') return (
             <div key="review" {...dragProps}>
-            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>复习任务</span>} style={{ marginBottom: 12 }}
+            <FoldPanel {...panelProps} title={<span style={{ fontSize: 13, fontWeight: 500 }}>复习任务</span>} style={{ marginBottom: 12 }}
               extra={<Button type="link" size="small" onClick={() => navigate('/review')} style={{ fontSize: 12 }}>去复习</Button>}
             >
               <div style={{ marginBottom: 10 }}>
@@ -3448,13 +3528,13 @@ export function ObsidianLayout() {
                   </List.Item>
                 )}
               />
-            </Card>
+            </FoldPanel>
             </div>
           )
 
           if (cardId === 'progress') return (
             <div key="progress" {...dragProps}>
-            <Card size="small" title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日进度</span>} style={{ marginBottom: 12 }}>
+            <FoldPanel {...panelProps} title={<span style={{ fontSize: 13, fontWeight: 500 }}>今日进度</span>} style={{ marginBottom: 12 }}>
               {(() => {
                 const totalTasks = dashboardData?.today_task_count || 0
                 const completedTasks = dashboardData?.today_completed_count || 0
@@ -3466,19 +3546,18 @@ export function ObsidianLayout() {
                   </div>
                 )
               })()}
-            </Card>
+            </FoldPanel>
             </div>
           )
 
           if (cardId === 'pomodoro') return (
             <div key="pomodoro" {...dragProps}>
-            <Card
-              size="small"
+            <FoldPanel {...panelProps}
               title={
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 14 }}>🍅</span>
-                  <span style={{ fontSize: 13, fontWeight: 500 }}>番茄工作法</span>
-                  <span title={backendOnline ? '已连接后端' : '离线模式'} style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: backendOnline ? 'var(--success)' : 'var(--gray-300)', marginLeft: 4 }} />
+                  <ClockCircleOutlined />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>专注计时</span>
+                  <span title={backendOnline ? '已连接后端' : '离线模式'} style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: backendOnline ? 'var(--text-secondary)' : 'var(--gray-300)', marginLeft: 4 }} />
                 </span>
               }
               extra={
@@ -3497,7 +3576,7 @@ export function ObsidianLayout() {
                   title={<span style={{ fontSize: 11 }}>今日番茄</span>}
                   value={stats.todayCount}
                   suffix="个"
-                  valueStyle={{ fontSize: 16, color: '#ff4d4f' }}
+                  valueStyle={{ fontSize: 16, color: 'var(--text-primary)' }}
                 />
               </Col>
               <Col span={12}>
@@ -3522,7 +3601,7 @@ export function ObsidianLayout() {
                 fontWeight: 'bold',
                 fontFamily: "'JetBrains Mono', monospace",
                 margin: '8px 0',
-                color: isRunning ? (timerMode === 'break' ? 'var(--teal-500)' : 'var(--error)') : 'var(--text-primary)',
+                color: 'var(--text-primary)',
                 letterSpacing: '2px',
               }}
             >
@@ -3534,7 +3613,7 @@ export function ObsidianLayout() {
                 (1 - remainingTime / Math.max(1, duration * 60)) * 100
               )}
               showInfo={false}
-              strokeColor={isRunning ? (timerMode === 'break' ? 'var(--teal-500)' : 'var(--error)') : 'var(--success)'}
+              strokeColor="var(--brand-500)"
             />
 
             <div
@@ -3594,14 +3673,13 @@ export function ObsidianLayout() {
               )}
             </div>
           </div>
-        </Card>
+        </FoldPanel>
             </div>
           )
 
           return null
         })}
         </div>
-        )}
       </Sider>
 
       {/* 番茄钟设置弹窗 */}
@@ -4304,5 +4382,6 @@ export function ObsidianLayout() {
         }}
       />
     </Layout>
+    </ClickSpark>
   )
 }

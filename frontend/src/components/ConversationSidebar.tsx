@@ -115,7 +115,7 @@ export function ConversationSidebar({
     return (
       <span>
         {before}
-        <span style={{ background: '#fde68a', color: '#111827', padding: '0 2px', borderRadius: 3 }}>{hit}</span>
+        <span style={{ background: 'var(--primary-200)', color: 'var(--text-primary)', padding: '0 2px', borderRadius: 3 }}>{hit}</span>
         {after}
       </span>
     )
@@ -132,7 +132,7 @@ export function ConversationSidebar({
     return (
       <>
         {before}
-        <span style={{ background: '#fde68a', color: '#111827', borderRadius: 3, padding: '0 2px' }}>{hit}</span>
+        <span style={{ background: 'var(--primary-200)', color: 'var(--text-primary)', borderRadius: 3, padding: '0 2px' }}>{hit}</span>
         {after}
       </>
     )
@@ -443,7 +443,7 @@ export function ConversationSidebar({
         <div className="mnemox-sidebar-empty-copy">
           新建一次对话，Mnemox 会把上下文和资料自动串起来。
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleNewChat}>
+        <Button type="default" icon={<PlusOutlined />} onClick={handleNewChat}>
           开始学习
         </Button>
       </div>
@@ -511,7 +511,7 @@ export function ConversationSidebar({
     <div className="mnemox-sidebar-shell">
       <div className="mnemox-sidebar-action">
         <Button
-          type="primary"
+          type="text"
           icon={<PlusOutlined />}
           block
           onClick={handleNewChat}
@@ -567,7 +567,7 @@ export function ConversationSidebar({
               style={{
                 background: isActive ? p.color : undefined,
                 borderColor: isActive || isDrop ? p.color : undefined,
-                color: isActive ? '#fff' : undefined,
+                color: isActive ? 'var(--text-primary)' : undefined,
               }}
               onClick={() => handleProjectFilter(p.id)}
               onDragOver={(e) => {

@@ -30,35 +30,35 @@ export function SyncStatusIndicator({ onResolveConflicts }: SyncStatusIndicatorP
   switch (status) {
     case 'idle':
       icon = <CloudOutlined />
-      color = '#7cb342'
+      color = 'var(--text-secondary)'
       tip = '已同步'
       break
     case 'syncing':
       icon = <SyncOutlined spin />
-      color = '#1890ff'
+      color = 'var(--text-secondary)'
       tip = '同步中...'
       break
     case 'offline':
       icon = <DisconnectOutlined />
-      color = '#999'
+      color = 'var(--text-tertiary)'
       tip = '离线模式'
       break
     case 'error':
       icon = <WarningOutlined />
-      color = '#d4644a'
+      color = 'var(--error)'
       tip = lastError || '同步出错，点击重试'
       break
   }
 
   if (!online && status !== 'offline') {
     icon = <DisconnectOutlined />
-    color = '#999'
+    color = 'var(--text-tertiary)'
     tip = '离线模式'
   }
 
   if (conflictCount > 0) {
     icon = <WarningOutlined />
-    color = '#a87332'
+    color = 'var(--warning)'
     tip = `${conflictCount} 条同步冲突待你决定`
   }
 

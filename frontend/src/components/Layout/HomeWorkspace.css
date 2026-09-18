@@ -1,0 +1,305 @@
+/* Homepage: white study workspace. Shared interaction primitives are reusable. */
+.mnemox-home {
+  --motion-press: 120ms;
+  --motion-hover: 180ms;
+  --motion-panel: 280ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-settle: cubic-bezier(0.2, 0.8, 0.2, 1);
+  isolation: isolate;
+}
+
+.mnemox-click-spark { position: relative; min-height: 100dvh; }
+.mnemox-click-spark-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 200;
+}
+
+/* Primary actions: a soft surface sweep, a directional icon, a physical press. */
+.mnemox-action-button.ant-btn {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  transition: transform 160ms var(--ease-out), background-color 180ms ease,
+    color 180ms ease, border-color 180ms ease, box-shadow 180ms ease !important;
+}
+.mnemox-action-button.ant-btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 25%, rgb(255 255 255 / 16%) 48%, transparent 72%);
+  transform: translateX(-110%);
+  transition: transform 550ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mnemox-action-button.ant-btn:disabled { transform: none !important; box-shadow: none !important; }
+.mnemox-action-button.ant-btn:not(:disabled):not(.ant-btn-loading):active {
+  transform: translateY(1px) scale(0.97) !important;
+  transition-duration: 90ms !important;
+}
+.mnemox-action-arrow { transition: transform 220ms var(--ease-out); }
+
+.mnemox-home :is(button, a, [role='button'], input, textarea):focus-visible,
+.mnemox-action-button.ant-btn:focus-visible {
+  outline: 2px solid var(--brand-400);
+  outline-offset: 3px;
+}
+.mnemox-home ::selection { background: var(--primary-200); color: var(--text-primary); }
+.mnemox-home :is(input, textarea) { caret-color: var(--brand-500); }
+
+.mnemox-home .mnemox-chat-frame {
+  max-width: 1000px;
+  padding: 0 clamp(24px, 3vw, 48px) 28px;
+  height: 100dvh;
+}
+.mnemox-home .mnemox-chat-frame.is-empty { overflow-y: auto; justify-content: flex-start; }
+.mnemox-home .mnemox-home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 76px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.mnemox-home-header-start, .mnemox-home-header-end { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mnemox-home-header-start > span { font-size: 13px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.mnemox-home-header .ant-btn { height: 36px; color: var(--text-secondary) !important; border-color: transparent !important; }
+.mnemox-home-navigation { width: 0; flex: 0 0 0; }
+.mnemox-home-navigation .mnemox-global-nav-rail {
+  transition: transform var(--motion-panel) var(--motion-ease), visibility 0s;
+}
+.mnemox-home.is-immersive .mnemox-global-nav-rail {
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition-delay: 0s, var(--motion-panel);
+  pointer-events: none;
+}
+.mnemox-home.is-immersive .mnemox-chat-frame { max-width: 900px; }
+.mnemox-home.is-immersive .mnemox-home-header { border-bottom-color: transparent; }
+.mnemox-home.is-immersive .mnemox-chat-frame.is-empty .mnemox-chat-composer { margin-bottom: auto; }
+.mnemox-home.is-immersive :is(.mnemox-composer-heading, .mnemox-prompt-chips) { display: none; }
+.mnemox-immersive-welcome {
+  margin-top: auto;
+  padding: 40px 0 28px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.mnemox-immersive-welcome h1 {
+  margin: 0;
+  font-family: inherit !important;
+  font-size: clamp(24px, 2.5vw, 32px);
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-primary);
+  text-wrap: balance;
+}
+.mnemox-live-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 7px 8px;
+  background: var(--primary-100);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.mnemox-home-welcome { padding: clamp(30px, 6vh, 64px) 0 0; flex-shrink: 0; }
+.mnemox-welcome-heading h1 {
+  font-family: inherit !important;
+  font-size: clamp(26px, 2.5vw, 36px);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.035em;
+  color: var(--text-primary);
+  margin: 0 0 10px;
+  text-wrap: balance;
+}
+.mnemox-welcome-heading p { color: var(--text-secondary); font-size: 14px; line-height: 1.8; margin: 0; }
+.mnemox-next-step { padding: 32px 0 28px; }
+.mnemox-next-step h2 { font-family: inherit !important; color: var(--text-primary); font-size: 19px; line-height: 1.6; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.mnemox-next-step p { color: var(--text-secondary); font-size: 14px; line-height: 1.8; margin: 10px 0 20px; overflow-wrap: anywhere; }
+.mnemox-mission-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.mnemox-mission-duration { display: inline-flex; gap: 6px; align-items: center; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.mnemox-mission-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mnemox-mission-actions .ant-btn-lg { min-height: 44px; height: auto; padding: 10px 20px; border-radius: 999px !important; font-size: 14px; white-space: normal; }
+
+
+.mnemox-mission-loading { display: grid; gap: 12px; min-height: 120px; align-content: start; color: var(--text-secondary); font-size: 13px; }
+.mnemox-loading-line { height: 18px; width: 75%; background: var(--primary-100); border-radius: 4px; animation: homeLoading 1.4s ease-in-out infinite; }
+.mnemox-loading-line.is-short { width: 50%; height: 12px; }
+@keyframes homeLoading { 50% { opacity: 0.4; } }
+
+.mnemox-home .mnemox-chat-frame.is-empty .mnemox-chat-composer { margin: 0 0 auto; padding: 0; animation: none; flex-shrink: 0; width: 100%; }
+.mnemox-composer-heading { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.mnemox-composer-heading span:last-child { color: var(--text-secondary); font-weight: 400; font-size: 12px; }
+.mnemox-home .mnemox-input-shell {
+  border-radius: 24px;
+  background: var(--bg-input);
+  border-color: var(--border-color);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 4%);
+  transition: border-color 200ms ease, box-shadow 250ms ease, transform 250ms var(--motion-ease);
+}
+.mnemox-home .mnemox-input-shell:focus-within { border-color: var(--border-strong); box-shadow: 0 4px 16px rgb(0 0 0 / 7%); transform: translateY(-1px); }
+.mnemox-home .mnemox-chat-input.ant-input { font-size: 14px; line-height: 1.75; }
+.mnemox-home .mnemox-chat-input.ant-input::placeholder { color: var(--text-secondary); opacity: 1; }
+.mnemox-home .mnemox-prompt-chips { justify-content: flex-start; gap: 8px; margin-top: 14px; padding-bottom: 12px; }
+.mnemox-home .mnemox-prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  font-size: 12px;
+}
+.mnemox-prompt-chip .anticon { font-size: 10px; opacity: 0.45; transition: transform 180ms var(--ease-out), opacity 180ms ease; }
+.mnemox-home .mnemox-send-button.ant-btn { width: 36px; height: 36px; min-width: 36px; border-radius: 50% !important; }
+.mnemox-home .mnemox-chat-stage { padding-top: 20px; }
+.mnemox-home .mnemox-sidebar-toggle { display: none !important; }
+.mnemox-home .mnemox-left-sidebar, .mnemox-home .mnemox-right-sidebar {
+  box-shadow: none;
+  will-change: auto;
+  transition: width var(--motion-panel) var(--motion-ease), transform var(--motion-panel) var(--motion-ease),
+    opacity 180ms ease, visibility 0s !important;
+}
+.mnemox-home :is(.mnemox-left-sidebar, .mnemox-right-sidebar).is-collapsed {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border-width: 0 !important;
+  transition-delay: 0s, 0s, 0s, var(--motion-panel) !important;
+}
+.mnemox-home .mnemox-left-sidebar { background: var(--bg-sidebar) !important; }
+.mnemox-home .mnemox-right-sidebar { background: var(--bg-base) !important; }
+.mnemox-home .mnemox-main-layout {
+  will-change: auto;
+  transition: margin var(--motion-panel) var(--motion-ease) !important;
+}
+.mnemox-home .mnemox-right-sidebar-content,
+.mnemox-home .mnemox-right-sidebar-content > div:nth-child(n + 2) { animation: none; }
+.mnemox-home.is-resizing :is(.mnemox-left-sidebar, .mnemox-right-sidebar, .mnemox-main-layout) { transition: none !important; }
+.mnemox-home .mnemox-right-sidebar-content { transition: opacity 160ms ease; container-type: inline-size; }
+.mnemox-home .mnemox-right-sidebar.is-collapsed .mnemox-right-sidebar-content { opacity: 0; pointer-events: none; }
+.mnemox-today-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 8px 0 12px; }
+.mnemox-today-heading h2 { font-family: inherit !important; font-size: 17px; font-weight: 600; line-height: 1.5; margin: 0; color: var(--text-primary); }
+.mnemox-today-heading time { font-size: 12px; color: var(--text-secondary); }
+.mnemox-today-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--border-light); }
+.mnemox-today-summary button { border: 0; background: none; padding: 4px 0; font: inherit; cursor: pointer; color: var(--text-secondary); }
+.mnemox-today-summary .anticon { margin-left: 4px; }
+.mnemox-widget-customize { display: flex; justify-content: flex-end; margin: 10px 0; }
+.mnemox-widget-customize .ant-btn { font-size: 12px; color: var(--text-secondary) !important; border-color: transparent !important; }
+.mnemox-widget-options { width: 220px; }
+
+/* Disclosure: the header stays still, the arrow and content move together. */
+.mnemox-fold-panel { border-bottom: 1px solid var(--border-light); border-radius: 0; margin-bottom: 0 !important; }
+.mnemox-fold-heading { display: flex; align-items: center; gap: 4px; min-height: 54px; }
+.mnemox-fold-heading h3 { min-width: 0; flex: 1; font: inherit; margin: 0; }
+.mnemox-fold-trigger { width: 100%; border: 0; border-radius: 8px; background: transparent; font: inherit; color: var(--text-primary); cursor: pointer; display: flex; gap: 9px; align-items: center; padding: 12px 4px; min-height: 44px; text-align: left; transition: background-color 180ms ease; }
+.mnemox-fold-chevron { flex-shrink: 0; font-size: 10px; color: var(--text-secondary); transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), color 180ms ease; }
+.mnemox-fold-panel.is-open > .mnemox-fold-heading .mnemox-fold-chevron { transform: rotate(90deg); color: var(--brand-400); }
+.mnemox-fold-label { font-size: 13px; font-weight: 600; min-width: 0; white-space: nowrap; }
+.mnemox-fold-summary { font-size: 11px; font-weight: 400; color: var(--text-secondary); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mnemox-fold-extra { flex-shrink: 0; display: flex; align-items: center; }
+.mnemox-fold-extra .ant-btn { padding-inline: 5px; border-color: transparent !important; color: var(--text-secondary) !important; }
+.mnemox-fold-grid { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease, visibility 0s 280ms; }
+.mnemox-fold-panel.is-open > .mnemox-fold-grid { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition-delay: 0s; }
+.mnemox-fold-clip { min-height: 0; overflow: hidden; }
+.mnemox-fold-body { padding: 2px 4px 20px 23px; }
+.mnemox-home .mnemox-fold-body .ant-list-empty-text { padding: 12px 0; color: var(--text-secondary); font-size: 12px; }
+.mnemox-home .mnemox-fold-body .ant-list-item { border-bottom: 0; border-radius: 6px; transition: background-color 180ms ease; }
+.mnemox-home .mnemox-fold-body .ant-list-item button[aria-pressed] { position: relative; }
+.mnemox-home .mnemox-fold-body .ant-list-item button[aria-pressed]::before { content: ''; position: absolute; inset: -6px; }
+.mnemox-home .mnemox-fold-body .ant-list-item .ant-tag { background: transparent !important; border: 0 !important; color: var(--text-secondary) !important; padding: 0 6px 0 0; }
+.mnemox-recall-panel { margin-top: 16px; border: 0; }
+.mnemox-recall-panel .mnemox-fold-heading { min-height: 36px; }
+.mnemox-recall-panel .mnemox-fold-trigger { min-height: 36px; padding: 6px 0; color: var(--text-secondary); }
+.mnemox-recall-panel .mnemox-fold-label { font-size: 12px; font-weight: 400; }
+.mnemox-recall-panel .mnemox-fold-body { padding: 0 0 0 19px; }
+.mnemox-recall-panel .mnemox-fold-body p { margin: 6px 0 0; font-size: 13px; }
+
+@media (hover: hover) and (pointer: fine) {
+  .mnemox-action-button.ant-btn:not(:disabled):not(.ant-btn-loading):hover { transform: translateY(-1px); }
+  .mnemox-action-button.ant-btn-primary:not(:disabled):not(.ant-btn-loading):hover::after { transform: translateX(110%); }
+  .mnemox-action-button:not(:disabled):hover .mnemox-action-arrow { transform: translateX(4px); }
+  .mnemox-home .mnemox-prompt-chip:hover { background: var(--primary-100); border-color: transparent; box-shadow: none; transform: translateY(-2px); }
+  .mnemox-prompt-chip:hover .anticon { transform: translateX(3px); opacity: 1; }
+  .mnemox-fold-trigger:hover { background: var(--primary-50); }
+  .mnemox-home .mnemox-fold-body .ant-list-item:hover { background: var(--primary-50); }
+  .mnemox-today-summary button:hover { color: var(--brand-400); }
+}
+
+@media (max-width: 1180px) {
+  .mnemox-home .mnemox-left-sidebar, .mnemox-home .mnemox-right-sidebar {
+    z-index: 120;
+    top: 76px;
+    height: calc(100dvh - 76px) !important;
+    max-width: calc(100vw - 80px);
+    box-shadow: 8px 12px 32px rgb(0 0 0 / 12%);
+  }
+  .mnemox-home .mnemox-left-sidebar.is-collapsed { transform: translateX(calc(-100% - 64px)); pointer-events: none; }
+  .mnemox-home .mnemox-right-sidebar.is-collapsed { transform: translateX(100%); pointer-events: none; }
+  .mnemox-home .mnemox-right-sidebar-content { max-width: 100%; }
+  .mnemox-home .mnemox-left-sidebar .ant-tabs-tabpane > div { height: calc(100dvh - 172px) !important; }
+  .mnemox-home .mnemox-left-sidebar .ant-tabs-content { height: calc(100dvh - 172px); }
+  .mnemox-home .mnemox-home-header { position: relative; z-index: 125; }
+  .mnemox-panel-backdrop { position: fixed; inset: 76px 0 0 64px; z-index: 110; border: 0; background: rgb(0 0 0 / 22%); cursor: pointer; animation: fadeIn 160ms ease-out; }
+}
+@media (max-width: 760px) {
+  .mnemox-home .mnemox-chat-frame { padding: 0 18px 24px; }
+  .mnemox-home .mnemox-home-header { gap: 4px; min-height: 64px; }
+  .mnemox-home-header-start, .mnemox-home-header-end { gap: 2px; }
+  .mnemox-home-header-start > span { font-size: 12px; }
+  .mnemox-home-header .ant-btn { padding-inline: 7px; }
+  .mnemox-home-header-end .ant-btn > span:not(.anticon):not(.ant-btn-icon) { display: none; }
+  .mnemox-home.is-immersive .mnemox-immersive-toggle > span:not(.anticon):not(.ant-btn-icon) { display: inline; }
+  .mnemox-home-welcome { padding-top: 30px; }
+  .mnemox-welcome-heading h1 { font-size: 26px; }
+  .mnemox-welcome-heading p { font-size: 13px; }
+  .mnemox-next-step { padding: 26px 0; }
+  .mnemox-next-step h2 { font-size: 17px; }
+  .mnemox-next-step p { font-size: 13px; }
+  .mnemox-composer-heading span:last-child { display: none; }
+  .mnemox-home .mnemox-left-sidebar, .mnemox-home .mnemox-right-sidebar { top: 64px; height: calc(100dvh - 64px) !important; }
+  .mnemox-panel-backdrop { top: 64px; }
+  .mnemox-home .mnemox-model-select { max-width: 140px; }
+}
+@container (max-width: 240px) {
+  .mnemox-fold-heading { flex-wrap: wrap; padding-block: 4px; }
+  .mnemox-fold-trigger { flex-wrap: wrap; }
+  .mnemox-fold-summary { flex-basis: 100%; margin-left: 19px; }
+  .mnemox-fold-extra { margin-left: auto; }
+}
+@media (hover: none) {
+  .mnemox-home .ant-btn-primary:hover, .mnemox-home .mnemox-nav-item:hover,
+  .mnemox-home .mnemox-prompt-chip:hover { transform: none !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mnemox-home .mnemox-main-layout,
+  .mnemox-home .mnemox-left-sidebar,
+  .mnemox-home .mnemox-right-sidebar,
+  .mnemox-home :is(.mnemox-left-sidebar, .mnemox-right-sidebar).is-collapsed {
+    transition: none !important;
+  }
+  .mnemox-home *, .mnemox-home *::before, .mnemox-home *::after,
+  .mnemox-action-button.ant-btn, .mnemox-action-button.ant-btn::after {
+    animation: none !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  .mnemox-home button:hover, .mnemox-home button:active, .mnemox-home .mnemox-input-shell:focus-within { transform: none !important; }
+  .mnemox-home .mnemox-action-arrow { transform: none !important; }
+  .mnemox-action-button.ant-btn-primary::after, .mnemox-click-spark-canvas { display: none; }
+}

@@ -136,7 +136,7 @@ export function GlobalNavRail({
       className="mnemox-global-nav-rail"
       width={64}
       style={{
-        background: 'var(--bg-surface)',
+        background: 'var(--bg-sidebar)',
         borderRight: '1px solid var(--border-light)',
         position: 'fixed',
         left: 0,
@@ -183,6 +183,7 @@ export function GlobalNavRail({
             >
               <button
                 type="button"
+                data-click-spark
                 className={`mnemox-nav-item${isActive ? ' is-active' : ''}`}
                 aria-label={group.label}
                 title={group.label}
@@ -198,13 +199,14 @@ export function GlobalNavRail({
         <Tooltip title={timerTitle} placement="right">
           <button
             type="button"
+            data-click-spark
             onClick={() => onNavigate('/pomodoro')}
             className={`mnemox-nav-item mnemox-utility-item${isRunning ? ' is-timer-running' : isPaused ? ' is-timer-paused' : ''}`}
             aria-label={timerTitle}
             style={{
-              color: isRunning ? 'var(--error)' : isPaused ? 'var(--warning)' : 'var(--brand-400)',
-              background: isRunning ? 'rgba(251, 113, 133, 0.1)' : isPaused ? 'rgba(251, 191, 36, 0.1)' : 'rgba(99, 102, 241, 0.1)',
-              border: isRunning || isPaused ? `1px solid ${isRunning ? 'var(--error)' : 'var(--warning)'}` : 'none',
+              color: isRunning ? 'var(--text-primary)' : 'var(--text-secondary)',
+              background: isRunning || isPaused ? 'var(--primary-100)' : 'transparent',
+              border: 'none',
             }}
           >
             <ClockCircleOutlined />
