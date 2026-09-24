@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "fast-search": {
+      "command": "/usr/local/bin/fast-search-mcp",
+      "args": [],
+      "cwd": "/home/cloudcli/projects",
+      "env": {
+        "FAST_SEARCH_ROOTS": "/home/cloudcli/projects",
+        "FAST_SEARCH_MAX_RESULTS": "200",
+        "FAST_SEARCH_MAX_OUTPUT_BYTES": "262144",
+        "FAST_SEARCH_TIMEOUT": "8"
+      },
+      "directTools": [
+        "find_file",
+        "search_code",
+        "find_definition",
+        "find_references",
+        "read_range"
+      ]
+    }
+  }
+}

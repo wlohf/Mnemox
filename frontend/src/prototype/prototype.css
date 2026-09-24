@@ -1,0 +1,16 @@
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--mx-canvas);
+  color: var(--mx-text-1);
+  font-family: var(--mx-font-ui);
+  font-size: var(--mx-fs-14);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv11', 'ss01';
+}
+h1, h2, h3, h4 { font-family: var(--mx-font-ui); }
+
+::view-transition-old(root),
+::view-transition-new(root) { animation-duration: 360ms; animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
