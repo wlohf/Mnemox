@@ -20,6 +20,7 @@ let mockNotes = [
     updated_at: '2026-06-02T00:00:00.000Z',
   },
 ]
+let editMarkdown: (content: string) => void
 
 vi.mock('../components/PageShell', () => ({
   PageShell: ({ children, title, rightExtra }: { children: React.ReactNode; title: React.ReactNode; rightExtra?: React.ReactNode }) => (
@@ -32,7 +33,10 @@ vi.mock('../components/PageShell', () => ({
 }))
 
 vi.mock('../components/MarkdownLiveEditor', () => ({
-  MarkdownLiveEditor: ({ value }: { value: string }) => <div data-testid="markdown-editor">{value}</div>,
+  MarkdownLiveEditor: ({ value, onChange }: { value: string; onChange: (content: string) => void }) => {
+    editMarkdown = onChange
+    return <div data-testid="markdown-editor">{value}</div>
+  },
 }))
 
 vi.mock('../hooks/useOfflineNotes', () => ({
@@ -156,6 +160,8 @@ describe('NotesPage folder switching', () => {
       container = null
     }
     vi.restoreAllMocks()
+    vi.useRealTimers()
+    localStorage.clear()
     mockNotes = [
       {
         _localId: '1',
@@ -172,6 +178,39 @@ describe('NotesPage folder switching', () => {
         updated_at: '2026-06-02T00:00:00.000Z',
       },
     ]
+  })
+
+  it('saves and restores edits when switching notes before the debounce expires', async () => {
+    vi.useFakeTimers()
+    mockNotes = [...mockNotes, { ...mockNotes[0], _localId: '2', title: '另一篇', content: 'other content' }]
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => { root!.render(<MemoryRouter><NotesPage /></MemoryRouter>) })
+    await act(async () => { editMarkdown('整段连续输入，立即切换') })
+    const buttons = () => Array.from(container!.querySelectorAll('.mnemox-note-file'))
+    await act(async () => { buttons()[1].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(JSON.parse(localStorage.getItem('mnemox_note_draft:1')!)).toMatchObject({ content: '整段连续输入，立即切换' })
+    await act(async () => { buttons()[0].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe('整段连续输入，立即切换')
+  })
+
+  it('does not restore an older draft after the learner undoes edits', async () => {
+    vi.useFakeTimers()
+    mockNotes = [...mockNotes, { ...mockNotes[0], _localId: '2', title: '另一篇', content: 'other content' }]
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => { root!.render(<MemoryRouter><NotesPage /></MemoryRouter>) })
+    await act(async () => { editMarkdown('后来撤销的内容') })
+    await act(async () => { vi.advanceTimersByTime(700) })
+    expect(localStorage.getItem('mnemox_note_draft:1')).not.toBeNull()
+    await act(async () => { editMarkdown(mockNotes[0].content) })
+    const buttons = () => Array.from(container!.querySelectorAll('.mnemox-note-file'))
+    await act(async () => { buttons()[1].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => { buttons()[0].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe(mockNotes[0].content)
+    expect(localStorage.getItem('mnemox_note_draft:1')).toBeNull()
   })
 
   it('clears the editor when switching to an empty folder', async () => {

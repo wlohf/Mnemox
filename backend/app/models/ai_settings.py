@@ -9,10 +9,11 @@ class AIProviderSetting(Base):
     __tablename__ = "ai_provider_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="所属用户")
     provider_name = Column(String(50), nullable=False, comment="提供商标识 (deepseek, openai, claude, gemini, qwen)")
     display_name = Column(String(100), nullable=False, comment="显示名称")
     api_key = Column(String(2000), default="", comment="Encrypted API Key")
+    credential_source = Column(String(20), nullable=False, default="legacy", server_default="legacy")
     base_url = Column(String(500), default="", comment="API Base URL")
     model = Column(String(100), default="", comment="模型名称")
     available_models = Column(Text, default="[]", comment="可选模型 JSON 列表")

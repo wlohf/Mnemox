@@ -64,6 +64,10 @@ export async function saveLocalOperation<T extends SyncMeta>(
     if (opType !== 'create' && !existing) return undefined
     if (existing?._syncStatus === 'conflicted') throw new Error('这条记录存在同步冲突，请先在账户菜单中处理')
     if (opType === 'update' && existing?._syncStatus === 'pending_delete') throw new Error('这条记录正在删除，不能继续编辑')
+    if (module === 'ankiCards' && opType !== 'create'
+      && (await db.opQueue.where({ module, localId }).toArray()).some(op => op.opType === 'review')) {
+      throw new Error('这张卡片的复习正在等待确认，请同步完成后再编辑或删除')
+    }
     const now = new Date().toISOString()
     if (opType === 'create') {
       if (module === 'goalTasks' && '_localGoalId' in payload && payload._localGoalId) {

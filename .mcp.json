@@ -8,13 +8,21 @@
         "FAST_SEARCH_ROOTS": "/home/cloudcli/projects",
         "FAST_SEARCH_MAX_RESULTS": "200",
         "FAST_SEARCH_MAX_OUTPUT_BYTES": "262144",
-        "FAST_SEARCH_TIMEOUT": "8"
+        "FAST_SEARCH_TIMEOUT": "8",
+        "FAST_SEARCH_LSP_TIMEOUT": "12",
+        "FAST_SEARCH_LSP_FAILURE_COOLDOWN": "30"
       },
       "directTools": [
         "find_file",
+        "list_files",
         "search_code",
+        "search_structure",
         "find_definition",
         "find_references",
+        "workspace_symbols",
+        "hover",
+        "call_hierarchy",
+        "lsp_status",
         "read_range"
       ]
     }

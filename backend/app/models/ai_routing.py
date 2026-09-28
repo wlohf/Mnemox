@@ -9,7 +9,7 @@ class AIRoutingSetting(Base):
     __tablename__ = "ai_routing_settings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="所属用户")
     scenario = Column(String(50), nullable=False, comment="场景标识")
     # Provider names are scoped by user, so a single-column database FK would
     # be invalid without a matching composite unique constraint.

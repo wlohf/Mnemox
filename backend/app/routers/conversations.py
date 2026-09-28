@@ -70,6 +70,8 @@ class MessageOut(BaseModel):
     role: str
     content: str
     image_data: Optional[List[str]] = None
+    status: str = "completed"
+    turn_id: Optional[str] = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -239,6 +241,7 @@ async def get_conversation(
                 "role": m.role,
                 "content": m.content,
                 "image_data": _parse_message_image_data(m.image_data),
+                "status": m.status, "turn_id": m.turn_id,
                 "created_at": str(m.created_at or ""),
             }
             for m in messages
@@ -383,6 +386,7 @@ async def fork_conversation(
             role=msg.role,
             content=msg.content,
             image_data=msg.image_data,
+            status=msg.status,
         ))
 
     await db.flush()

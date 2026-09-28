@@ -21,7 +21,7 @@ class LearningEvent(Base):
     )
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, default=1, comment="用户ID（多用户支持）")
+    user_id = Column(Integer, comment="用户ID（多用户支持）")
     
     # 事件基本信息
     event_type = Column(String(50), nullable=False, comment="事件类型")

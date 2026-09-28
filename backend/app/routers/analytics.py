@@ -21,6 +21,8 @@ from app.models.user import User
 from app.services.coach_experiment_service import build_coach_experiment_report
 from app.services.north_star_metrics_service import build_north_star_metrics
 from app.utils.error_safety import redact_sensitive_text
+from app.services.behavior_evidence_service import get_behavior_evidence, read_focus_date_range, summarize_focus, measured_minutes
+
 
 router = APIRouter()
 
@@ -31,10 +33,10 @@ router = APIRouter()
 
 class TrendPoint(BaseModel):
     date: str
-    study_minutes: float
+    study_minutes: float | None
     pomodoro_count: int
     completed_count: int
-    completion_rate: float
+    completion_rate: float | None
 
 
 class TrendResponse(BaseModel):
@@ -50,10 +52,10 @@ class SlotEfficiency(BaseModel):
     slot_label: str
     pomodoro_count: int
     completed_count: int
-    completion_rate: float
-    avg_duration: float
+    completion_rate: float | None
+    avg_duration: float | None
     early_done_count: int
-    efficiency_score: float
+    efficiency_score: float | None
 
 
 class EfficiencyResponse(BaseModel):
@@ -125,114 +127,37 @@ async def get_study_trend(
     - period: 7d / 30d / 90d / 365d / custom
     - start, end: period=custom 时使用
     """
-    now = datetime.now()
-    end_date = now.date()
-
-    if period == "custom":
-        if not start or not end:
-            raise HTTPException(status_code=400, detail="自定义时间段需提供 start 和 end 参数")
+    _, context = await read_focus_date_range(db, current_user.id)
+    end_date = context['today']
+    if period == 'custom':
         try:
-            start_date = date.fromisoformat(start)
-            end_date = date.fromisoformat(end)
+            start_date, end_date = date.fromisoformat(start or ''), date.fromisoformat(end or '')
         except ValueError:
-            raise HTTPException(status_code=400, detail="日期格式错误，请使用 YYYY-MM-DD")
-        if start_date > end_date:
-            raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+            raise HTTPException(400, '请提供 YYYY-MM-DD 格式的 start 和 end')
     else:
-        days_map = {"7d": 7, "30d": 30, "90d": 90, "365d": 365}
-        days = days_map.get(period)
+        days = {'7d':7, '30d':30, '90d':90, '365d':365}.get(period)
         if days is None:
-            raise HTTPException(status_code=400, detail="period 可选值: 7d / 30d / 90d / 365d / custom")
-        start_date = end_date - timedelta(days=days - 1)
-
-    # 查询时间范围内的番茄钟
-    since_dt = datetime.combine(start_date, datetime.min.time())
-    until_dt = datetime.combine(end_date, datetime.max.time())
-
-    result = await db.execute(
-        select(Pomodoro).where(
-            Pomodoro.user_id == current_user.id,
-            Pomodoro.created_at >= since_dt,
-            Pomodoro.created_at <= until_dt,
-        )
-    )
-    pomodoros = result.scalars().all()
-
-    # 用 pandas 聚合每日数据
-    if pomodoros:
-        records = []
-        for p in pomodoros:
-            ts = p.started_at or p.created_at
-            records.append({
-                "date": ts.date() if ts else None,
-                "duration": float(p.duration) if p.duration else 0.0,
-                "completed": bool(p.completed),
-            })
-        df = pd.DataFrame(records).dropna(subset=["date"])
-        daily = df.groupby("date").agg(
-            study_minutes=("duration", "sum"),
-            pomodoro_count=("duration", "count"),
-            completed_count=("completed", "sum"),
-        ).reset_index()
-        daily["completion_rate"] = np.where(
-            daily["pomodoro_count"] > 0,
-            (daily["completed_count"] / daily["pomodoro_count"] * 100).round(1),
-            0.0,
-        )
-        daily_dict = {row["date"]: row for _, row in daily.iterrows()}
-    else:
-        daily_dict = {}
-
-    # 生成连续日期序列，填充空白天
-    num_days = (end_date - start_date).days + 1
-    points: List[TrendPoint] = []
-    total_minutes = 0.0
-    total_pomodoros = 0
-    total_completed = 0
-
-    for i in range(num_days):
-        d = start_date + timedelta(days=i)
-        row = daily_dict.get(d)
-        if row is not None:
-            mins = float(row["study_minutes"])
-            cnt = int(row["pomodoro_count"])
-            comp = int(row["completed_count"])
-            rate = float(row["completion_rate"])
-        else:
-            mins, cnt, comp, rate = 0.0, 0, 0, 0.0
-
-        total_minutes += mins
-        total_pomodoros += cnt
-        total_completed += comp
-
-        points.append(TrendPoint(
-            date=d.isoformat(),
-            study_minutes=round(mins, 1),
-            pomodoro_count=cnt,
-            completed_count=comp,
-            completion_rate=rate,
-        ))
-
-    active_days = sum(1 for p in points if p.pomodoro_count > 0)
-    avg_daily = round(total_minutes / num_days, 1) if num_days > 0 else 0.0
-
-    summary = {
-        "total_study_hours": round(total_minutes / 60, 2),
-        "total_pomodoros": total_pomodoros,
-        "total_completed": total_completed,
-        "overall_completion_rate": round(total_completed / total_pomodoros * 100, 1) if total_pomodoros > 0 else 0.0,
-        "active_days": active_days,
-        "total_days": num_days,
-        "avg_daily_minutes": avg_daily,
-    }
-
-    return TrendResponse(
-        period=period,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        points=points,
-        summary=summary,
-    )
+            raise HTTPException(400, '不支持的 period')
+        start_date = end_date - timedelta(days=days-1)
+    count = (end_date-start_date).days+1
+    if not 1 <= count <= 366:
+        raise HTTPException(400, '时间区间须在 1–366 天之间')
+    records, context = await read_focus_date_range(db, current_user.id, start_date, end_date)
+    points = []
+    for offset in range(count):
+        day = (start_date+timedelta(days=offset)).isoformat()
+        values = summarize_focus([r for r in records if r.local_date == day])
+        points.append(TrendPoint(date=day, study_minutes=values['actual_minutes'],
+            pomodoro_count=values['finished_count'], completed_count=values['completed_count'],
+            completion_rate=values['completion_rate']*100 if values['completion_rate'] is not None else None))
+    values = summarize_focus(records)
+    return TrendResponse(period=period,start_date=start_date.isoformat(),end_date=end_date.isoformat(),points=points,
+        summary={'total_study_hours': values['actual_minutes']/60 if values['actual_minutes'] is not None else None,
+            'total_pomodoros':values['finished_count'],'total_completed':values['completed_count'],
+            'overall_completion_rate':values['completion_rate']*100 if values['completion_rate'] is not None else None,
+            'active_days':sum(p.pomodoro_count>0 for p in points),'total_days':count,
+            'avg_daily_minutes':None, 'mean_observed_session_minutes':values['mean_actual_minutes'],
+            'missing_days_are_unknown': True, **context})
 
 
 # ════════════════════════════════════════════
@@ -264,132 +189,18 @@ async def get_time_slot_efficiency(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    分析不同时段的学习效率。
-
-    效率指标：该时段内番茄钟完成率 + 提前完成占比。
-    使用 scipy 计算时段与效率得分的 Spearman 相关性。
-    """
-    since = datetime.now() - timedelta(days=days)
-
-    result = await db.execute(
-        select(Pomodoro).where(
-            Pomodoro.user_id == current_user.id,
-            Pomodoro.created_at >= since,
-        )
-    )
-    pomodoros = result.scalars().all()
-
-    if len(pomodoros) < 5:
-        return EfficiencyResponse(
-            slots=[],
-            correlation={"method": "spearman", "coefficient": None, "p_value": None},
-            best_slot=None,
-            insight="数据不足（至少需要 5 个番茄钟），暂无法分析时段效率。",
-        )
-
-    # 构建 DataFrame
-    records = []
-    for p in pomodoros:
-        ts = p.started_at or p.created_at
-        if not ts:
-            continue
-        records.append({
-            "hour": ts.hour,
-            "slot": _hour_to_slot(ts.hour),
-            "duration": float(p.duration) if p.duration else 0.0,
-            "completed": bool(p.completed),
-            "stop_reason": p.stop_reason,
-        })
-
-    df = pd.DataFrame(records)
-    df["early_done"] = df["stop_reason"] == "early_done"
-
-    # 按时段聚合
-    slot_agg = df.groupby("slot").agg(
-        pomodoro_count=("completed", "count"),
-        completed_count=("completed", "sum"),
-        avg_duration=("duration", "mean"),
-        early_done_count=("early_done", "sum"),
-    ).reset_index()
-
-    slot_agg["completion_rate"] = np.where(
-        slot_agg["pomodoro_count"] > 0,
-        (slot_agg["completed_count"] / slot_agg["pomodoro_count"] * 100).round(1),
-        0.0,
-    )
-    # 效率得分 = 完成率 × 0.7 + 提前完成占比 × 0.3（归一化到 0-100）
-    slot_agg["early_rate"] = np.where(
-        slot_agg["pomodoro_count"] > 0,
-        slot_agg["early_done_count"] / slot_agg["pomodoro_count"] * 100,
-        0.0,
-    )
-    slot_agg["efficiency_score"] = (
-        slot_agg["completion_rate"] * 0.7 + slot_agg["early_rate"] * 0.3
-    ).round(1)
-
-    # 构建返回数据
-    slot_order = ["morning", "afternoon", "evening", "night"]
-    slots_out: List[SlotEfficiency] = []
-    scores_for_corr: List[float] = []
-    indices_for_corr: List[int] = []
-
-    for idx, slot_name in enumerate(slot_order):
-        row = slot_agg[slot_agg["slot"] == slot_name]
-        if row.empty:
-            slots_out.append(SlotEfficiency(
-                slot=slot_name,
-                slot_label=_SLOT_RANGES[slot_name][2],
-                pomodoro_count=0, completed_count=0,
-                completion_rate=0.0, avg_duration=0.0,
-                early_done_count=0, efficiency_score=0.0,
-            ))
-        else:
-            r = row.iloc[0]
-            eff = SlotEfficiency(
-                slot=slot_name,
-                slot_label=_SLOT_RANGES[slot_name][2],
-                pomodoro_count=int(r["pomodoro_count"]),
-                completed_count=int(r["completed_count"]),
-                completion_rate=float(r["completion_rate"]),
-                avg_duration=round(float(r["avg_duration"]), 1),
-                early_done_count=int(r["early_done_count"]),
-                efficiency_score=float(r["efficiency_score"]),
-            )
-            slots_out.append(eff)
-            if eff.pomodoro_count >= 2:
-                scores_for_corr.append(eff.efficiency_score)
-                indices_for_corr.append(idx)
-
-    # Spearman 相关性（时段序号 vs 效率得分）
-    corr_result: dict = {"method": "spearman", "coefficient": None, "p_value": None}
-    if len(scores_for_corr) >= 3:
-        coef, pval = sp_stats.spearmanr(indices_for_corr, scores_for_corr)
-        corr_result["coefficient"] = round(float(coef), 4) if not np.isnan(coef) else None
-        corr_result["p_value"] = round(float(pval), 4) if not np.isnan(pval) else None
-
-    # 找最佳时段
-    valid_slots = [s for s in slots_out if s.pomodoro_count >= 2]
-    best_slot = max(valid_slots, key=lambda s: s.efficiency_score).slot if valid_slots else None
-    best_label = _SLOT_RANGES[best_slot][2] if best_slot else "未知"
-
-    # 生成洞察
-    if best_slot:
-        best_obj = next(s for s in slots_out if s.slot == best_slot)
-        insight = (
-            f"你在「{best_label}」时段效率最高（得分 {best_obj.efficiency_score}），"
-            f"完成率 {best_obj.completion_rate}%，"
-            f"建议将重要学习任务安排在此时段。"
-        )
-    else:
-        insight = "数据量不足，暂无法判断最佳学习时段。"
-
-    return EfficiencyResponse(
-        slots=slots_out,
-        correlation=corr_result,
-        best_slot=best_slot,
-        insight=insight,
-    )
+    """Activity distribution only: completion is not learning efficiency."""
+    report = await get_behavior_evidence(db, current_user.id, days=days)
+    slots = []
+    for name, (_, _, label) in _SLOT_RANGES.items():
+        records = [r for r in report.records if r.included and r.local_hour is not None and _hour_to_slot(r.local_hour) == name]
+        values = summarize_focus(records)
+        slots.append(SlotEfficiency(slot=name,slot_label=label,pomodoro_count=values['finished_count'],
+            completed_count=values['completed_count'], avg_duration=values['mean_actual_minutes'],
+            completion_rate=values['completion_rate']*100 if values['completion_rate'] is not None else None,
+            early_done_count=values['early_done_count'],efficiency_score=None))
+    return EfficiencyResponse(slots=slots,correlation={'method':'not_estimated','coefficient':None,'p_value':None},
+        best_slot=None,insight='这里只展示各时段的记录分布和完成情况，尚不能判断学习效率或最适合你的时段。')
 
 
 # ════════════════════════════════════════════
@@ -841,7 +652,7 @@ class EDAInsight(BaseModel):
 
 class EDAProfile(BaseModel):
     profile_type: str
-    confidence: float
+    confidence: Optional[float]
     best_study_window: str
     evidence: List[str]
 
@@ -866,387 +677,60 @@ async def get_eda_report(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """生成用户可读的学习行为 EDA 报告。"""
-    end_date = datetime.now().date()
-    start_date = end_date - timedelta(days=days - 1)
-
-    since_dt = datetime.combine(start_date, datetime.min.time())
-    until_dt = datetime.combine(end_date, datetime.max.time())
-
-    p_result = await db.execute(
-        select(Pomodoro).where(
-            Pomodoro.user_id == current_user.id,
-            Pomodoro.created_at >= since_dt,
-            Pomodoro.created_at <= until_dt,
-        )
-    )
-    pomodoros = p_result.scalars().all()
-
-    if pomodoros:
-        records = []
-        for p in pomodoros:
-            ts = p.started_at or p.created_at
-            if ts is None:
-                continue
-            records.append({
-                "date": ts.date(),
-                "hour": int(ts.hour),
-                "duration": float(p.duration or 0.0),
-                "completed": 1 if p.completed else 0,
-                "stop_reason": (p.stop_reason or "none"),
-            })
-        pdf = pd.DataFrame(records)
-    else:
-        pdf = pd.DataFrame(columns=["date", "hour", "duration", "completed", "stop_reason"])
-
-    t_result = await db.execute(
-        select(Task, Goal)
-        .join(Goal, Task.goal_id == Goal.id)
-        .where(
-            Goal.user_id == current_user.id,
-            Task.planned_date >= start_date,
-            Task.planned_date <= end_date,
-        )
-    )
-    task_rows = t_result.all()
-
-    total_tasks = len(task_rows)
-    completed_tasks = sum(1 for row in task_rows if getattr(row[0], "status", "") == "completed")
-    pending_tasks = max(0, total_tasks - completed_tasks)
-
-    wq_result = await db.execute(
-        select(WrongQuestion).where(WrongQuestion.user_id == current_user.id)
-    )
-    wrong_questions = wq_result.scalars().all()
-
-    all_dates = [start_date + timedelta(days=i) for i in range(days)]
-    date_lookup = {d.isoformat(): d for d in all_dates}
-
-    daily_points: List[dict] = []
-    daily_df = pd.DataFrame(columns=["date", "study_minutes", "pomodoro_count", "completion_rate"])  # for rolling/calc
-    if not pdf.empty:
-        daily_df = pdf.groupby("date").agg(
-            study_minutes=("duration", "sum"),
-            pomodoro_count=("duration", "count"),
-            completion_rate=("completed", "mean"),
-        ).reset_index()
-
-    daily_map = {
-        row["date"].isoformat(): {
-            "study_minutes": float(row["study_minutes"]),
-            "pomodoro_count": int(row["pomodoro_count"]),
-            "completion_rate": float(row["completion_rate"]),
-        }
-        for _, row in daily_df.iterrows()
-    }
-
-    rolling_minutes_source: List[float] = []
-    for d in all_dates:
-        key = d.isoformat()
-        cell = daily_map.get(key, {"study_minutes": 0.0, "pomodoro_count": 0, "completion_rate": 0.0})
-        rolling_minutes_source.append(float(cell["study_minutes"]))
-        daily_points.append({
-            "date": key,
-            "study_minutes": round(float(cell["study_minutes"]), 1),
-            "pomodoro_count": int(cell["pomodoro_count"]),
-            "completion_rate": round(float(cell["completion_rate"]) * 100, 1),
-        })
-
-    rolling7: List[float] = []
-    for i in range(len(rolling_minutes_source)):
-        left = max(0, i - 6)
-        window = rolling_minutes_source[left:i + 1]
-        rolling7.append(round(float(sum(window) / max(1, len(window))), 1))
-
-    for i, point in enumerate(daily_points):
-        point["rolling7_minutes"] = rolling7[i]
-
-    total_minutes = float(pdf["duration"].sum()) if not pdf.empty else 0.0
-    pomodoro_count = int(len(pdf))
-    completion_rate = float(pdf["completed"].mean()) if not pdf.empty else 0.0
-    active_days = int(pdf["date"].nunique()) if not pdf.empty else 0
-    avg_daily_minutes = round(total_minutes / days, 1)
-
-    peak_hour = None
-    if not pdf.empty:
-        peak_hour = int(pdf.groupby("hour")["completed"].mean().idxmax())
-
-    stop_reason_counts = {
-        "early_done": 0,
-        "interrupted": 0,
-        "distracted": 0,
-    }
-    if not pdf.empty:
-        for key in stop_reason_counts.keys():
-            stop_reason_counts[key] = int((pdf["stop_reason"] == key).sum())
-
-    # 每小时分布（0-23）
-    hourly_distribution: List[dict] = []
-    for hour in range(24):
-        if not pdf.empty:
-            slot = pdf[pdf["hour"] == hour]
-            slot_sessions = int(len(slot))
-            slot_minutes = float(slot["duration"].sum()) if slot_sessions else 0.0
-            slot_completion = float(slot["completed"].mean()) if slot_sessions else 0.0
-            slot_avg_duration = float(slot["duration"].mean()) if slot_sessions else 0.0
-        else:
-            slot_sessions = 0
-            slot_minutes = 0.0
-            slot_completion = 0.0
-            slot_avg_duration = 0.0
-        hourly_distribution.append({
-            "hour": hour,
-            "sessions": slot_sessions,
-            "minutes": round(slot_minutes, 1),
-            "completion_rate": round(slot_completion * 100, 1),
-            "avg_duration": round(slot_avg_duration, 1),
-        })
-
-    # 每周分布（周一到周日）
-    weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    weekday_distribution: List[dict] = []
-    for wd in range(7):
-        if not pdf.empty:
-            day_part = pdf[pdf["date"].apply(lambda x: x.weekday()) == wd]
-            day_sessions = int(len(day_part))
-            day_minutes = float(day_part["duration"].sum()) if day_sessions else 0.0
-            day_completion = float(day_part["completed"].mean()) if day_sessions else 0.0
-        else:
-            day_sessions = 0
-            day_minutes = 0.0
-            day_completion = 0.0
-        weekday_distribution.append({
-            "weekday": wd,
-            "label": weekday_labels[wd],
-            "sessions": day_sessions,
-            "minutes": round(day_minutes, 1),
-            "completion_rate": round(day_completion * 100, 1),
-        })
-
-    # 小时-周几热力图
-    heatmap_points: List[List[float]] = []
-    if not pdf.empty:
-        for wd in range(7):
-            wd_part = pdf[pdf["date"].apply(lambda x: x.weekday()) == wd]
-            for hour in range(24):
-                hh = wd_part[wd_part["hour"] == hour]
-                heatmap_points.append([hour, wd, round(float(hh["duration"].sum()) if len(hh) else 0.0, 1)])
-    else:
-        for wd in range(7):
-            for hour in range(24):
-                heatmap_points.append([hour, wd, 0.0])
-
-    # 时长分桶
-    duration_bucket_distribution = [
-        {"bucket": "<20m", "count": 0},
-        {"bucket": "20-29m", "count": 0},
-        {"bucket": "30-44m", "count": 0},
-        {"bucket": "45m+", "count": 0},
-    ]
-    if not pdf.empty:
-        duration_bucket_distribution[0]["count"] = int((pdf["duration"] < 20).sum())
-        duration_bucket_distribution[1]["count"] = int(((pdf["duration"] >= 20) & (pdf["duration"] < 30)).sum())
-        duration_bucket_distribution[2]["count"] = int(((pdf["duration"] >= 30) & (pdf["duration"] < 45)).sum())
-        duration_bucket_distribution[3]["count"] = int((pdf["duration"] >= 45).sum())
-
-    stop_reason_distribution = [
-        {"reason": "正常完成", "key": "early_done", "count": stop_reason_counts["early_done"]},
-        {"reason": "临时中断", "key": "interrupted", "count": stop_reason_counts["interrupted"]},
-        {"reason": "走神分心", "key": "distracted", "count": stop_reason_counts["distracted"]},
-    ]
-
-    weak_points_top = sorted(
-        [
-            {
-                "knowledge_point": (wq.knowledge_point or "未标注"),
-                "wrong_count": int(wq.wrong_count or 0),
-                "mastery_status": (wq.mastery_status or "not_mastered"),
-            }
-            for wq in wrong_questions
-        ],
-        key=lambda x: x["wrong_count"],
-        reverse=True,
-    )[:5]
-
-    insights: List[EDAInsight] = []
-    if avg_daily_minutes < 45:
-        insights.append(EDAInsight(
-            title="学习时长偏低",
-            detail=f"近 {days} 天日均仅 {avg_daily_minutes} 分钟，建议设定最小 25 分钟底线。",
-            severity="high",
-        ))
-    if completion_rate < 0.6 and pomodoro_count > 0:
-        insights.append(EDAInsight(
-            title="专注完成率偏低",
-            detail=f"番茄钟完成率仅 {completion_rate * 100:.1f}%，中断可能影响学习连贯性。",
-            severity="medium",
-        ))
-    if pending_tasks >= 8:
-        insights.append(EDAInsight(
-            title="任务积压明显",
-            detail=f"当前周期内待完成任务 {pending_tasks} 个，建议做一次任务减负与重排。",
-            severity="high",
-        ))
-    if peak_hour is not None:
-        insights.append(EDAInsight(
-            title="高效时段识别",
-            detail=f"你的高效时段集中在 {peak_hour}:00 左右，建议将高认知任务放到该时间段。",
-            severity="info",
-        ))
-
-    # 用户画像类型判断
-    morning_minutes = sum(item["minutes"] for item in hourly_distribution if 5 <= item["hour"] <= 11)
-    day_minutes = sum(item["minutes"] for item in hourly_distribution if 12 <= item["hour"] <= 18)
-    night_minutes = sum(item["minutes"] for item in hourly_distribution if item["hour"] >= 20 or item["hour"] <= 1)
-    minute_total_safe = max(1.0, total_minutes)
-
-    morning_ratio = morning_minutes / minute_total_safe
-    day_ratio = day_minutes / minute_total_safe
-    night_ratio = night_minutes / minute_total_safe
-    active_ratio = active_days / max(1, days)
-
-    profile_type = "均衡成长型"
-    confidence = 0.62
-    profile_evidence: List[str] = []
-    if night_ratio >= 0.45 and peak_hour is not None and (peak_hour >= 20 or peak_hour <= 1):
-        profile_type = "夜间高效型"
-        confidence = min(0.96, 0.66 + night_ratio)
-        profile_evidence.append(f"夜间学习时长占比 {night_ratio * 100:.1f}%")
-        profile_evidence.append(f"峰值效率时段在 {peak_hour}:00")
-    elif morning_ratio >= 0.45 and peak_hour is not None and 6 <= peak_hour <= 11:
-        profile_type = "晨间冲刺型"
-        confidence = min(0.96, 0.66 + morning_ratio)
-        profile_evidence.append(f"上午学习时长占比 {morning_ratio * 100:.1f}%")
-        profile_evidence.append(f"峰值效率时段在 {peak_hour}:00")
-    elif day_ratio >= 0.5 and peak_hour is not None and 12 <= peak_hour <= 18:
-        profile_type = "白天稳态型"
-        confidence = min(0.94, 0.64 + day_ratio)
-        profile_evidence.append(f"白天学习时长占比 {day_ratio * 100:.1f}%")
-        profile_evidence.append(f"峰值效率时段在 {peak_hour}:00")
-    elif active_ratio < 0.45:
-        profile_type = "间歇突击型"
-        confidence = min(0.92, 0.55 + (1 - active_ratio))
-        profile_evidence.append(f"活跃学习天数占比仅 {active_ratio * 100:.1f}%")
-        profile_evidence.append("学习节奏呈现较明显波动")
-    elif completion_rate >= 0.8 and avg_daily_minutes >= 90:
-        profile_type = "高强度稳定型"
-        confidence = 0.9
-        profile_evidence.append(f"完成率 {completion_rate * 100:.1f}% 且日均学习 {avg_daily_minutes} 分钟")
-
-    best_study_window = f"{peak_hour}:00-{(peak_hour + 1) % 24}:00" if peak_hour is not None else "暂无明显峰值"
-    if not profile_evidence:
-        profile_evidence.append("学习行为在多个时段分布较均衡")
-
-    recommendations = [
-        "每日先完成 1 个最小任务，再处理复习，降低启动阻力。",
-        "将高难度任务安排到个人高效时段，低能量时段做整理类任务。",
-        "每晚进行 3 分钟复盘：完成了什么、明天第一步做什么。",
-    ]
-    if stop_reason_counts["distracted"] > stop_reason_counts["early_done"]:
-        recommendations.append("走神次数偏高，建议缩短单次专注时长到 20-25 分钟并增加短休息。")
-
-    if profile_type == "夜间高效型":
-        recommendations.append("把最难任务固定在 21:00 左右，白天只做轻任务和复习。")
-    elif profile_type == "晨间冲刺型":
-        recommendations.append("在 9:00-11:00 放置核心任务，下午安排复盘与错题整理。")
-    elif profile_type == "白天稳态型":
-        recommendations.append("保持午后主学习段，晚上只做回顾，避免额外认知负担。")
-    elif profile_type == "间歇突击型":
-        recommendations.append("先把目标改为“每周稳定 4 天”，再逐步加时长，优先保证节奏连续。")
-    elif profile_type == "高强度稳定型":
-        recommendations.append("增加每周一次深度复盘，避免高强度下的策略性疲劳。")
-
-    chart_analysis = [
-        f"趋势图显示近 {days} 天累计 {round(total_minutes, 1)} 分钟，日均 {avg_daily_minutes} 分钟。",
-        f"7 日滚动均值可用于判断节奏是否稳定，当前活跃天数为 {active_days} 天。",
-        f"时段分布中峰值窗口为 {best_study_window}，更适合放高认知任务。",
-        f"周内分布帮助识别“周中高效”还是“周末补偿”，可据此安排计划密度。",
-        f"停止原因中走神 {stop_reason_counts['distracted']} 次、中断 {stop_reason_counts['interrupted']} 次，可作为抗干扰优化指标。",
-        "时长分桶可判断你更适合短冲刺还是长专注，并用于设置个性化番茄时长。",
-    ]
-
-    summary = {
-        "total_minutes": round(total_minutes, 1),
-        "avg_daily_minutes": avg_daily_minutes,
-        "pomodoro_count": pomodoro_count,
-        "completion_rate": round(completion_rate * 100, 1),
-        "active_days": active_days,
-        "total_tasks": total_tasks,
-        "completed_tasks": completed_tasks,
-        "pending_tasks": pending_tasks,
-        "peak_hour": peak_hour,
-        "best_study_window": best_study_window,
-        "profile_type": profile_type,
-        "profile_confidence": round(confidence, 3),
-        "morning_ratio": round(morning_ratio, 3),
-        "day_ratio": round(day_ratio, 3),
-        "night_ratio": round(night_ratio, 3),
-        "stop_reason_counts": stop_reason_counts,
-        "weak_points_top": weak_points_top,
-    }
-
-    charts = {
-        "daily_trend": daily_points,
-        "hourly_distribution": hourly_distribution,
-        "weekday_distribution": weekday_distribution,
-        "hour_week_heatmap": {
-            "hours": list(range(24)),
-            "weekdays": weekday_labels,
-            "points": heatmap_points,
-        },
-        "stop_reason_distribution": stop_reason_distribution,
-        "duration_bucket_distribution": duration_bucket_distribution,
-        "completion_funnel": [
-            {"stage": "开始专注", "value": pomodoro_count},
-            {"stage": "正常完成", "value": stop_reason_counts["early_done"]},
-            {"stage": "临时中断", "value": stop_reason_counts["interrupted"]},
-            {"stage": "走神终止", "value": stop_reason_counts["distracted"]},
-        ],
-    }
-
-    markdown_lines = [
-        f"# 学习行为 EDA 报告（近 {days} 天）",
-        "",
-        f"- 区间：{start_date.isoformat()} ~ {end_date.isoformat()}",
-        f"- 总学习时长：{summary['total_minutes']} 分钟",
-        f"- 日均学习时长：{summary['avg_daily_minutes']} 分钟",
-        f"- 番茄钟完成率：{summary['completion_rate']}%",
-        f"- 任务完成：{completed_tasks}/{total_tasks}",
-        f"- 学习画像：{profile_type}（置信度 {round(confidence * 100, 1)}%）",
-        f"- 最佳学习窗口：{best_study_window}",
-        "",
-        "## 关键洞察",
-    ]
-    if insights:
-        markdown_lines.extend([f"- **{item.title}**：{item.detail}" for item in insights])
-    else:
-        markdown_lines.append("- 当前阶段数据整体平稳，暂无显著异常。")
-    markdown_lines.extend([
-        "",
-        "## 图表解读",
-    ])
-    markdown_lines.extend([f"- {line}" for line in chart_analysis])
-    markdown_lines.extend([
-        "",
-        "## 建议动作",
-    ])
-    markdown_lines.extend([f"- {rec}" for rec in recommendations])
-
-    return EDAReportResponse(
-        period_days=days,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        summary=summary,
-        daily_points=daily_points,
-        insights=insights,
-        recommendations=recommendations,
-        profile=EDAProfile(
-            profile_type=profile_type,
-            confidence=round(confidence, 3),
-            best_study_window=best_study_window,
-            evidence=profile_evidence,
-        ),
-        chart_analysis=chart_analysis,
-        charts=charts,
-        markdown="\n".join(markdown_lines),
-    )
+    """Reproducible descriptive report over the same canonical evidence as DI."""
+    report = await get_behavior_evidence(db, current_user.id, days=days)
+    records = [r for r in report.records if r.included]
+    first, last = report.window['first_local_date'], report.window['last_local_date']
+    def distribution(subset):
+        v = summarize_focus(subset)
+        return {'sessions':v['finished_count'], 'minutes':v['actual_minutes'],
+                'completion_rate':v['completion_rate']*100 if v['completion_rate'] is not None else None,
+                'avg_duration':v['mean_actual_minutes']}
+    daily = []
+    for point in report.daily:
+        subset = [r for r in records if r.local_date == point['date']]
+        v = distribution(subset)
+        daily.append({'date':point['date'],'study_minutes':v['minutes'],'pomodoro_count':v['sessions'],
+            'completion_rate':v['completion_rate'],'rolling7_minutes':None,'status':point['status'],
+            'unknown_duration_count':point['unknown_duration_count']})
+    hourly = [{'hour':hour, **distribution([r for r in records if r.local_hour == hour])} for hour in range(24)]
+    labels = ['周一','周二','周三','周四','周五','周六','周日']
+    weekday = [{'weekday':i,'label':label, **distribution([r for r in records if date.fromisoformat(r.local_date).weekday()==i])} for i,label in enumerate(labels)]
+    heat = [[hour, wd, distribution([r for r in records if r.local_hour==hour and date.fromisoformat(r.local_date).weekday()==wd])['minutes']]
+            for wd in range(7) for hour in range(24)]
+    tasks = (await db.scalars(select(Task).join(Goal).where(Goal.user_id==current_user.id,
+        Task.planned_date >= date.fromisoformat(first),Task.planned_date <= date.fromisoformat(last)))).all()
+    from app.services.experience_service import demo_goal_ids
+    demo_goals = await demo_goal_ids(db,current_user.id)
+    tasks = [t for t in tasks if t.goal_id not in demo_goals]
+    completed = sum(t.status=='completed' and t.completed_at is not None for t in tasks)
+    m = report.metrics
+    actual_days = sum(point['actual_minutes'] is not None for point in report.daily)
+    reasons = {'completed':m['completed_count']-m['early_done_count'],'early_done':m['early_done_count'],
+               'interrupted':m['interrupted_count']-m['distracted_count'],'distracted':m['distracted_count']}
+    values = [measured_minutes(r) for r in records if measured_minutes(r) is not None]
+    buckets = [{'bucket':label,'count':sum(low <= v < high for v in values)} for label,low,high in
+               [('少于 20 分钟',0,20),('20–30 分钟',20,30),('30–45 分钟',30,45),('45 分钟以上',45,1441)]]
+    boundary = '描述性记录，不推断固定人格或学习效率'
+    summary = {'total_minutes':m['actual_minutes'],
+        'avg_daily_minutes':round(m['actual_minutes']/actual_days,1) if actual_days else None,
+        'average_basis':'仅实际时长已记录的日期；未记录日期未知',
+        'pomodoro_count':m['finished_count'],'completion_rate':m['completion_rate']*100 if m['completion_rate'] is not None else None,
+        'active_days':report.coverage['observed_days'],'total_tasks':len(tasks),'completed_tasks':completed,
+        'pending_tasks':len(tasks)-completed,'peak_hour':m['most_recorded_hour'],
+        'profile_type':boundary,'profile_confidence':None,'stop_reason_counts':reasons,
+        'unknown_duration_count':m['unknown_actual_duration_count'],'coverage':report.coverage,
+        'time_zone':report.time_zone,'quality_counts':report.quality_counts}
+    notes = [f"按 {report.time_zone} 的自然日归属结束记录。", '只累加明确记录的实际时长，缺失不是零。',
+             '同源记录不增加独立证据；记录分布不能推断效率、原因或长期特性。',
+             f"有 {m['unknown_actual_duration_count']} 条结束记录缺少可用实际时长。"]
+    charts = {'daily_trend':daily,'hourly_distribution':hourly,'weekday_distribution':weekday,
+        'hour_week_heatmap':{'hours':list(range(24)),'weekdays':labels,'points':heat},
+        'stop_reason_distribution':[{'reason':name,'key':key,'count':reasons[key]} for key,name in
+            [('completed','正常完成'),('early_done','提前完成'),('interrupted','临时中断'),('distracted','走神终止')]],
+        'duration_bucket_distribution':buckets,'completion_funnel':[]}
+    return EDAReportResponse(period_days=days,start_date=first,end_date=last,summary=summary,daily_points=daily,
+        insights=[],recommendations=['如需探索适用条件和反例，可在学习画像中启用阶段性理解。'],
+        profile=EDAProfile(profile_type=boundary,confidence=None,best_study_window='暂不推断',evidence=notes),
+        chart_analysis=notes,charts=charts,markdown='\n'.join([f'# 学习记录报告（近 {days} 天）', boundary,
+            '实际记录分钟：'+str(m['actual_minutes'] if m['actual_minutes'] is not None else '未知'), *notes]))

@@ -1,13 +1,19 @@
 """番茄钟路由"""
+from app.utils.utc import utc_now_db, to_db_utc, to_utc_iso
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, case
-from typing import List, Optional, cast
+from typing import List, Optional, Literal, cast
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import calendar
+import uuid
+import json
+
+from app.utils.mutation_lock import lock_user_mutation
+from app.models.material import Chapter, Material
 
 from ..database import get_db
 from ..models.pomodoro import Pomodoro
@@ -52,7 +58,9 @@ class PomodoroCreate(BaseModel):
     chapter_id: Optional[int] = None
     task_id: Optional[int] = None
     task_name: Optional[str] = None
-    duration: float = 25.0  # 默认25分钟
+    duration: float = Field(25.0, gt=0, le=1440, allow_inf_nan=False)
+    client_record_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    started_at: Optional[datetime] = None
     coach_action_attempt_id: Optional[str] = Field(None, max_length=40)
 
 
@@ -60,8 +68,9 @@ class PomodoroUpdate(BaseModel):
     """更新番茄钟请求"""
     completed: bool
     note: Optional[str] = None
-    actual_duration: Optional[float] = None
-    stop_reason: Optional[str] = None  # early_done / interrupted / distracted
+    actual_duration: Optional[float] = Field(None, gt=0, le=1440, allow_inf_nan=False)
+    stop_reason: Optional[Literal["early_done", "interrupted", "distracted"]] = None
+    ended_at: Optional[datetime] = None
 
 
 class PomodoroResponse(BaseModel):
@@ -74,8 +83,13 @@ class PomodoroResponse(BaseModel):
     ended_at: Optional[str]
     duration: float
     completed: bool
+    planned_duration: Optional[float] = None
+    actual_duration: Optional[float] = None
     note: Optional[str]
     coach_action_attempt_id: Optional[str] = None
+    client_record_id: Optional[str] = None
+    stop_reason: Optional[str] = None
+    time_basis: str = "legacy"
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -85,9 +99,12 @@ class PomodoroStats(BaseModel):
     """番茄钟统计"""
     total_count: int  # 总数
     completed_count: int  # 完成数
-    total_minutes: float  # 总时长（分钟）
-    completion_rate: float  # 完成率
-    avg_daily: float  # 日均完成数
+    total_minutes: float | None  # 总时长（分钟）
+    completion_rate: float | None  # 完成率
+    avg_daily: float  # 日均结束记录数
+    unknown_duration_count: int = 0
+    truncated: bool = False
+    time_zone: str = "UTC"
 
 
 class DailyStats(BaseModel):
@@ -95,7 +112,19 @@ class DailyStats(BaseModel):
     date: str
     count: int
     completed_count: int
-    total_minutes: float
+    total_minutes: float | None
+
+
+def _response(p: Pomodoro) -> PomodoroResponse:
+    return PomodoroResponse(
+        id=p.id, chapter_id=p.chapter_id, task_id=p.task_id, task_name=p.task_name,
+        started_at=to_utc_iso(p.started_at or p.created_at),
+        ended_at=to_utc_iso(p.ended_at) if p.ended_at else None,
+        duration=p.duration, completed=p.completed, note=p.note,
+        planned_duration=p.planned_duration, actual_duration=p.actual_duration,
+        coach_action_attempt_id=p.coach_action_attempt_id, client_record_id=p.client_record_id,
+        stop_reason=p.stop_reason, time_basis=p.time_basis, created_at=to_utc_iso(p.created_at),
+    )
 
 
 @router.post("/start", response_model=PomodoroResponse)
@@ -110,6 +139,29 @@ async def start_pomodoro(
     - **chapter_id**: 关联章节ID（可选）
     - **duration**: 时长（分钟，默认25）
     """
+    return await _start_pomodoro(data, db, current_user)
+
+
+async def _start_pomodoro(
+    data: PomodoroCreate, db: AsyncSession, current_user: User, *,
+    planned_duration_known: bool = True, start_estimated: bool = False,
+):
+    await lock_user_mutation(db, int(current_user.id))
+    if data.client_record_id:
+        existing = await db.scalar(select(Pomodoro).where(
+            Pomodoro.user_id == current_user.id, Pomodoro.client_record_id == data.client_record_id,
+        ).execution_options(populate_existing=True))
+        if existing:
+            if (existing.task_id, existing.chapter_id, existing.task_name, existing.coach_action_attempt_id) != (
+                data.task_id, data.chapter_id, data.task_name, data.coach_action_attempt_id,
+            ):
+                raise HTTPException(status_code=409, detail="计时标识不能用于不同任务")
+            return _response(existing)
+    if data.chapter_id is not None:
+        owned = await db.scalar(select(Chapter.id).join(Material).where(
+            Chapter.id == data.chapter_id, Material.user_id == current_user.id))
+        if owned is None:
+            raise HTTPException(status_code=404, detail="章节不存在")
     if data.task_id is not None:
         task_result = await db.execute(
             select(Task)
@@ -131,8 +183,12 @@ async def start_pomodoro(
         task_id=data.task_id,
         coach_action_attempt_id=attempt_id,
         task_name=data.task_name,
-        started_at=datetime.now(),
+        started_at=to_db_utc(data.started_at) if data.started_at else utc_now_db(),
+        client_record_id=data.client_record_id or str(uuid.uuid4()),
+        time_basis="utc",
         duration=data.duration,
+        planned_duration=data.duration if planned_duration_known else None,
+        record_origin="offline_estimated" if start_estimated else "recorded",
         completed=False
     )
 
@@ -148,12 +204,15 @@ async def start_pomodoro(
         event_data={
             "pomodoro_id": pomodoro.id,
             "task_name": data.task_name,
-            "duration": data.duration,
+            "duration": pomodoro.planned_duration,
+            "duration_basis": "planned" if planned_duration_known else "unknown",
+            "planned_duration": pomodoro.planned_duration,
+            "started_at_basis": "estimated_from_reported_duration" if start_estimated else "recorded",
             "coach_action_attempt_id": attempt_id,
         },
         chapter_id=pomodoro.chapter_id,
         task_id=pomodoro.task_id,
-        duration=int(data.duration * 60),
+        duration=int(data.duration * 60) if planned_duration_known else None,
         source="pomodoro_router",
         dedupe_key=f"pomodoro.started:{pomodoro.id}",
         occurred_at=pomodoro.started_at,
@@ -170,21 +229,7 @@ async def start_pomodoro(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
 
-    started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
-    ended_at = pomodoro.ended_at
-    return PomodoroResponse(
-        id=pomodoro.id,
-        chapter_id=pomodoro.chapter_id,
-        task_id=pomodoro.task_id,
-        task_name=pomodoro.task_name,
-        started_at=started_at.isoformat(),
-        ended_at=ended_at.isoformat() if ended_at is not None else None,
-        duration=pomodoro.duration,
-        completed=pomodoro.completed,
-        note=pomodoro.note,
-        coach_action_attempt_id=pomodoro.coach_action_attempt_id,
-        created_at=pomodoro.created_at.isoformat()
-    )
+    return _response(pomodoro)
 
 
 @router.put("/{pomodoro_id}/complete", response_model=PomodoroResponse)
@@ -202,20 +247,35 @@ async def complete_pomodoro(
     - **completed**: 是否完成
     - **note**: 备注（可选）
     """
+    await lock_user_mutation(db, int(current_user.id))
     result = await db.execute(
-        select(Pomodoro).where(Pomodoro.id == pomodoro_id, Pomodoro.user_id == current_user.id)
+        select(Pomodoro).where(Pomodoro.id == pomodoro_id, Pomodoro.user_id == current_user.id).execution_options(populate_existing=True)
     )
     pomodoro = result.scalar_one_or_none()
 
     if not pomodoro:
         raise HTTPException(status_code=404, detail="番茄钟不存在")
 
+    if pomodoro.ended_at is not None:
+        duration = round(float(data.actual_duration), 1) if data.actual_duration is not None else pomodoro.duration
+        if (pomodoro.completed != data.completed or abs(pomodoro.duration - duration) > 0.001
+                or pomodoro.stop_reason != data.stop_reason
+                or (data.note is not None and pomodoro.note != data.note)
+                or (data.ended_at is not None and pomodoro.ended_at != to_db_utc(data.ended_at))):
+            raise HTTPException(status_code=409, detail="该计时已有不同的结束结果，请刷新记录")
+        return _response(pomodoro)
+    ended_at = to_db_utc(data.ended_at) if data.ended_at else utc_now_db()
+    if pomodoro.time_basis == "utc" and pomodoro.started_at and ended_at < pomodoro.started_at:
+        raise HTTPException(status_code=422, detail="结束时间不能早于开始时间")
+    if pomodoro.time_basis == "legacy":
+        pomodoro.time_basis = "mixed"  # Legacy start, UTC end; never shift both blindly.
     pomodoro.completed = data.completed
-    pomodoro.ended_at = datetime.now()
+    pomodoro.ended_at = ended_at
     if data.note:
         pomodoro.note = data.note
     if data.actual_duration is not None:
         pomodoro.duration = max(0.1, round(float(data.actual_duration), 1))
+        pomodoro.actual_duration = pomodoro.duration
     if data.stop_reason is not None:
         pomodoro.stop_reason = data.stop_reason
     elif data.completed:
@@ -227,7 +287,7 @@ async def complete_pomodoro(
     # Keep the domain update, event ledger, and projection outbox atomic.
     _uid: int = cast(int, cast(object, current_user.id))
     event_type = EventType.POMODORO_COMPLETE if data.completed else EventType.POMODORO_INTERRUPT
-    actual_mins = pomodoro.duration
+    actual_mins = pomodoro.actual_duration
     tracker = EventTracker(db, user_id=_uid)
     outcome_event = await tracker.track(
         event_type=event_type,
@@ -235,13 +295,16 @@ async def complete_pomodoro(
             "pomodoro_id": pomodoro.id,
             "task_name": pomodoro.task_name,
             "duration": actual_mins,
+            "duration_basis": "actual" if pomodoro.actual_duration is not None else "unknown",
+            "actual_duration": pomodoro.actual_duration,
+            "planned_duration": pomodoro.planned_duration,
             "completed": data.completed,
             "stop_reason": data.stop_reason,  # early_done / interrupted / distracted
             "coach_action_attempt_id": pomodoro.coach_action_attempt_id,
         },
         chapter_id=pomodoro.chapter_id,
         task_id=pomodoro.task_id,
-        duration=int(actual_mins * 60),
+        duration=int(actual_mins * 60) if actual_mins is not None else None,
         source="pomodoro_router",
         dedupe_key=f"pomodoro.{'completed' if data.completed else 'interrupted'}:{pomodoro.id}",
         occurred_at=pomodoro.ended_at,
@@ -263,25 +326,9 @@ async def complete_pomodoro(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=redact_sensitive_text(exc)) from exc
-    if data.completed:
-        background_tasks.add_task(_refresh_profile_after_commit, _uid)
+    background_tasks.add_task(_refresh_profile_after_commit, _uid)
 
-    started_at = pomodoro.started_at if pomodoro.started_at is not None else pomodoro.created_at
-    ended_at = pomodoro.ended_at
-    ended_at_iso = ended_at.isoformat() if ended_at is not None else None
-    return PomodoroResponse(
-        id=pomodoro.id,
-        chapter_id=pomodoro.chapter_id,
-        task_id=pomodoro.task_id,
-        task_name=pomodoro.task_name,
-        started_at=started_at.isoformat(),
-        ended_at=ended_at_iso,
-        duration=pomodoro.duration,
-        completed=pomodoro.completed,
-        note=pomodoro.note,
-        coach_action_attempt_id=pomodoro.coach_action_attempt_id,
-        created_at=pomodoro.created_at.isoformat()
-    )
+    return _response(pomodoro)
 
 
 @router.get("/recent", response_model=List[PomodoroResponse])
@@ -303,250 +350,78 @@ async def get_recent_pomodoros(
     )
     pomodoros = result.scalars().all()
 
-    return [
-        PomodoroResponse(
-            id=p.id,
-            chapter_id=p.chapter_id,
-            task_id=p.task_id,
-            task_name=p.task_name,
-            started_at=(p.started_at if p.started_at is not None else p.created_at).isoformat(),
-            ended_at=p.ended_at.isoformat() if p.ended_at else None,
-            duration=p.duration,
-            completed=p.completed,
-            note=p.note,
-            coach_action_attempt_id=p.coach_action_attempt_id,
-            created_at=p.created_at.isoformat()
-        )
-        for p in pomodoros
-    ]
+    return [_response(p) for p in pomodoros]
+
+
+async def _evidence_stats(db, user_id, first=None, last=None):
+    from app.services.behavior_evidence_service import read_focus_date_range, summarize_focus
+    records, context = await read_focus_date_range(db, user_id, first, last)
+    values = summarize_focus(records)
+    observed = [r.local_date for r in records if r.included and r.local_date]
+    from datetime import date as date_type
+    first = first or (date_type.fromisoformat(min(observed)) if observed else context['today'])
+    last = last or context['today']
+    return PomodoroStats(total_count=values['finished_count'],completed_count=values['completed_count'],
+        total_minutes=values['actual_minutes'],completion_rate=values['completion_rate']*100 if values['completion_rate'] is not None else None,
+        avg_daily=round(values['finished_count']/max(1,(min(last,context['today'])-first).days+1),2),
+        unknown_duration_count=context['unknown_duration_count'],truncated=context['truncated'],time_zone=context['time_zone'])
 
 
 @router.get("/statistics/total", response_model=PomodoroStats)
-async def get_total_statistics(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    获取总统计数据
-    """
-    # 总数和完成数
-    result = await db.execute(
-        select(
-            func.count(Pomodoro.id).label('total'),
-            func.sum(case((Pomodoro.completed == True, 1), else_=0)).label('completed'),
-            func.sum(Pomodoro.duration).label('total_minutes')
-        ).where(Pomodoro.user_id == current_user.id)
-    )
-    stats = result.one()
-
-    total_count = stats.total or 0
-    completed_count = stats.completed or 0
-    total_minutes = stats.total_minutes or 0
-
-    # 计算完成率
-    completion_rate = (completed_count / total_count * 100) if total_count > 0 else 0
-
-    # 计算日均（从第一个番茄钟到现在的天数）
-    first_result = await db.execute(
-        select(Pomodoro.created_at)
-        .where(Pomodoro.user_id == current_user.id)
-        .order_by(Pomodoro.created_at.asc())
-        .limit(1)
-    )
-    first_pomodoro = first_result.scalar_one_or_none()
-
-    if first_pomodoro:
-        days = (datetime.now() - first_pomodoro).days + 1
-        avg_daily = total_count / days if days > 0 else 0
-    else:
-        avg_daily = 0
-
-    return PomodoroStats(
-        total_count=total_count,
-        completed_count=completed_count,
-        total_minutes=total_minutes,
-        completion_rate=round(completion_rate, 2),
-        avg_daily=round(avg_daily, 2)
-    )
+async def get_total_statistics(db: AsyncSession = Depends(get_db),current_user: User = Depends(get_current_user)):
+    return await _evidence_stats(db, current_user.id)
 
 
 @router.get("/statistics/weekly", response_model=PomodoroStats)
-async def get_weekly_statistics(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    获取本周统计数据
-    """
-    # 计算本周的开始时间（周一）
-    today = datetime.now()
-    week_start = today - timedelta(days=today.weekday())
-    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    result = await db.execute(
-        select(
-            func.count(Pomodoro.id).label('total'),
-            func.sum(case((Pomodoro.completed == True, 1), else_=0)).label('completed'),
-            func.sum(Pomodoro.duration).label('total_minutes')
-        ).where(Pomodoro.created_at >= week_start, Pomodoro.user_id == current_user.id)
-    )
-    stats = result.one()
-
-    total_count = stats.total or 0
-    completed_count = stats.completed or 0
-    total_minutes = stats.total_minutes or 0
-
-    completion_rate = (completed_count / total_count * 100) if total_count > 0 else 0
-
-    # 本周的日均（已过去的天数）
-    days_passed = (datetime.now() - week_start).days + 1
-    avg_daily = total_count / days_passed if days_passed > 0 else 0
-
-    return PomodoroStats(
-        total_count=total_count,
-        completed_count=completed_count,
-        total_minutes=total_minutes,
-        completion_rate=round(completion_rate, 2),
-        avg_daily=round(avg_daily, 2)
-    )
+async def get_weekly_statistics(db: AsyncSession = Depends(get_db),current_user: User = Depends(get_current_user)):
+    from app.services.behavior_evidence_service import read_focus_date_range
+    _, context = await read_focus_date_range(db,current_user.id)
+    today = context['today']
+    return await _evidence_stats(db,current_user.id,today-timedelta(days=today.weekday()),today)
 
 
 @router.get("/statistics/monthly", response_model=PomodoroStats)
-async def get_monthly_statistics(
-    year: Optional[int] = None,
-    month: Optional[int] = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    获取月度统计数据
-
-    - **year**: 年份（默认当前年）
-    - **month**: 月份（默认当前月）
-    """
-    now = datetime.now()
-    target_year = year or now.year
-    target_month = month or now.month
-
-    # 计算月份的开始和结束
-    month_start = datetime(target_year, target_month, 1)
-    days_in_month = calendar.monthrange(target_year, target_month)[1]
-    month_end = datetime(target_year, target_month, days_in_month, 23, 59, 59)
-
-    result = await db.execute(
-        select(
-            func.count(Pomodoro.id).label('total'),
-            func.sum(case((Pomodoro.completed == True, 1), else_=0)).label('completed'),
-            func.sum(Pomodoro.duration).label('total_minutes')
-        ).where(
-            and_(
-                Pomodoro.created_at >= month_start,
-                Pomodoro.created_at <= month_end,
-                Pomodoro.user_id == current_user.id,
-            )
-        )
-    )
-    stats = result.one()
-
-    total_count = stats.total or 0
-    completed_count = stats.completed or 0
-    total_minutes = stats.total_minutes or 0
-
-    completion_rate = (completed_count / total_count * 100) if total_count > 0 else 0
-
-    # 本月日均
-    if target_year == now.year and target_month == now.month:
-        days_passed = now.day
-    else:
-        days_passed = days_in_month
-
-    avg_daily = total_count / days_passed if days_passed > 0 else 0
-
-    return PomodoroStats(
-        total_count=total_count,
-        completed_count=completed_count,
-        total_minutes=total_minutes,
-        completion_rate=round(completion_rate, 2),
-        avg_daily=round(avg_daily, 2)
-    )
+async def get_monthly_statistics(year: Optional[int] = None, month: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),current_user: User = Depends(get_current_user)):
+    from datetime import date as date_type
+    from app.services.behavior_evidence_service import read_focus_date_range
+    _, context = await read_focus_date_range(db,current_user.id)
+    today = context['today']
+    try:
+        first = date_type(year or today.year,month or today.month,1)
+        last = date_type(first.year,first.month,calendar.monthrange(first.year,first.month)[1])
+    except ValueError:
+        raise HTTPException(400,'无效的年月')
+    return await _evidence_stats(db,current_user.id,first,last)
 
 
 @router.get("/statistics/daily", response_model=List[DailyStats])
-async def get_daily_statistics(
-    days: int = 7,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    获取每日统计数据
+async def get_daily_statistics(days: int = Query(7,ge=1,le=366),
+    db: AsyncSession = Depends(get_db),current_user: User = Depends(get_current_user)):
+    from app.services.behavior_evidence_service import get_behavior_evidence, summarize_focus
+    report = await get_behavior_evidence(db,current_user.id,days=days)
+    result = []
+    for day in report.daily:
+        values = summarize_focus([r for r in report.records if r.local_date==day['date']])
+        result.append(DailyStats(date=day['date'],count=values['finished_count'],completed_count=values['completed_count'],
+            total_minutes=values['actual_minutes']))
+    return result
 
-    - **days**: 最近N天（默认7天）
-    """
-    # 计算开始日期
-    end_date = datetime.now().replace(hour=23, minute=59, second=59)
-    start_date = end_date - timedelta(days=days-1)
-    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # 按日期分组统计
-    result = await db.execute(
-        select(
-            func.date(Pomodoro.created_at).label('date'),
-            func.count(Pomodoro.id).label('count'),
-            func.sum(case((Pomodoro.completed == True, 1), else_=0)).label('completed'),
-            func.sum(Pomodoro.duration).label('total_minutes')
-        )
-        .where(
-            and_(
-                Pomodoro.created_at >= start_date,
-                Pomodoro.created_at <= end_date,
-                Pomodoro.user_id == current_user.id,
-            )
-        )
-        .group_by(func.date(Pomodoro.created_at))
-        .order_by(func.date(Pomodoro.created_at))
-    )
-
-    stats_dict = {}
-    for row in result:
-        row_map = row._mapping
-        date_value = row_map.get("date")
-        count_value = row_map.get("count") or 0
-        completed_value = row_map.get("completed") or 0
-        minutes_value = row_map.get("total_minutes") or 0
-        stats_dict[str(date_value)] = DailyStats(
-            date=str(date_value),
-            count=int(count_value),
-            completed_count=int(completed_value),
-            total_minutes=float(minutes_value),
-        )
-
-    # 填充缺失的日期
-    daily_stats = []
-    current_date = start_date
-    while current_date <= end_date:
-        date_str = current_date.strftime('%Y-%m-%d')
-        if date_str in stats_dict:
-            daily_stats.append(stats_dict[date_str])
-        else:
-            daily_stats.append(DailyStats(
-                date=date_str,
-                count=0,
-                completed_count=0,
-                total_minutes=0
-            ))
-        current_date += timedelta(days=1)
-
-    return daily_stats
+class PomodoroImport(PomodoroCreate):
+    backend_id: Optional[int] = None
+    planned_duration: Optional[float] = Field(None, gt=0, le=1440, allow_inf_nan=False)
+    completed: bool = True
+    stop_reason: Optional[Literal["early_done", "interrupted", "distracted"]] = None
+    note: Optional[str] = None
 
 
 class PomodorosBatchCreate(BaseModel):
-    """批量创建番茄钟请求"""
-    records: List[PomodoroCreate]
-    completed_ats: List[Optional[str]] = Field(default_factory=list)  # ISO date strings for each record
+    records: List[PomodoroImport] = Field(max_length=500)
+    completed_ats: List[datetime]
 
 
 class BatchCreateResponse(BaseModel):
-    """批量创建响应"""
     created: int
     ids: List[int]
 
@@ -556,52 +431,48 @@ async def batch_create_pomodoros(
     data: PomodorosBatchCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
 ):
-    """
-    批量创建番茄钟记录（用于迁移 localStorage 历史数据）
-
-    - **records**: 番茄钟记录列表
-    - **completed_ats**: 每条记录的完成时间（ISO格式，可选）
-    """
-    created_ids = []
-    for i, record in enumerate(data.records):
-        if record.task_id is not None:
-            task_result = await db.execute(
-                select(Task)
-                .join(Goal, Task.goal_id == Goal.id)
-                .where(Task.id == record.task_id, Goal.user_id == current_user.id)
-            )
-            if not task_result.scalar_one_or_none():
-                continue
-
-        completed_at = None
-        if i < len(data.completed_ats):
-            completed_at_value = data.completed_ats[i]
-            if completed_at_value is not None:
-                try:
-                    completed_at = datetime.fromisoformat(completed_at_value)
-                except (ValueError, TypeError):
-                    completed_at = datetime.now()
-        if completed_at is None:
-            completed_at = datetime.now()
-
-        pomodoro = Pomodoro(
-            user_id=current_user.id,
-            chapter_id=record.chapter_id,
-            task_id=record.task_id,
-            task_name=record.task_name,
-            started_at=completed_at - timedelta(minutes=record.duration),
-            ended_at=completed_at,
-            duration=record.duration,
-            completed=True
-        )
-        db.add(pomodoro)
-        await db.flush()
-        created_ids.append(pomodoro.id)
-
-    await db.commit()
-
-    return BatchCreateResponse(
-        created=len(created_ids),
-        ids=created_ids
-    )
+    """Replay online/offline records atomically; one client identity, one outcome."""
+    if len(data.records) != len(data.completed_ats):
+        raise HTTPException(status_code=422, detail="每条计时记录必须提供对应的结束时间")
+    await lock_user_mutation(db, int(current_user.id))
+    ids, created = [], 0
+    completed_tasks = BackgroundTasks()
+    for record, timestamp in zip(data.records, data.completed_ats):
+        ended_at = to_db_utc(timestamp)
+        # Legacy clients did send a completion timestamp: deterministic fallback
+        # prevents reimport on retries. New clients always send their stable ID.
+        client_id = record.client_record_id or str(uuid.uuid5(uuid.NAMESPACE_URL,
+            json.dumps(record.model_dump(mode="json"), sort_keys=True) + to_utc_iso(ended_at)))
+        existing = await db.scalar(select(Pomodoro).where(
+            Pomodoro.user_id == current_user.id,
+            Pomodoro.id == record.backend_id if record.backend_id is not None else Pomodoro.client_record_id == client_id,
+        ).execution_options(populate_existing=True))
+        if record.backend_id is not None and existing is None:
+            raise HTTPException(status_code=404, detail="待同步的原计时不存在，请检查账户和记录")
+        if existing is not None:
+            if (existing.task_id, existing.task_name) != (record.task_id, record.task_name):
+                raise HTTPException(status_code=409, detail="计时标识不能用于不同任务")
+            if existing.client_record_id is None:
+                existing.client_record_id = client_id
+            target_id = existing.id
+        else:
+            started = await _start_pomodoro(PomodoroCreate(
+                **record.model_dump(exclude={"backend_id", "completed", "stop_reason", "note", "client_record_id", "started_at", "planned_duration", "duration"}),
+                duration=record.planned_duration or record.duration,
+                client_record_id=client_id,
+                started_at=record.started_at or ended_at - timedelta(minutes=record.duration),
+            ), db, current_user, planned_duration_known=record.planned_duration is not None,
+                start_estimated=record.started_at is None)
+            target_id = started.id
+            created += 1
+        await complete_pomodoro(target_id, PomodoroUpdate(
+            completed=record.completed, actual_duration=record.duration, stop_reason=record.stop_reason,
+            note=record.note, ended_at=ended_at,
+        ), completed_tasks, db, current_user)
+        ids.append(target_id)
+    await db.flush()
+    if background_tasks is not None and completed_tasks.tasks:
+        background_tasks.add_task(_refresh_profile_after_commit, int(current_user.id))
+    return BatchCreateResponse(created=created, ids=ids)

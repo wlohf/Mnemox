@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.config import settings
+from app.utils.dialect import dialect_name
 from app.models.chat import ChatConversation
 from app.models.goal import Goal, Task
 from app.models.note import Note, NoteLink
@@ -377,7 +378,7 @@ async def _get_note_for_response(db: AsyncSession, note_id: int, user_id: int) -
 
 
 def _uses_sqlite(db: AsyncSession) -> bool:
-    return db.get_bind().dialect.name == "sqlite"
+    return dialect_name(db) == "sqlite"
 
 
 def _note_write_query(note_id: int, user_id: int) -> Select:

@@ -1,6 +1,6 @@
 # 文档导航
 
-> 更新日期：2026-09-04
+> 更新日期：2026-09-28
 
 本目录只保留当前实现基线、仍有效的架构决策、可复用的验证证据和周期更新。需要判断“现在是什么”和“下一步做什么”时，优先阅读现行基线，不要把历史方案当成待办清单。
 
@@ -22,12 +22,13 @@
 
 | 日期 | 文档 | 状态 |
 | --- | --- | --- |
-| 2026-09-04 | [Mnemox V2 图架构演进、技术选型与作品集目标决策](superpowers/specs/2026-09-04-mnemox-v2-graph-evolution-and-portfolio-architecture.md) | **当前权威增量决策**：保留 Stage 6 默认 Runtime 双 NO-GO，但把 Neo4j 重新打开为 Optional Graph Backend 建设目标，把 Graphiti 重新打开为独立 Temporal/Episodic Vertical Slice；要求真实 Graph-native 功能、Benchmark、Fallback 和完整选型依据 |
+| 2026-09-28 | [动态用户理解与连续辅导](superpowers/specs/2026-09-28-dynamic-user-understanding.md) | **已确认的后续产品方向，待实现**：AI 开放提出候选规律，依据独立证据、情境、反例和时间变化评估；Graphiti 承担连续记忆，Neo4j 支持补弱路径，SQL 保持规范来源；优先轻量统计，不预先堆叠模型 |
+| 2026-09-04 | [Mnemox V2 图架构演进、技术选型与作品集目标决策](superpowers/specs/2026-09-04-mnemox-v2-graph-evolution-and-portfolio-architecture.md) | 当前工程基础：保留 Stage 6 默认 Runtime 双 NO-GO，建设 Optional Neo4j 与 Graphiti Temporal/Episodic Slice；后续产品目标由 2026-09-28 决策扩展 |
 | 2026-09-04 | [Mnemox V2 图基础设施提前建设策略](superpowers/specs/2026-09-04-mnemox-v2-graph-foundation-strategy.md) | 当前有效的基础原则：SQL Canonical、GraphStore 解耦、Projection/Outbox/Shadow/Rebuild 提前准备；已被同日增量 ADR 扩展为“默认 Runtime 不变 + 可选图后端主动建设” |
 | 2026-09-04 | [Mnemox V2 Stage 6 最终 Go / No-Go](superpowers/specs/2026-09-04-mnemox-v2-stage6-final-go-no-go.md) | 历史评测结论仍有效：Neo4j / Graphiti 不作为默认产品 Runtime；该结论不再等于“停止实现”，后续按同日增量 ADR建设可选能力 |
 | 2026-09-03 | [Mnemox V2 Stage 6 Neo4j Shadow Hold](superpowers/specs/2026-09-03-mnemox-v2-stage6-neo4j-shadow-hold.md) | 已被 2026-09-04 最终 ADR 取代；保留作为中间 Hold 证据 |
 | 2026-09-02 | [Mnemox V2 Claim 中心知识图谱实施设计](superpowers/specs/2026-09-02-mnemox-v2-claim-centered-knowledge-graph-implementation.md) | Stage 0～6 工程/Spike 已执行；Stage 6 双 NO-GO，Stage 4/5 的真人与真实匿名质量验收继续单列后置 |
-| 2026-08-23 | [SQL 时态记忆生命周期决策](superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md) | 当前有效：事实身份、当前事实唯一性、冲突审核、用户纠错、自动失效、派生清理与 Graphiti 暂缓 |
+| 2026-08-23 | [SQL 时态记忆生命周期决策](superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md) | 当前有效：事实身份、当前事实唯一性、冲突审核、用户纠错、自动失效与派生清理；Graphiti 后续范围由 09-04、09-28 决策扩展 |
 | 2026-08-22 | [概念图谱与学习推荐决策](superpowers/specs/2026-08-22-concept-graph-learning-recommendations-adr.md) | 当前有效：SQL 概念审核、关系来源、人工治理、先修缺口与可解释学习推荐 |
 | 2026-08-22 | [检索生命周期与质量决策](superpowers/specs/2026-08-22-retrieval-lifecycle-quality-adr.md) | 当前有效：资料 SQL/Chroma 投影契约、更新/删除/重建、离线质量门禁与真实 Qdrant Local no-go |
 | 2026-08-13 | [笔记、上下文与记忆边界决策](superpowers/specs/2026-08-13-note-context-memory-architecture.md) | 当前有效：笔记三层逻辑存储、三阶段检索、记忆候选和学习证据边界；聊天笔记首条 ContextStore 业务流已完成接口收敛，完整生命周期仍待补 |
@@ -39,6 +40,7 @@
 
 ## 当前实施计划
 
+- [动态用户理解与连续辅导实施计划](superpowers/plans/2026-09-28-dynamic-user-understanding-plan.md)：数据与评测契约 → 开放假设与动态评估 → Graphiti 连续记忆 → 建议结果闭环与知识补弱 → 长期验证；阶段状态统一维护在路线图。
 - [Neo4j / Graphiti 上线前 2～4 周实施计划](superpowers/plans/2026-09-04-mnemox-v2-neo4j-graphiti-implementation-plan.md)：按“领域模型 → GraphStore → Optional Neo4j Backend → Knowledge Path → Explainable Multi-hop → 真实 Benchmark → Graphiti Temporal Slice → 上线/面试材料”执行。
 
 ## 启动与开发
@@ -51,6 +53,12 @@
 ## 持续记录
 
 - [更新记录模板](updates/_template.md)
+- [2026-09-28 SQLite 与 PostgreSQL 统一迁移与方言收拢](updates/2026/2026-09-28_sqlite-postgres-unified-schema.md)
+- [2026-09-28 向量重置、关键词检索与数据归属修复](updates/2026/2026-09-28_retrieval-reset-keyword-owner-hardening.md)
+- [2026-09-28 聊天流、资料上传与检索投影稳定性修复](updates/2026/2026-09-28_chat-upload-retrieval-hardening.md)
+- [2026-09-28 动态理解首批证据基础](updates/2026/2026-09-28_behavior-evidence-foundation.md)
+- [2026-09-28 动态用户理解方向与实施计划](updates/2026/2026-09-28_dynamic-user-understanding-direction.md)
+- [2026-09-28 图 SDK 依赖与集成核验](updates/2026/2026-09-28_graph-sdk-dependencies.md)
 - [2026-09-04 Mnemox V2 图架构演进与 Stage 7 重新打开](updates/2026/2026-09-04_mnemox-v2-graph-evolution-plan.md)
 - [2026-09-04 Mnemox V2 Stage 6 最终收口与双 NO-GO](updates/2026/2026-09-04_mnemox-v2-stage6-final.md)
 - [2026-09-03 文档来源唯一性治理](updates/2026/2026-09-03_documentation-source-of-truth.md)

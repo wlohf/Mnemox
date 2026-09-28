@@ -15,7 +15,7 @@ const conversationApiMock = vi.hoisted(() => ({
 
 vi.mock('../services/conversationApi', () => conversationApiMock)
 
-import { useChatStore } from './chatStore'
+import { useChatStore, beginChatStream, resetChatSession } from './chatStore'
 
 function conversation(id: number): Conversation {
   return {
@@ -45,6 +45,23 @@ function conversationDetail(id: number): ConversationDetail {
 }
 
 describe('chatStore conversation restore', () => {
+  it('rejects old stream callbacks after switching conversations or accounts', async () => {
+    useChatStore.setState({ activeConversationId: 1, messages: [] })
+    const controller = new AbortController()
+    const current = beginChatStream(1, controller)
+    expect(current()).toBe(true)
+    conversationApiMock.getConversation.mockResolvedValue(conversationDetail(2))
+    await useChatStore.getState().setActiveConversation(2)
+    expect(current()).toBe(false)
+    expect(controller.signal.aborted).toBe(true)
+    if (current()) useChatStore.getState().addMessage({ role: 'assistant', content: 'old reply' })
+    expect(useChatStore.getState().messages.some(m => m.content === 'old reply')).toBe(false)
+    const second = beginChatStream(2, new AbortController())
+    resetChatSession()
+    expect(second()).toBe(false)
+    expect(useChatStore.getState().messages).toEqual([])
+    expect(useChatStore.getState().activeConversationId).toBeNull()
+  })
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()

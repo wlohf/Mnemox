@@ -11,7 +11,7 @@ from app.services.learning_event_service import record_learning_event
 class EventTracker:
     """学习事件追踪器"""
     
-    def __init__(self, db: AsyncSession, user_id: int = 1):
+    def __init__(self, db: AsyncSession, user_id: int):
         self.db = db
         self.user_id = user_id
     
@@ -302,6 +302,6 @@ class EventTracker:
         return result.scalar() or 0
 
 
-def get_event_tracker(db: AsyncSession, user_id: int = 1) -> EventTracker:
+def get_event_tracker(db: AsyncSession, user_id: int) -> EventTracker:
     """获取事件追踪器实例"""
     return EventTracker(db, user_id)

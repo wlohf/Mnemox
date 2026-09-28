@@ -10,7 +10,7 @@ class Goal(Base):
     __tablename__ = "goals"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     material_id = Column(Integer, ForeignKey("materials.id"), comment="关联资料")
     title = Column(String(200), nullable=False, comment="目标标题")
     description = Column(Text, comment="目标描述")

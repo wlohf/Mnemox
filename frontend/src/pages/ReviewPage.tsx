@@ -14,6 +14,7 @@ import {
   type ReviewTaskItem,
 } from '../services/reviewApi'
 import { getApiErrorMessage } from '../services/apiClient'
+import { beginReviewAttempt } from '../services/reviewAttempt'
 import { PageShell } from '../components/PageShell'
 
 type ReviewStep = 'list' | 'summary' | 'questions' | 'result'
@@ -53,6 +54,8 @@ export function ReviewPage() {
   }, [scope, itemType])
 
   const startReview = async (task: ReviewTaskItem) => {
+    beginReviewAttempt(`/api/review/tasks/${task.task_id}/complete`)
+    beginReviewAttempt(`/api/review/${task.task_id}/submit`)
     if (task.item_type === 'question') {
       // 错题复习：直接进入评分卡，无需 AI 生成题目
       setSelectedTask(task)
@@ -70,7 +73,7 @@ export function ReviewPage() {
     try {
       const content = await getReviewContent(task.task_id)
       setReviewContent(content)
-      setUserAnswers({})
+      setUserAnswers(content.pending_answers || {})
       setReviewResult(null)
     } catch (error: any) {
       message.error(error.message || '加载复习内容失败')
@@ -291,8 +294,8 @@ export function ReviewPage() {
                         await completeReviewTask(selectedTask.task_id, q, coachAttemptId)
                         message.success('复习记录已保存')
                         resetReview(true)
-                      } catch {
-                        message.error('保存失败，请重试')
+                      } catch (error) {
+                        message.error(getApiErrorMessage(error, '保存失败，请重试'))
                       } finally {
                         setSubmitting(false)
                       }

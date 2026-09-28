@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get('/capabilities')
 async def capabilities(current_user: User = Depends(get_current_user)):
-    return {'protocol_version': 1}
+    return {'protocol_version': 1, 'review_attempts': True, 'keyset_collections': True}
 
 
 @router.get('/{module}/{record_id}')

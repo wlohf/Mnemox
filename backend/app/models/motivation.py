@@ -9,7 +9,7 @@ class MotivationQuote(Base):
     __tablename__ = "motivation_quotes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     content = Column(Text, nullable=False, comment="语录内容")
     author = Column(String(100), nullable=True, comment="作者/来源")
     source_type = Column(String(20), default="preset", comment="来源: preset/custom/ai")

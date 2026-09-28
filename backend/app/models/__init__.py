@@ -53,3 +53,24 @@ from app.models.learner_model import (  # noqa: F401
     ProjectionOutboxWorkerHeartbeat,
     UserConceptState,
 )
+
+from sqlalchemy import event as _event
+from sqlalchemy.orm import Session as _Session
+
+# Owner-scoped rows that once fell back to user 1. Older SQLite files still
+# carry a column-level DEFAULT 1, so an omitted owner must fail before INSERT
+# instead of silently attributing the row to another account.
+OWNER_REQUIRED_MODELS = (
+    AIProviderSetting, AIRoutingSetting, AnkiCard, ChatConversation, ChatProject,
+    ConversationSummary, DailyPlan, Goal, LearningEvent, Material, MotivationQuote,
+    Note, Question, ReviewSchedule, StudySession, UserMemory, WrongQuestion,
+)
+
+
+@_event.listens_for(_Session, "before_flush")
+def _require_row_owner(session, _flush_context, _instances) -> None:
+    for instance in session.new:
+        if isinstance(instance, OWNER_REQUIRED_MODELS) and instance.user_id is None:
+            raise ValueError(f"{type(instance).__name__}.user_id is required")
+
+from app.models.understanding import UnderstandingPreference, Experience, BehavioralHypothesis, HypothesisRevision  # noqa: F401

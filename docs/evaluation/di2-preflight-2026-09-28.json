@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "input_kind": "synthetic_real_model_eval",
+  "cases": [
+    [
+      "卡点与尝试",
+      "学习矩阵乘法时卡在维度对应，今天试了先画方格再计算，完成了两个例题；还没有独立做题。"
+    ],
+    [
+      "变化与反例",
+      "今天继续学矩阵乘法，画方格没有帮助理解分块矩阵。我改为逐步代入具体数字，仍有一个题没有弄懂。"
+    ],
+    [
+      "已解决的范围",
+      "我能独立解出普通矩阵乘法的三个例题了；分块矩阵的维度对应仍不清楚，不能说整个主题已掌握。"
+    ]
+  ],
+  "quality_verdict": "not_run",
+  "engineering_completed": false,
+  "preflight": {
+    "ai_configuration_ready": false,
+    "ai_error": "owned_coach_ai_configuration_required",
+    "graph_available": true
+  },
+  "status": "blocked_configuration"
+}

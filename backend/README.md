@@ -32,7 +32,9 @@ OPENAI_API_KEY=your_api_key_here
 python run_migrations.py
 ```
 
-SQLite 开发环境会创建本地表并执行轻量兼容迁移；PostgreSQL 必须通过 Alembic 执行版本化迁移。`init_db.py` 保留为同一入口的兼容别名，不能再用 `Base.metadata.create_all` 初始化生产库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。当前 Alembic head 为 `20260903_21`，SQLite lightweight migration 还覆盖账号会话版本、持久登录节流、AgentRuntime 生命周期、Provider Token 单价、Coach IANA 时区、Mnemox V2 Canonical Claim、durable extraction run、Entity Resolution 和知识投影四表。仓库根目录的 `rehearse_postgres_release.sh` 会在不升级源库的前提下完成备份、一次性恢复、当前 head 升级、schema drift 与稳定数据量核对；本地 PostgreSQL 16 历史 dump 恢复演练已通过，正式 PostgreSQL 仍须在发布窗口显式升级和验收。
+SQLite 与 PostgreSQL 使用同一条 Alembic 迁移链。SQLite（桌面版、源码自部署）在应用启动时由 `init_db` 自动执行 Alembic 升级；尚未纳入 Alembic 的旧 SQLite 文件会先用冻结的旧版手写迁移补齐到基线 `20260928_31`，再标记版本并继续升级。PostgreSQL 必须先执行本命令，应用启动时只校验版本。`init_db.py` 保留为同一入口的兼容别名，不能用 `Base.metadata.create_all` 初始化任何库。Docker 镜像会在启动 Uvicorn 前自动运行该命令；入口会用 PostgreSQL advisory lock 串行化多个副本的 schema 检查、baseline stamp 和升级。
+
+**改表约定**：所有 schema 变更只新增 Alembic revision，且同一份 revision 必须能在 SQLite 与 PostgreSQL 上执行（SQLite 需要改约束时使用 `op.batch_alter_table`，`env.py` 已为 SQLite 自动生成 batch 操作）。`app.database._run_lightweight_migrations` 已冻结，只用于旧 SQLite 文件的一次性补齐，`tests/test_sqlite_alembic_runtime.py` 会拒绝对它的修改。SQLite 与 PostgreSQL 的差异集中在 `app/utils/dialect.py`：需要 `ON CONFLICT` 的写入使用 `conflict_insert`，只在 PostgreSQL 需要的跨进程锁用 `is_postgresql` 判断；业务代码不要再直接判断 `dialect.name`。仓库根目录的 `rehearse_postgres_release.sh` 会在不升级源库的前提下完成备份、一次性恢复、当前 head 升级、schema drift 与稳定数据量核对；本地 PostgreSQL 16 历史 dump 恢复演练已通过，正式 PostgreSQL 仍须在发布窗口显式升级和验收。
 
 ### 资料检索质量验收
 
@@ -46,6 +48,16 @@ python evaluate_retrieval.py --backend hybrid --min-recall-at-5 0.75 --summary-o
 pip install -r requirements-spike.txt
 python evaluate_retrieval.py --backend all --include-qdrant --summary-only
 ```
+
+### 可选图功能（Neo4j / Graphiti）
+
+标准 `requirements.txt` 包含 `neo4j>=6.3,<7` 和 `graphiti-core>=0.30.1,<0.31`；`requirements-dev.txt` 会继承它们，常规测试不再需要额外安装 graph spike 依赖。安装 SDK 不会自动启动图服务或修改运行开关。
+
+- **Neo4j**：默认 `GRAPH_BACKEND=sql`。配置 `NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE` 并显式选择 `GRAPH_BACKEND=neo4j` 后，图投影由 outbox/worker 维护；只有当前用户投影就绪且命中灰度才走 Neo4j。基础查询可回退 SQL，图路径能力另需 `KNOWLEDGE_V2_ENABLED=true` 和 `KNOWLEDGE_PATH_ENABLED=true`。Docker 中的 Neo4j 服务通过 `--profile graph` 启动。
+- **Graphiti**：默认 `GRAPHITI_ENABLED=false`。启用时使用上述 Neo4j 连接配置，提供已审核记忆的当前/历史时间点查询，不要求把 `GRAPH_BACKEND` 改为 Neo4j。认证接口为 `GET /api/memory/temporal-graph/status`、`POST /api/memory/temporal-graph/rebuild` 和 `POST /api/memory/temporal-graph/query`。首次使用及记忆变更后需显式重建投影；目前没有接入普通聊天、Coach 或前端页面的自动记忆链路。
+- Graphiti 当前切片仅投影已审核 SQL `MemoryDeclaration`，通过 BM25 查询并回到 SQL 核验结果；不自动摄入聊天原文，不调用外部 LLM、embedding 或 reranker，SQL 始终是规范来源。
+
+真实图集成测试必须指向可丢弃的 Neo4j 实例，因为测试会重建和删除合成用户的图数据。`tests/test_neo4j_shadow_integration.py`、`tests/test_neo4j_knowledge_path_integration.py`、`tests/test_graphiti_shadow_integration.py` 和 `tests/test_graphiti_temporal_integration.py` 的文件头列出了各自需要的显式测试环境变量。
 
 ### Mnemox V2 Stage 0～3
 
@@ -63,7 +75,7 @@ Stage 3 新增 exact/alias/既有人工决定优先的 Entity Resolution、pendi
 python evaluate_entity_resolution.py --summary-only
 ```
 
-它不调用真实 provider，不替代真实语料抽验。Association V2、ClaimRelation、SqlGraphStore、Neo4j/Graphiti 仍没有产品运行时依赖。
+它不调用真实 provider，不替代真实语料抽验，也不会启用 Association V2 或外部图后端。后续阶段已实现的 Neo4j/Graphiti 可选能力及启用边界见上文。
 
 ### 4. 启动服务
 

@@ -49,6 +49,29 @@ def _current_head_revision() -> str:
 CURRENT_HEAD_REVISION = _current_head_revision()
 
 
+def test_review_schedule_duplicates_are_audited_before_enforcing_identity(tmp_path):
+    path = tmp_path / "review-duplicates.db"
+    config = _alembic_config(path)
+    command.upgrade(config, "20260925_26")
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO users (id,username,email,hashed_password) VALUES (1,'review','r@test.invalid','hash')"))
+            conn.execute(text("""INSERT INTO review_schedule
+                (id,user_id,item_type,item_id,repetitions,stability,is_archived,last_review_at)
+                VALUES (1,1,'chapter',10,7,20,1,'2026-09-20'),
+                       (2,1,'chapter',10,4,30,0,'2026-09-25')"""))
+        command.upgrade(config, "head")
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT id,repetitions,stability,is_archived FROM review_schedule")).one()
+            assert tuple(row) == (2, 7, 30, 1)
+            assert conn.scalar(text("SELECT COUNT(*) FROM review_schedule_merge_audit")) == 2
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(text("INSERT INTO review_schedule (user_id,item_type,item_id) VALUES (1,'chapter',10)"))
+    finally:
+        engine.dispose()
+
+
 def _run_postgresql_migration_with_fake_lock(events: list[str], upgrade) -> None:
     class FakeConnection:
         async def execution_options(self, **options):

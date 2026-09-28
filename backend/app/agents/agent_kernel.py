@@ -48,7 +48,7 @@ KERNEL_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "search_memories": ("检索关于我的长期记忆", '{"query":"关键词","limit":5}'),
     "search_concepts": ("检索知识图谱中的概念及关系", '{"query":"概念关键词","limit":5}'),
     "search_learner_state": ("检索概念掌握度、置信度和遗忘风险", '{"query":"概念关键词","limit":5}'),
-    "get_profile": ("获取我的学习画像（专注度/坚持度/高效时段/薄弱点）", "{}"),
+    "get_profile": ("获取学习记录概况（实际时长、完成记录、时段分布与缺失说明；不推断人格或效率）", "{}"),
     "get_today_tasks": ("获取我今天的任务", '{"limit":10}'),
     "get_recent_feedback": ("获取我最近对建议的反馈", '{"limit":5}'),
     "concept_neighborhood": ("查询某个知识点的图谱邻域（先修/相关概念及挂接的笔记错题）", '{"name":"概念名"}'),

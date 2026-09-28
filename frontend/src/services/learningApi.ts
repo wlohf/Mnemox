@@ -248,6 +248,8 @@ export async function generateDailyPlan(date: string): Promise<{
   date: string
   content: string
   item_count: number
+  base_version: number
+  saved: false
   items: Array<{ type: string; emoji: string; label: string; priority: number; id: number }>
 }> {
   return await apiFetch(`/api/plans/generate/${date}`, { method: 'POST' })

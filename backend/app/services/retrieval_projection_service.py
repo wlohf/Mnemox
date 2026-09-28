@@ -14,17 +14,17 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncIterator, Optional, Sequence
 
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import delete, select, update, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.rag_service import RAGService, get_rag_service, load_rag_settings
 from app.config import settings
+from app.services.background_runner import material_projection_runner
 from app.models.chat import ChatProject, ChatProjectMaterial
 from app.models.material import Material
 from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 from app.services.material_retrieval_backend import _chunk_material_text
+from app.utils.dialect import conflict_insert
 from app.utils.error_safety import (
     redact_sensitive_text,
     safe_error_diagnostic,
@@ -83,6 +83,25 @@ def _utcnow() -> datetime:
     return utc_now_db()
 
 
+def _source_signature(material: Material, content_hash: str) -> str:
+    """Identity of what the vectors encode; project membership is SQL-only."""
+    return _sha256(json.dumps({
+        "title": str(material.title or ""),
+        "content_hash": content_hash,
+        "file_type": str(material.file_type or ""),
+    }, ensure_ascii=False, sort_keys=True))
+
+
+def _legacy_source_signature(material: Material, content_hash: str, project_ids: Sequence[int]) -> str:
+    """Pre single-copy signature, which also covered project membership."""
+    return _sha256(json.dumps({
+        "title": str(material.title or ""),
+        "content_hash": content_hash,
+        "file_type": str(material.file_type or ""),
+        "project_ids": sorted({int(value) for value in project_ids}),
+    }, ensure_ascii=False, sort_keys=True))
+
+
 def _safe_error(value: Any) -> str:
     return redact_sensitive_text(value, max_chars=MAX_ERROR_CHARS)
 
@@ -121,6 +140,51 @@ def retrieval_configuration(rag: RAGService | None = None) -> dict[str, Any]:
         json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
     return identity
+
+
+VECTOR_INCOMPATIBLE_ERROR = "Embedding 向量维度与旧索引不一致，旧向量已清空；请重建资料索引。"
+
+
+async def reset_incompatible_vector_collection(session_factory, rag: RAGService) -> int:
+    """Reset an embedding-incompatible collection and flag projections for rebuild.
+
+    Once the embedding dimension changes, every vector in the shared collection
+    is unusable, so the reset is global. It runs under the exclusive
+    configuration lock (after in-flight ingests finish), and projections that
+    claimed ready vectors become ``degraded`` so the UI offers a rebuild instead
+    of labelling keyword-only materials as indexed.
+    """
+    async with session_factory() as db:
+        async with serialized_retrieval_configuration_change(db):
+            if not rag.vector_incompatible:
+                return 0
+            try:
+                await rag.reset_index(VECTOR_INCOMPATIBLE_ERROR)
+                result = await db.execute(
+                    update(RetrievalProjection)
+                    .where(
+                        RetrievalProjection.source_type == SOURCE_TYPE,
+                        RetrievalProjection.status == "ready",
+                    )
+                    .values(status="degraded", vector_chunk_count=0, last_error=VECTOR_INCOMPATIBLE_ERROR)
+                    .execution_options(synchronize_session=False)
+                )
+                await db.commit()
+            except BaseException:
+                # Let the next query detect the mismatch again and retry.
+                rag.clear_vector_incompatible()
+                raise
+    flagged = int(result.rowcount or 0)
+    logger.warning("incompatible vector collection reset; projections flagged for rebuild: %d", flagged)
+    return flagged
+
+
+def schedule_incompatible_vector_reset(session_factory, rag: RAGService) -> None:
+    """Queue one serialized reset; repeated detections share the same key."""
+    material_projection_runner.submit(
+        ("vector-collection-reset",),
+        lambda: reset_incompatible_vector_collection(session_factory, rag),
+    )
 
 
 def serialize_projection(row: RetrievalProjection | None) -> dict[str, Any] | None:
@@ -179,6 +243,37 @@ class RetrievalProjectionService:
     def __init__(self, db: AsyncSession, rag: RAGService | None = None) -> None:
         self.db = db
         self.rag = rag or get_rag_service()
+
+    async def prepare_refresh(self, material: Material, *, user_id: int) -> None:
+        """Invalidate vectors in the same transaction that changes canonical SQL."""
+        row = await self._ensure_projection(user_id, int(material.id), operation="refresh")
+        await self.db.execute(update(RetrievalProjection).where(RetrievalProjection.id == row.id).values(
+            source_version=case((RetrievalProjection.source_signature.is_(None), RetrievalProjection.source_version),
+                                else_=RetrievalProjection.source_version + 1),
+            status="pending", last_operation="refresh", indexed_version=None, last_error=None,
+        ).execution_options(synchronize_session=False))
+        await self.db.refresh(row)
+
+    async def _finish_version(self, projection: RetrievalProjection, version: int, **values) -> dict[str, Any]:
+        # A material edit may commit during embedding I/O. Its pending generation
+        # must survive completion (or failure) of the older indexing job.
+        canonical = await self.db.scalar(select(Material).where(
+            Material.id == projection.source_id, Material.user_id == projection.user_id,
+        ).execution_options(populate_existing=True))
+        if canonical is None:
+            values = {"status": "deleting", "last_operation": "forget", "indexed_version": None}
+        else:
+            signature = _source_signature(canonical, _sha256(str(canonical.content or "").strip()))
+            if signature != projection.source_signature:
+                values = {"status": "pending", "last_operation": "refresh", "indexed_version": None,
+                          "source_version": version + 1}
+        await self.db.execute(update(RetrievalProjection).where(
+            RetrievalProjection.id == projection.id, RetrievalProjection.source_version == version,
+            RetrievalProjection.status == "indexing",
+        ).values(**values).execution_options(synchronize_session=False))
+        await self.db.commit()
+        await self.db.refresh(projection)
+        return serialize_projection(projection) or {}
 
     async def get_projection(self, user_id: int, material_id: int) -> RetrievalProjection | None:
         result = await self.db.execute(
@@ -262,32 +357,11 @@ class RetrievalProjectionService:
             "chunk_count": 0,
             "vector_chunk_count": 0,
         }
-        dialect_name = self.db.bind.dialect.name if self.db.bind is not None else ""
-        if dialect_name == "postgresql":
-            statement = (
-                postgresql_insert(RetrievalProjection)
-                .values(**values)
-                .on_conflict_do_nothing(
-                    constraint="uq_retrieval_projection_source_backend"
-                )
-            )
-            await self.db.execute(statement)
-        elif dialect_name == "sqlite":
-            statement = (
-                sqlite_insert(RetrievalProjection)
-                .values(**values)
-                .on_conflict_do_nothing(
-                    index_elements=["user_id", "source_type", "source_id", "backend"]
-                )
-            )
-            await self.db.execute(statement)
-        else:
-            projection = await self.get_projection(user_id, material_id)
-            if projection is None:
-                projection = RetrievalProjection(**values)
-                self.db.add(projection)
-                await self.db.flush()
-            return projection
+        await self.db.execute(
+            conflict_insert(self.db, RetrievalProjection)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["user_id", "source_type", "source_id", "backend"])
+        )
 
         projection = await self.db.scalar(
             select(RetrievalProjection)
@@ -310,7 +384,6 @@ class RetrievalProjectionService:
         user_id: int,
         operation: str = "ingest",
         force: bool = False,
-        project_ids: Sequence[int] | None = None,
         sync_vectors: bool = True,
     ) -> dict[str, Any]:
         """Serialize one user's vector mutations and reload canonical SQL state."""
@@ -336,7 +409,6 @@ class RetrievalProjectionService:
                 user_id=int(user_id),
                 operation=operation,
                 force=force,
-                project_ids=project_ids,
                 sync_vectors=sync_vectors,
             )
 
@@ -347,7 +419,6 @@ class RetrievalProjectionService:
         user_id: int,
         operation: str = "ingest",
         force: bool = False,
-        project_ids: Sequence[int] | None = None,
         sync_vectors: bool = True,
     ) -> dict[str, Any]:
         """Persist a sparse manifest first; vectors may safely degrade or retry."""
@@ -355,35 +426,31 @@ class RetrievalProjectionService:
         if int(material.user_id) != int(user_id):
             raise PermissionError("Cannot project a material owned by another user")
 
-        normalized_project_ids = (
-            sorted({int(value) for value in project_ids})
-            if project_ids is not None
-            else await self.project_ids(material_id, int(user_id))
-        )
         content = str(material.content or "")
-        content_hash = str(material.content_hash or _sha256(content))
-        source_signature = _sha256(
-            json.dumps(
-                {
-                    "title": str(material.title or ""),
-                    "content_hash": content_hash,
-                    "file_type": str(material.file_type or ""),
-                    "project_ids": normalized_project_ids,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
+        content_hash = _sha256(content.strip())
+        source_signature = _source_signature(material, content_hash)
         config = retrieval_configuration(self.rag)
         projection = await self._ensure_projection(int(user_id), material_id, operation=operation)
-        unchanged = (
-            projection.source_signature == source_signature
-            and projection.configuration_fingerprint == config["fingerprint"]
-        )
+        same_configuration = projection.configuration_fingerprint == config["fingerprint"]
+        if (
+            not force
+            and same_configuration
+            and projection.status == "ready"
+            and projection.source_signature
+            and projection.source_signature != source_signature
+            and projection.source_signature == _legacy_source_signature(
+                material, content_hash, await self.project_ids(material_id, int(user_id))
+            )
+        ):
+            # Vectors indexed under the membership-aware signature still encode
+            # this content; adopt the new signature instead of paying to re-embed.
+            projection.source_signature = source_signature
+            await self.db.commit()
+        unchanged = projection.source_signature == source_signature and same_configuration
         if unchanged and projection.status == "ready" and not force:
             return serialize_projection(projection) or {}
 
-        if projection.source_signature and projection.source_signature != source_signature:
+        if projection.status != "pending" and projection.source_signature and projection.source_signature != source_signature:
             projection.source_version = int(projection.source_version or 1) + 1
         projection.status = "indexing"
         projection.last_operation = operation
@@ -397,6 +464,7 @@ class RetrievalProjectionService:
         projection.last_error = None
         projection.deleted_at = None
         projection.vector_chunk_count = 0
+        indexing_version = int(projection.source_version)
 
         chunks = _chunk_material_text(content) if content.strip() else []
         await self._replace_chunks(projection, chunks)
@@ -404,36 +472,23 @@ class RetrievalProjectionService:
         await self.db.commit()
 
         if not chunks:
-            projection.status = "failed"
-            projection.last_error = "资料没有可索引的文本内容。"
-            await self.db.commit()
-            return serialize_projection(projection) or {}
-
+            return await self._finish_version(projection, indexing_version, status="failed", last_error="资料没有可索引的文本。")
         if not settings.RAG_ENABLED or not sync_vectors:
-            projection.status = "degraded"
-            projection.last_error = (
-                "本次资料未启用向量同步；SQL 关键词检索仍然可用。"
-                if not sync_vectors
-                else "向量检索未启用；SQL 关键词检索仍然可用。"
-            )
-            await self.db.commit()
-            return serialize_projection(projection) or {}
+            return await self._finish_version(projection, indexing_version, status="degraded",
+                last_error="向量同步未启用；SQL 关键词检索仍然可用。")
 
         try:
             await self.rag.initialize()
             status = await self.rag.get_status(int(user_id))
             if not status.get("embedding_enabled"):
-                projection.status = "degraded"
-                projection.last_error = "未配置 embedding；SQL 关键词检索仍然可用。"
-                await self.db.commit()
-                return serialize_projection(projection) or {}
+                return await self._finish_version(projection, indexing_version, status="degraded",
+                    last_error="未配置 embedding；SQL 关键词检索仍然可用。")
 
             count = await self.rag.index_material(
                 material_id=material_id,
                 title=str(material.title or ""),
                 content=content,
                 file_type=material.file_type,
-                project_ids=normalized_project_ids,
                 user_id=int(user_id),
             )
             if int(count or 0) <= 0:
@@ -447,26 +502,13 @@ class RetrievalProjectionService:
                 await self.rag.remove_material(material_id, user_id=int(user_id))
             except Exception as cleanup_exc:
                 cleanup_error = f"；残留清理失败：{safe_exception_summary(cleanup_exc)}"
-            projection.status = "failed"
-            projection.last_error = _safe_error(f"{safe_exception_summary(exc)}{cleanup_error}")
-            projection.vector_chunk_count = 0
-            logger.warning(
-                "retrieval projection failed user_id=%s material_id=%s operation=%s: %s",
-                user_id,
-                material_id,
-                operation,
-                projection.last_error,
-            )
-            await self.db.commit()
-            return serialize_projection(projection) or {}
+            error = _safe_error(f"{safe_exception_summary(exc)}{cleanup_error}")
+            logger.warning("retrieval projection failed user_id=%s material_id=%s: %s", user_id, material_id, error)
+            return await self._finish_version(projection, indexing_version, status="failed",
+                last_error=error, vector_chunk_count=0)
 
-        projection.status = "ready"
-        projection.indexed_version = int(projection.source_version)
-        projection.vector_chunk_count = int(count)
-        projection.last_error = None
-        projection.last_indexed_at = _utcnow()
-        await self.db.commit()
-        return serialize_projection(projection) or {}
+        return await self._finish_version(projection, indexing_version, status="ready",
+            indexed_version=indexing_version, vector_chunk_count=int(count), last_error=None, last_indexed_at=_utcnow())
 
     async def refresh(self, material: Material, *, user_id: int) -> dict[str, Any]:
         return await self.ingest(material, user_id=user_id, operation="refresh")

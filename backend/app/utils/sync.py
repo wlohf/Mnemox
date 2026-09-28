@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.models.sync import SyncReceipt
+from app.utils.dialect import conflict_insert
 
 
 @dataclass(frozen=True)
@@ -44,19 +45,12 @@ async def begin_idempotent_operation(
         "method": method.upper(), "path": path, "body": body,
         "if_match": if_match if isinstance(if_match, str) else None,
     }).encode()).hexdigest()
-    dialect = db.get_bind().dialect.name
-    if dialect == "sqlite":
-        from sqlalchemy.dialects.sqlite import insert
-    elif dialect == "postgresql":
-        from sqlalchemy.dialects.postgresql import insert
-    else:
-        raise RuntimeError("Unsupported sync database")
     # A real DML reservation starts SQLite's physical outer transaction. A first
     # SAVEPOINT followed by RELEASE could otherwise commit the receipt alone in
     # sqlite3 legacy transaction mode. Unique insertion serializes all workers;
     # conflict losers wait for the winner's complete domain+receipt transaction.
     result = await db.execute(
-        insert(SyncReceipt).values(user_id=user_id, idempotency_key=key,
+        conflict_insert(db, SyncReceipt).values(user_id=user_id, idempotency_key=key,
             method=method.upper(), path=path, fingerprint=fingerprint)
         .on_conflict_do_nothing(index_elements=["user_id", "idempotency_key"])
         .returning(SyncReceipt.id)

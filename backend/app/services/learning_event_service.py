@@ -179,6 +179,8 @@ async def record_learning_event(
     data = dict(payload or {})
     event_metadata = dict(metadata or {})
     event_metadata.setdefault("schema_version", EVENT_SCHEMA_VERSION)
+    # Server observation time is distinct from an offline client's event time.
+    event_metadata["recorded_at"] = to_utc_iso(utc_now_db())
     event = LearningEvent(
         user_id=user_id,
         event_type=normalized_type,

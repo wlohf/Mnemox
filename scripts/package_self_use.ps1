@@ -61,6 +61,8 @@ Write-Host "[2/4] Copying runtime files..."
 New-Item -ItemType Directory -Force -Path (Join-Path $Staging "backend") | Out-Null
 Copy-TreeClean (Join-Path $BackendDir "app") (Join-Path $Staging "backend\app")
 Copy-TreeClean (Join-Path $BackendDir "alembic") (Join-Path $Staging "backend\alembic")
+Copy-TreeClean (Join-Path $BackendDir "schema_repairs") (Join-Path $Staging "backend\schema_repairs")
+Copy-TreeClean (Join-Path $BackendDir "scripts") (Join-Path $Staging "backend\scripts")
 Copy-Item (Join-Path $BackendDir "requirements.txt") (Join-Path $Staging "backend\requirements.txt")
 Copy-Item (Join-Path $BackendDir "env.example") (Join-Path $Staging "backend\env.example")
 Copy-Item (Join-Path $BackendDir "alembic.ini") (Join-Path $Staging "backend\alembic.ini")

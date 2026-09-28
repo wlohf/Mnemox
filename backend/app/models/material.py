@@ -1,8 +1,17 @@
 """学习资料相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float
+import hashlib
+
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, event
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
+
+
+def material_content_digest(content: str | None) -> str | None:
+    """Digest of canonical material text, shared with its retrieval projections."""
+    if content is None:
+        return None
+    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
 
 
 class Material(Base):
@@ -10,7 +19,7 @@ class Material(Base):
     __tablename__ = "materials"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     title = Column(String(200), nullable=False, comment="资料标题")
     file_path = Column(String(500), comment="文件路径")
     file_type = Column(String(20), comment="文件类型: pdf, docx, md, txt")
@@ -25,6 +34,13 @@ class Material(Base):
     chapters = relationship("Chapter", back_populates="material", cascade="all, delete-orphan")
     goals = relationship("Goal", back_populates="material", cascade="all, delete-orphan")
     notes = relationship("Note", back_populates="material")
+
+
+@event.listens_for(Material.content, "set")
+def _keep_content_hash_current(target, value, _oldvalue, _initiator):
+    # Retrieval trusts this digest to skip loading bodies, so every ORM write of
+    # ``content`` must refresh it. Code must not update ``content`` via Core SQL.
+    target.content_hash = material_content_digest(value)
 
 
 class Chapter(Base):

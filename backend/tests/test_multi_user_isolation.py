@@ -141,7 +141,7 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessionmaker() as session:
             self.assertIsNotNone(await session.get(Material, material_id))
 
-    async def test_project_material_batch_update_persists_and_reindexes_impacted_materials(self):
+    async def test_project_material_batch_update_persists_without_reembedding(self):
         owner = await self._create_user("project_batch_owner")
         async with self.sessionmaker() as session:
             project = ChatProject(user_id=owner.id, name="数学项目")
@@ -161,7 +161,12 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
         async with self.sessionmaker() as session:
-            with patch("app.routers.chat_projects._reindex_material_for_projects", new_callable=AsyncMock) as reindex:
+            # Project scope is resolved in SQL, so membership changes must not
+            # touch the vector projection (and its paid embedding calls).
+            with patch(
+                "app.services.retrieval_projection_service.RetrievalProjectionService.ingest",
+                new_callable=AsyncMock,
+            ) as ingest:
                 result = await batch_update_materials(
                     project_id,
                     MaterialBatchUpdate(add_material_ids=[add_id], remove_material_ids=[remove_id]),
@@ -172,7 +177,7 @@ class MultiUserIsolationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(result["added"], 1)
             self.assertEqual(result["removed"], 1)
-            self.assertEqual(reindex.await_count, 2)
+            ingest.assert_not_awaited()
 
         async with self.sessionmaker() as session:
             rows = (

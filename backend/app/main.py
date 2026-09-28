@@ -16,6 +16,10 @@ from app.frontend_static import register_frontend_static
 from app.utils.error_safety import safe_exception_summary
 from app.utils.paths import get_project_root, get_uploads_dir, ensure_data_dirs
 
+# Interrupted material vectorization stays pending and is re-ingested at startup;
+# interrupted chat enrichment is best-effort and is dropped.
+BACKGROUND_DRAIN_TIMEOUT_SECONDS = 10.0
+
 
 def create_projection_outbox_worker(session_factory):
     """Build the application-local consumer from environment-backed settings."""
@@ -164,10 +168,18 @@ async def lifespan(app: FastAPI):
             from app.ai.rag_service import get_rag_service
             from app.models.material import Material
             from app.models.retrieval import RetrievalProjection
-            from app.services.retrieval_projection_service import RetrievalProjectionService
+            from app.services.retrieval_projection_service import (
+                RetrievalProjectionService,
+                schedule_incompatible_vector_reset,
+            )
             from sqlalchemy import select, func
 
             rag = get_rag_service()
+            # A dimension mismatch seen by any request resets the shared
+            # collection once, serialized with ingests, and flags projections.
+            rag.set_incompatibility_handler(
+                lambda: schedule_incompatible_vector_reset(async_session_maker, rag)
+            )
             await rag.initialize()
 
             # Recover missing/stale manifests and interrupted deletes without
@@ -189,6 +201,12 @@ async def lifespan(app: FastAPI):
                     )
                     or 0
                 )
+                stale_projection_count = int(await check_session.scalar(
+                    select(func.count()).select_from(RetrievalProjection).join(Material,
+                        (Material.id == RetrievalProjection.source_id) & (Material.user_id == RetrievalProjection.user_id))
+                    .where(RetrievalProjection.source_type == "material",
+                           RetrievalProjection.content_hash.is_distinct_from(Material.content_hash))
+                ) or 0)
                 recovery_count = int(
                     await check_session.scalar(
                         select(func.count()).select_from(RetrievalProjection).where(
@@ -201,6 +219,7 @@ async def lifespan(app: FastAPI):
                 (status.get("total_chunks", 0) == 0 and material_count > 0)
                 or active_projection_count < material_count
                 or recovery_count > 0
+                or stale_projection_count > 0
             ):
                 import asyncio
 
@@ -304,6 +323,14 @@ async def lifespan(app: FastAPI):
             )
         yield
     finally:
+        # Request-detached work (chat enrichment, material vectorization) uses
+        # the database; let it finish briefly before workers and the engine stop.
+        try:
+            from app.services.background_runner import drain_background_runners
+
+            await drain_background_runners(timeout=BACKGROUND_DRAIN_TIMEOUT_SECONDS)
+        except Exception as exc:
+            logger.warning("后台任务收尾失败: %s", safe_exception_summary(exc))
         if knowledge_projection_worker is not None:
             try:
                 await knowledge_projection_worker.stop()
@@ -542,6 +569,9 @@ app.include_router(concepts.router, prefix="/api/concepts", tags=["概念图谱"
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Claim 抽取"])
 app.include_router(learner_model.router, prefix="/api/learner-model", tags=["学习者模型"])
 app.include_router(outbox_operations.router, prefix="/internal/outbox")
+from app.routers import understanding
+app.include_router(understanding.router, prefix="/api/understanding", tags=["阶段性理解"])
+
 
 ensure_data_dirs()
 

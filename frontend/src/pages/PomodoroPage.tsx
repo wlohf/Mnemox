@@ -39,6 +39,7 @@ import {
 import ReactECharts from 'echarts-for-react'
 import { usePomodoroStore, type DateRange, type PomodoroRecord } from '../stores/pomodoroStore'
 import { PageShell } from '../components/PageShell'
+import { useAuthStore } from '../stores/authStore'
 import { getApiErrorMessage, withAuthQuery } from '../services/apiClient'
 import { uploadBackgroundImageStrict } from '../services/imageApi'
 import { getCurrentQuote, type MotivationQuote } from '../services/motivationApi'
@@ -188,6 +189,14 @@ function makeEmptyStats(): ReusableTaskStats {
 }
 
 export function PomodoroPage() {
+  const user = useAuthStore(state => state.user)
+  const accountId = user ? `${user.id}:${encodeURIComponent(user.created_at)}` : 'anonymous'
+  return <AccountPomodoroPage key={accountId} accountId={accountId} />
+}
+
+function AccountPomodoroPage({ accountId }: { accountId: string }) {
+  const taskStorageKey = `${TASK_STORAGE_KEY}:user:${accountId}`
+  const taskSetStorageKey = `${TASK_SET_STORAGE_KEY}:user:${accountId}`
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const coachAttemptId = searchParams.get('coach_attempt')?.trim() || null
@@ -218,6 +227,7 @@ export function PomodoroPage() {
     backgroundImage,
     setBackgroundImage,
     loadBackgroundImagePreference,
+    lastSyncError, syncPendingRecords,
   } = usePomodoroStore()
 
   const [range, setRange] = useState<DateRange>('week')
@@ -228,10 +238,10 @@ export function PomodoroPage() {
   const [quote, setQuote] = useState<MotivationQuote | null>(null)
   const [backgroundUploading, setBackgroundUploading] = useState(false)
   const [taskSets, setTaskSets] = useState<ReusablePomodoroTaskSet[]>(() => (
-    normalizeTaskSets(readStoredJson<ReusablePomodoroTaskSet[]>(TASK_SET_STORAGE_KEY, DEFAULT_TASK_SETS))
+    normalizeTaskSets(readStoredJson<ReusablePomodoroTaskSet[]>(taskSetStorageKey, DEFAULT_TASK_SETS))
   ))
   const [tasks, setTasks] = useState<ReusablePomodoroTask[]>(() => (
-    normalizeTasks(readStoredJson<ReusablePomodoroTask[]>(TASK_STORAGE_KEY, []), normalizeTaskSets(readStoredJson<ReusablePomodoroTaskSet[]>(TASK_SET_STORAGE_KEY, DEFAULT_TASK_SETS)))
+    normalizeTasks(readStoredJson<ReusablePomodoroTask[]>(taskStorageKey, []), normalizeTaskSets(readStoredJson<ReusablePomodoroTaskSet[]>(taskSetStorageKey, DEFAULT_TASK_SETS)))
   ))
   const [activeSetId, setActiveSetId] = useState<'all' | string>('all')
   const [taskModalOpen, setTaskModalOpen] = useState(false)
@@ -261,7 +271,7 @@ export function PomodoroPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(TASK_SET_STORAGE_KEY, JSON.stringify(taskSets))
+      localStorage.setItem(taskSetStorageKey, JSON.stringify(taskSets))
     } catch {
       // ignore storage failures
     }
@@ -269,7 +279,7 @@ export function PomodoroPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks))
+      localStorage.setItem(taskStorageKey, JSON.stringify(tasks))
     } catch {
       // ignore storage failures
     }
@@ -286,7 +296,7 @@ export function PomodoroPage() {
       const key = normalizeTaskTitle(record.taskName)
       const existing = map.get(key) || makeEmptyStats()
       map.set(key, {
-        count: existing.count + 1,
+        count: existing.count + (record.completed === false ? 0 : 1),
         minutes: existing.minutes + record.duration,
         lastCompletedAt: !existing.lastCompletedAt || record.completedAt > existing.lastCompletedAt
           ? record.completedAt
@@ -392,7 +402,7 @@ export function PomodoroPage() {
   }
 
   const confirmStop = () => {
-    completeTimer(undefined, { startBreak: false, completed: false, stopReason: 'interrupted' })
+    completeTimer(undefined, { startBreak: false, completed: false, stopReason: 'interrupted', note: stopReason.trim() || undefined })
     message.success(stopReason.trim() ? '已记录本次停止原因' : '番茄钟已停止')
     setStopReasonModalVisible(false)
     setStopReason('')
@@ -707,6 +717,8 @@ export function PomodoroPage() {
             showUploadList={false}
             beforeUpload={handleBackgroundUpload}
           >
+      {lastSyncError && <Alert type="warning" showIcon message="专注记录尚未同步" description={lastSyncError}
+        action={<Button onClick={() => void syncPendingRecords()}>重试同步</Button>} />}
             <Button icon={<PictureOutlined />} loading={backgroundUploading}>
               {backgroundImage ? '更换背景' : '上传背景'}
             </Button>
@@ -887,7 +899,7 @@ export function PomodoroPage() {
 
           <Row gutter={[16, 16]} style={{ marginTop: 18 }}>
             <Col xs={12} md={6}>
-              <Card size="small"><Statistic title="累计番茄" value={cumulative.totalCount} suffix="个" /></Card>
+              <Card size="small"><Statistic title="完成番茄" value={cumulative.totalCount} suffix="个" /></Card>
             </Col>
             <Col xs={12} md={6}>
               <Card size="small"><Statistic title="累计时长" value={cumulative.totalHours.toFixed(1)} suffix="小时" /></Card>
@@ -1040,8 +1052,8 @@ export function PomodoroPage() {
               locale={{ emptyText: '暂无专注历史' }}
               renderItem={(record) => (
                 <List.Item>
-                  <span>{formatShortDateTime(record.completedAt)}</span>
-                  <span>{formatDuration(record.duration)}</span>
+                  <span>{formatShortDateTime(record.completedAt)} {record.completed === false && <Tag color="orange">已中断</Tag>}</span>
+                  <span>{formatDuration(record.duration)}{record.note && <Tooltip title={record.note}> · 停止原因</Tooltip>}</span>
                 </List.Item>
               )}
             />

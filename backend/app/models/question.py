@@ -1,5 +1,5 @@
 """题目和答题记录相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, Float, text
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, JSON, Float, text, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -10,7 +10,7 @@ class Question(Base):
     __tablename__ = "questions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False, index=True, comment="所属章节")
     question_type = Column(String(20), comment="题型: choice, fill_blank, short_answer, essay")
     content = Column(Text, nullable=False, comment="题目内容")
@@ -48,7 +48,7 @@ class WrongQuestion(Base):
     __tablename__ = "wrong_questions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     question_id = Column(Integer, ForeignKey("questions.id"), nullable=False, unique=True, comment="题目ID")
     first_wrong_at = Column(DateTime, comment="首次做错时间")
     last_wrong_at = Column(DateTime, comment="最近做错时间")
@@ -75,9 +75,10 @@ class WrongQuestion(Base):
 class ReviewSchedule(Base):
     """复习计划表（FSRS 调度，legacy SM-2 字段保留一个版本周期，见决策 D1）"""
     __tablename__ = "review_schedule"
+    __table_args__ = (Index("uq_review_schedule_user_item", "user_id", "item_type", "item_id", unique=True),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     item_type = Column(String(20), comment="复习项类型: chapter, question")
     item_id = Column(Integer, comment="复习项ID")
     scheduled_date = Column(DateTime, index=True, comment="计划复习日期")
@@ -96,3 +97,10 @@ class ReviewSchedule(Base):
     fsrs_state = Column(Integer, nullable=True, comment="FSRS 状态 1=Learning 2=Review 3=Relearning")
     fsrs_step = Column(Integer, nullable=True, comment="FSRS 学习步骤")
     last_review_at = Column(DateTime, nullable=True, comment="最近一次复习时间")
+
+
+class ReviewScheduleMergeAudit(Base):
+    __tablename__ = "review_schedule_merge_audit"
+    original_id = Column(Integer, primary_key=True)
+    kept_id = Column(Integer, nullable=False)
+    snapshot = Column(JSON, nullable=False)

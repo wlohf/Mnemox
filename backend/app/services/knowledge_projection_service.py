@@ -8,8 +8,6 @@ from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import exists, func, or_, select
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -32,6 +30,7 @@ from app.services.sparse_knowledge_index import (
     create_sparse_knowledge_index,
     mark_sparse_knowledge_dirty,
 )
+from app.utils.dialect import conflict_insert
 from app.utils.error_safety import safe_exception_summary
 from app.utils.operation_lock import serialized_user_operation
 from app.utils.utc import to_utc_iso, utc_now_db
@@ -209,30 +208,11 @@ async def enqueue_knowledge_projection(
         "attempts": 0,
         "available_at": utc_now_db(),
     }
-    bind = db.get_bind()
-    dialect = bind.dialect.name if bind is not None else ""
-    if dialect == "postgresql":
-        await db.execute(
-            postgresql_insert(KnowledgeProjectionOutbox)
-            .values(**values)
-            .on_conflict_do_nothing(constraint="uq_knowledge_projection_outbox_user_key")
-        )
-    elif dialect == "sqlite":
-        await db.execute(
-            sqlite_insert(KnowledgeProjectionOutbox)
-            .values(**values)
-            .on_conflict_do_nothing(index_elements=["user_id", "idempotency_key"])
-        )
-    else:
-        existing = await db.scalar(
-            select(KnowledgeProjectionOutbox).where(
-                KnowledgeProjectionOutbox.user_id == int(user_id),
-                KnowledgeProjectionOutbox.idempotency_key == str(idempotency_key)[:200],
-            )
-        )
-        if existing is None:
-            db.add(KnowledgeProjectionOutbox(**values))
-            await db.flush()
+    await db.execute(
+        conflict_insert(db, KnowledgeProjectionOutbox)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["user_id", "idempotency_key"])
+    )
     row = await db.scalar(
         select(KnowledgeProjectionOutbox).where(
             KnowledgeProjectionOutbox.user_id == int(user_id),

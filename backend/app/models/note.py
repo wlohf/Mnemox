@@ -10,7 +10,7 @@ class Note(Base):
     __tablename__ = "notes"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="所属用户")
     material_id = Column(Integer, ForeignKey("materials.id"), comment="关联资料")
     chapter_id = Column(Integer, ForeignKey("chapters.id"), comment="关联章节")
     title = Column(String(200), comment="笔记标题")

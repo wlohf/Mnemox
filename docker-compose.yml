@@ -19,6 +19,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/study_assistant
+      MNEMOX_DATA_DIR: /app/data
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
       AI_KEY_ENCRYPTION_SECRET: ${AI_KEY_ENCRYPTION_SECRET:-}
       DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
@@ -52,6 +53,10 @@ services:
       # Local-only Stage 6 fallback. Override this before any non-local Shadow use.
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-mnemox-shadow-local}
       NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+      UNDERSTANDING_ENABLED: ${UNDERSTANDING_ENABLED:-true}
+      GRAPHITI_EPISODES_ENABLED: ${GRAPHITI_EPISODES_ENABLED:-false}
+      UNDERSTANDING_DAILY_MODEL_CALLS: ${UNDERSTANDING_DAILY_MODEL_CALLS:-40}
+      UNDERSTANDING_DAILY_TOKENS: ${UNDERSTANDING_DAILY_TOKENS:-160000}
       GRAPHITI_ENABLED: ${GRAPHITI_ENABLED:-false}
       GRAPHITI_SHADOW: ${GRAPHITI_SHADOW:-false}
       GRAPHITI_TELEMETRY_ENABLED: "false"
@@ -81,6 +86,7 @@ services:
       AGENT_KERNEL_DAILY_MODEL_CALLS_PER_USER: ${AGENT_KERNEL_DAILY_MODEL_CALLS_PER_USER:-30}
       AGENT_KERNEL_DAILY_ESTIMATED_TOKENS_PER_USER: ${AGENT_KERNEL_DAILY_ESTIMATED_TOKENS_PER_USER:-128000}
     volumes:
+      - runtime_data:/app/data
       - uploads:/app/data/uploads
       - chromadb:/app/data/chromadb
 
@@ -110,6 +116,7 @@ services:
       start_period: 20s
 
 volumes:
+  runtime_data:
   pgdata:
   uploads:
   chromadb:

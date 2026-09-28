@@ -1,20 +1,17 @@
-import { useEffect, useState } from 'react'
-import { Button, Card, Col, Input, InputNumber, List, Row, Segmented, Space, Tag, message } from 'antd'
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import { Alert, Button, Card, Col, Input, InputNumber, List, Modal, Row, Segmented, Space, Tag, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import {
   aiGenerateAnkiCards,
-  createAnkiCard,
-  exportAnkiCardsCSV,
-  getAnkiQueue,
   importAnkiCardsCSV,
-  listAnkiCards,
-  reviewAnkiCard,
-  type AnkiCardItem,
 } from '../services/ankiApi'
+import { useOfflineAnki } from '../hooks/useOfflineAnki'
+import { syncEngine } from '../sync/SyncEngine'
+import { getApiErrorMessage } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
 // 翻转状态：记录哪些卡片已翻转
-type FlippedMap = Record<number, boolean>
+type FlippedMap = Record<string, boolean>
 
 const { TextArea } = Input
 
@@ -22,10 +19,18 @@ export function AnkiPage() {
   const navigate = useNavigate()
   const [scope, setScope] = useState<'due' | 'all'>('due')
   const [queueMode, setQueueMode] = useState<'review' | 'new' | 'all'>('review')
-  const [cards, setCards] = useState<AnkiCardItem[]>([])
-  const [loading, setLoading] = useState(false)
-  const [newQueueCount, setNewQueueCount] = useState(0)
-  const [reviewQueueCount, setReviewQueueCount] = useState(0)
+  const { cards: allCards, pendingReviews, createCard, updateCard, deleteCard, reviewCard } = useOfflineAnki()
+  const sync = useSyncExternalStore(syncEngine.subscribe.bind(syncEngine), syncEngine.getSnapshot)
+  const loading = sync.status === 'syncing' && allCards.length === 0
+  const due = (date: string | null) => !date || Date.parse(date) <= Date.now()
+  const available = allCards.filter(card => !pendingReviews.has(card._localId))
+  const newQueue = available.filter(card => card.repetitions === 0 && due(card.due_at))
+  const reviewQueue = available.filter(card => card.repetitions > 0 && due(card.due_at))
+  const cards = (queueMode === 'new' ? newQueue : queueMode === 'review' ? reviewQueue
+    : allCards.filter(card => scope === 'all' || due(card.due_at)))
+    .sort((a, b) => (a.due_at || '').localeCompare(b.due_at || '') || a._localId.localeCompare(b._localId))
+  const newQueueCount = newQueue.length, reviewQueueCount = reviewQueue.length
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [flipped, setFlipped] = useState<FlippedMap>({})
 
   const [manualFront, setManualFront] = useState('')
@@ -38,53 +43,23 @@ export function AnkiPage() {
   const [aiCount, setAiCount] = useState(5)
   const [aiTags, setAiTags] = useState('')
 
-  const loadCards = async () => {
-    setLoading(true)
-    setFlipped({})
-    if (queueMode === 'all') {
-      const data = await listAnkiCards(scope, 100)
-      setCards(data)
-      setReviewQueueCount(data.filter((c) => c.repetitions > 0).length)
-      setNewQueueCount(data.filter((c) => c.repetitions === 0).length)
-      setLoading(false)
-      return
-    }
-
-    const queue = await getAnkiQueue(50, 100)
-    if (!queue) {
-      setCards([])
-      setLoading(false)
-      return
-    }
-    setNewQueueCount(queue.new_cards.length)
-    setReviewQueueCount(queue.review_cards.length)
-    setCards(queueMode === 'new' ? queue.new_cards : queue.review_cards)
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    void loadCards()
-  }, [scope, queueMode])
+  const loadCards = () => syncEngine.syncAll()
+  useEffect(() => { void loadCards() }, [])
+  useEffect(() => { setFlipped({}) }, [scope, queueMode])
 
   const handleCreateManual = async () => {
     if (!manualFront.trim() || !manualBack.trim()) {
       message.warning('请填写卡片正面和背面')
       return
     }
-    const created = await createAnkiCard({
-      front: manualFront.trim(),
-      back: manualBack.trim(),
-      tags: manualTags.trim() || undefined,
-    })
-    if (!created) {
-      message.error('创建失败')
-      return
-    }
-    message.success('卡片已创建')
-    setManualFront('')
-    setManualBack('')
-    setManualTags('')
-    void loadCards()
+    try {
+      const data = { front: manualFront.trim(), back: manualBack.trim(), tags: manualTags.trim() }
+      if (editingId) await updateCard(editingId, data)
+      else await createCard(data)
+      message.success('已保存到本机，联网后自动同步')
+      setEditingId(null)
+      setManualFront(''); setManualBack(''); setManualTags('')
+    } catch (error) { message.error(getApiErrorMessage(error, '本地保存失败，请重试')) }
   }
 
   const handleAIGenerate = async () => {
@@ -106,34 +81,23 @@ export function AnkiPage() {
     void loadCards()
   }
 
-  const handleReview = async (cardId: number, quality: number) => {
-    const updated = await reviewAnkiCard(cardId, quality)
-    if (!updated) {
-      message.error('复习提交失败')
-      return
-    }
-    message.success('已记录本次复习')
-    void loadCards()
+  const handleReview = async (cardId: string, quality: number) => {
+    try {
+      await reviewCard(cardId, quality)
+      message.success('复习已保存到本机，等待云端确认')
+    } catch (error) { message.error(getApiErrorMessage(error, '复习保存失败')) }
   }
 
-  const toggleFlip = (cardId: number) => {
-    setFlipped(prev => ({ ...prev, [cardId]: !prev[cardId] }))
-  }
+  const toggleFlip = (cardId: string) => setFlipped(prev => ({ ...prev, [cardId]: !prev[cardId] }))
 
-  const handleExportCSV = async () => {
-    const result = await exportAnkiCardsCSV()
-    if (!result) {
-      message.error('导出失败')
-      return
-    }
-    const blob = new Blob([result.csv], { type: 'text/csv;charset=utf-8;' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = result.filename || 'anki_cards.csv'
-    a.click()
-    window.URL.revokeObjectURL(url)
-    message.success(`已导出 ${result.count} 张卡片`)
+  const handleExportCSV = () => {
+    const quote = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const csv = [['front', 'back', 'tags', 'note'], ...allCards.map(c => [c.front, c.back, c.tags, c.note])]
+      .map(row => row.map(quote).join(',')).join('\r\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' }))
+    const a = document.createElement('a'); a.href = url; a.download = 'anki-local-cards.csv'; a.click()
+    URL.revokeObjectURL(url)
+    message.success(`已导出本机 ${allCards.length} 张卡片（包含待同步内容）`)
   }
 
   const handleImportCSV = async () => {
@@ -153,18 +117,23 @@ export function AnkiPage() {
 
   return (
     <PageShell title="Anki卡片" onBack={() => navigate('/')} maxWidth={1280}>
+      {(sync.status === 'offline' || sync.lastError || pendingReviews.size > 0) && <Alert showIcon type="info"
+        message={sync.lastError || (sync.status === 'offline' ? '当前离线：显示本机缓存，编辑和复习会在联网后同步' : `${pendingReviews.size} 次复习等待同步确认`)}
+        action={<Button onClick={() => void syncEngine.syncAll({ retryFailed: true })}>重试同步</Button>} />}
+
       <Row gutter={[12, 12]}>
         <Col xs={24} lg={10}>
-          <Card title="手动新增卡片" size="small" style={{ marginBottom: 12 }}>
+          <Card title={editingId ? "编辑卡片" : "手动新增卡片"} size="small" style={{ marginBottom: 12 }}>
             <Space direction="vertical" style={{ width: '100%' }}>
               <Input placeholder="正面（问题）" value={manualFront} onChange={(e) => setManualFront(e.target.value)} />
               <TextArea rows={4} placeholder="背面（答案）" value={manualBack} onChange={(e) => setManualBack(e.target.value)} />
               <Input placeholder="标签（逗号分隔，可选）" value={manualTags} onChange={(e) => setManualTags(e.target.value)} />
-              <Button type="primary" onClick={handleCreateManual}>创建卡片</Button>
+              <Button type="primary" onClick={handleCreateManual}>{editingId ? '保存修改' : '创建卡片'}</Button>
+              {editingId && <Button onClick={() => setEditingId(null)}>取消编辑</Button>}
             </Space>
           </Card>
 
-          <Card title="AI 注入卡片" size="small">
+          <Card title="AI 注入卡片（需联网）" size="small">
             <Space direction="vertical" style={{ width: '100%' }}>
               <Input placeholder="主题（例如：六级阅读长难句）" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} />
               <TextArea
@@ -175,7 +144,7 @@ export function AnkiPage() {
               />
               <InputNumber min={1} max={20} value={aiCount} onChange={(v) => setAiCount(v || 5)} style={{ width: '100%' }} />
               <Input placeholder="标签（逗号分隔，可选）" value={aiTags} onChange={(e) => setAiTags(e.target.value)} />
-              <Button onClick={handleAIGenerate}>AI 生成并注入</Button>
+              <Button disabled={!sync.online} onClick={handleAIGenerate}>AI 生成并注入</Button>
             </Space>
           </Card>
 
@@ -188,7 +157,7 @@ export function AnkiPage() {
                 value={csvText}
                 onChange={(e) => setCsvText(e.target.value)}
               />
-              <Button onClick={handleImportCSV}>导入 CSV</Button>
+              <Button disabled={!sync.online} onClick={handleImportCSV}>导入 CSV（需联网）</Button>
             </Space>
           </Card>
         </Col>
@@ -225,21 +194,27 @@ export function AnkiPage() {
             <List
               loading={loading}
               dataSource={cards}
+              rowKey="_localId"
+              pagination={{ pageSize: 25, showSizeChanger: true, showTotal: total => `共 ${total} 张` }}
               locale={{ emptyText: '暂无卡片' }}
               renderItem={(card) => {
-                const isFlipped = !!flipped[card.id]
+                const isFlipped = !!flipped[card._localId]
                 return (
                   <List.Item
-                    actions={isFlipped ? [
-                      <Button size="small" danger onClick={() => handleReview(card.id, 2)}>忘记</Button>,
-                      <Button size="small" onClick={() => handleReview(card.id, 3)}>一般</Button>,
-                      <Button size="small" type="primary" onClick={() => handleReview(card.id, 5)}>熟练</Button>,
+                    actions={pendingReviews.has(card._localId) ? [<Tag key="pending">复习待同步</Tag>] : isFlipped ? [
+                      <Button size="small" danger onClick={() => handleReview(card._localId, 2)}>忘记</Button>,
+                      <Button size="small" onClick={() => handleReview(card._localId, 3)}>一般</Button>,
+                      <Button size="small" type="primary" onClick={() => handleReview(card._localId, 5)}>熟练</Button>,
                     ] : [
-                      <Button size="small" onClick={() => toggleFlip(card.id)}>翻转查看答案</Button>,
+                      <Button size="small" onClick={() => toggleFlip(card._localId)}>翻转查看答案</Button>,
                     ]}
                   >
                     <List.Item.Meta
-                      title={<span>{card.front}</span>}
+                      title={<Space wrap><span>{card.front}</span>
+                        {card._syncStatus !== 'synced' && <Tag>{card._syncStatus === 'conflicted' ? '同步冲突：请在账户菜单处理' : card._syncStatus === 'sync_failed' ? '同步失败，内容已保留' : '待同步'}</Tag>}
+                        <Button size="small" disabled={pendingReviews.has(card._localId)} onClick={() => { setEditingId(card._localId); setManualFront(card.front); setManualBack(card.back); setManualTags(card.tags || '') }}>编辑</Button>
+                        <Button size="small" danger disabled={pendingReviews.has(card._localId)} onClick={() => Modal.confirm({ title: '删除这张卡片？', onOk: () => deleteCard(card._localId) })}>删除</Button>
+                      </Space>}
                       description={isFlipped ? (
                         <Space direction="vertical" size={4}>
                           <span style={{ whiteSpace: 'pre-wrap' }}>{card.back}</span>

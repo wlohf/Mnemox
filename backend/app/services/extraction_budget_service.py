@@ -11,13 +11,12 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.extraction_budget import ExtractionCall, ExtractionDailyBudget
 from app.models.knowledge import KnowledgeExtractionRun, KnowledgeUnit
+from app.utils.dialect import SUPPORTED_DIALECTS, conflict_insert, dialect_name
 from app.utils.utc import to_db_utc, utc_now_db
 
 
@@ -32,12 +31,10 @@ class ExtractionLeaseLost(RuntimeError):
 _SETTLED_STATES = frozenset({"succeeded", "failed", "unknown"})
 
 
-def _dialect_name(db: AsyncSession) -> str:
-    bind = db.get_bind()
-    name = getattr(getattr(bind, "dialect", None), "name", "")
-    if name not in {"sqlite", "postgresql"}:
+def _require_supported_database(db: AsyncSession) -> None:
+    # Fail before any reservation side effect rather than midway through one.
+    if dialect_name(db) not in SUPPORTED_DIALECTS:
         raise RuntimeError("Extraction budget accounting requires SQLite or PostgreSQL.")
-    return str(name)
 
 
 def _positive_int(value: Any, *, name: str) -> int:
@@ -89,20 +86,15 @@ def _reported_total_tokens(usage: dict[str, Any]) -> int:
 async def _ensure_daily_bucket(
     db: AsyncSession,
     *,
-    dialect: str,
     user_id: int,
     execution_day,
 ) -> None:
     values = {"user_id": user_id, "execution_day": execution_day, "charged_tokens": 0}
-    if dialect == "postgresql":
-        statement = postgresql_insert(ExtractionDailyBudget).values(**values).on_conflict_do_nothing(
-            constraint="uq_extraction_daily_budget_user_day"
-        )
-    else:
-        statement = sqlite_insert(ExtractionDailyBudget).values(**values).on_conflict_do_nothing(
-            index_elements=["user_id", "execution_day"]
-        )
-    await db.execute(statement)
+    await db.execute(
+        conflict_insert(db, ExtractionDailyBudget)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["user_id", "execution_day"])
+    )
 
 
 async def _refresh_run_usage(db: AsyncSession, run_id: int) -> None:
@@ -142,7 +134,7 @@ async def reserve_extraction_call(
     inspected.  PostgreSQL additionally gets a real row lock from the select.
     """
 
-    dialect = _dialect_name(db)
+    _require_supported_database(db)
     normalized_call_id = str(call_id).strip()
     normalized_lease = str(lease_token).strip()
     if not normalized_call_id or len(normalized_call_id) > 36:
@@ -240,7 +232,6 @@ async def reserve_extraction_call(
     # UPDATE makes the preflight cap atomic across runs and worker processes.
     await _ensure_daily_bucket(
         db,
-        dialect=dialect,
         user_id=owner_id,
         execution_day=execution_day,
     )
@@ -288,7 +279,7 @@ async def settle_extraction_call(
 ) -> bool:
     """Settle a reservation once and charge any reported excess exactly once."""
 
-    dialect = _dialect_name(db)
+    _require_supported_database(db)
     normalized_state = str(state).strip().lower()
     if normalized_state not in _SETTLED_STATES:
         raise ValueError("state must be succeeded, failed, or unknown")
@@ -325,7 +316,6 @@ async def settle_extraction_call(
     if excess > 0:
         await _ensure_daily_bucket(
             db,
-            dialect=dialect,
             user_id=int(call.user_id),
             execution_day=call.execution_day,
         )

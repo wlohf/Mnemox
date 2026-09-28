@@ -25,13 +25,105 @@ const desktopPreferencesMock = vi.hoisted(() => ({
 
 vi.mock('../services/desktopPreferences', () => desktopPreferencesMock)
 
-import { POMODORO_BACKGROUND_PREFERENCE_KEY, usePomodoroStore } from './pomodoroStore'
+import { setApiSessionUser } from '../services/sessionScope'
+import { switchPomodoroAccount, POMODORO_BACKGROUND_PREFERENCE_KEY, usePomodoroStore } from './pomodoroStore'
 
 describe('pomodoro desktop reminder sync', () => {
-  beforeEach(() => {
+  it('ignores rapid repeated starts without losing the active identity', () => {
+    usePomodoroStore.getState().startTimer('Read', 25)
+    const id = usePomodoroStore.getState().currentStartRequestKey
+    usePomodoroStore.getState().startTimer('Read', 25)
+    expect(usePomodoroStore.getState().currentStartRequestKey).toBe(id)
+    expect(pomodoroApiMock.startPomodoro).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves interrupted focus time without counting it as a completed pomodoro', async () => {
+    usePomodoroStore.getState().startTimer('Read', 25)
+    await Promise.resolve()
+    usePomodoroStore.getState().completeTimer(300, { startBreak: false, completed: false, stopReason: 'interrupted' })
+    expect(usePomodoroStore.getState().getStats()).toMatchObject({ todayCount: 0, todayMinutes: 5 })
+    expect(usePomodoroStore.getState().getCumulativeStats()).toMatchObject({ totalCount: 0, totalMinutes: 5 })
+  })
+
+  it('never counts an ongoing pause as focus after window focus or explicit stop', async () => {
+    usePomodoroStore.getState().startTimer('Read', 25)
+    await Promise.resolve()
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    usePomodoroStore.getState().pauseTimer()
+    vi.advanceTimersByTime(30 * 60 * 1000)
+    usePomodoroStore.getState().tick()
+    expect(usePomodoroStore.getState().remainingTime).toBe(20 * 60)
+    expect(usePomodoroStore.getState().records).toHaveLength(0)
+    expect(pomodoroApiMock.completePomodoro).not.toHaveBeenCalled()
+    usePomodoroStore.getState().completeTimer(undefined, { startBreak: false, completed: false, stopReason: 'interrupted' })
+    expect(usePomodoroStore.getState().records[0].duration).toBe(5)
+  })
+
+  it('keeps pause accounting when the backend refresh returns the same active timer', async () => {
+    usePomodoroStore.getState().startTimer('Read', 25)
+    await Promise.resolve()
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    usePomodoroStore.getState().pauseTimer()
+    pomodoroApiMock.getRecentPomodoros.mockResolvedValueOnce([{ id: 7, duration: 25, task_name: 'Read', started_at: '2026-05-23T10:00:00Z', ended_at: null, completed: false }])
+    await usePomodoroStore.getState().refreshRecordsFromBackend()
+    expect(usePomodoroStore.getState().isPaused).toBe(true)
+    expect(usePomodoroStore.getState().remainingTime).toBe(1200)
+  })
+
+  it('does not pause the next break when focus expires at the pause click', () => {
+    usePomodoroStore.getState().startTimer('Read', 25)
+    vi.advanceTimersByTime(25 * 60 * 1000)
+    usePomodoroStore.getState().pauseTimer()
+    expect(usePomodoroStore.getState()).toMatchObject({ timerMode: 'break', isRunning: true, isPaused: false })
+    expect(usePomodoroStore.getState().records).toHaveLength(1)
+  })
+  it('keeps account records isolated and ignores late start responses', async () => {
+    let finish!: (value: { id: number }) => void
+    pomodoroApiMock.startPomodoro.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    usePomodoroStore.getState().startTimer('A private timer', 25)
+    usePomodoroStore.getState().addRecord('A offline record', 5)
+    setApiSessionUser(8)
+    await switchPomodoroAccount(8)
+    finish({ id: 77 })
+    await Promise.resolve()
+    expect(usePomodoroStore.getState().records).toHaveLength(0)
+    expect(usePomodoroStore.getState().currentBackendId).toBeNull()
+    expect(usePomodoroStore.getState().currentTask).toBe('')
+    setApiSessionUser(7)
+    await switchPomodoroAccount(7)
+    expect(usePomodoroStore.getState().records[0].taskName).toBe('A offline record')
+    expect(usePomodoroStore.getState().currentTask).toBe('A private timer')
+  })
+
+  it('retries the same record identity and preserves an interrupted outcome', async () => {
+    pomodoroApiMock.batchCreatePomodoros.mockRejectedValueOnce(new Error('response lost'))
+    usePomodoroStore.getState().startTimer('Read', 25)
+    vi.advanceTimersByTime(5 * 60 * 1000)
+    usePomodoroStore.getState().completeTimer(undefined, { completed: false, stopReason: 'distracted', note: '电话打断' })
+    await usePomodoroStore.getState().syncPendingRecords()
+    const first = pomodoroApiMock.batchCreatePomodoros.mock.calls[0][0][0]
+    expect(usePomodoroStore.getState().records[0].synced).toBe(false)
+    await usePomodoroStore.getState().syncPendingRecords()
+    const retry = pomodoroApiMock.batchCreatePomodoros.mock.calls[1][0][0]
+    expect(retry.client_record_id).toBe(first.client_record_id)
+    expect(retry).toMatchObject({ completed: false, stop_reason: 'distracted', duration: 5, note: '电话打断' })
+  })
+
+  it('does not attribute ownerless legacy storage to the current account', async () => {
+    localStorage.setItem('pomodoro-storage', JSON.stringify({ state: { records: [{ id: 'legacy', taskName: 'private' }] } }))
+    await switchPomodoroAccount(8)
+    expect(usePomodoroStore.getState().records).toHaveLength(0)
+    expect(localStorage.getItem('pomodoro-storage')).toContain('private')
+  })
+
+  beforeEach(async () => {
+    window.localStorage.clear()
+    setApiSessionUser(7)
+    await switchPomodoroAccount(7)
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-05-23T10:00:00Z'))
     vi.clearAllMocks()
+    pomodoroApiMock.batchCreatePomodoros.mockResolvedValue({ ids: [8] })
     usePomodoroStore.setState({
       isRunning: false,
       isPaused: false,
@@ -77,7 +169,7 @@ describe('pomodoro desktop reminder sync', () => {
   it('persists an active focus timer so it can survive a desktop restart', () => {
     usePomodoroStore.getState().startTimer('Read', 25)
 
-    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage:user:7') || '{}')
 
     expect(stored.state).toMatchObject({
       isRunning: true,
@@ -108,7 +200,7 @@ describe('pomodoro desktop reminder sync', () => {
 
     await usePomodoroStore.getState().refreshRecordsFromBackend()
 
-    expect(usePomodoroStore.getState().records).toEqual([
+    expect(usePomodoroStore.getState().records).toMatchObject([
       {
         id: 'backend-42',
         backendId: 42,
@@ -183,12 +275,10 @@ describe('pomodoro desktop reminder sync', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(pomodoroApiMock.completePomodoro).toHaveBeenCalledWith(
-      71,
-      false,
-      undefined,
-      1,
-      'interrupted',
+    expect(pomodoroApiMock.batchCreatePomodoros).toHaveBeenCalledWith(
+      [expect.objectContaining({ completed: false, stop_reason: 'interrupted', duration: 1,
+        coach_action_attempt_id: 'ca-71', client_record_id: expect.any(String) })],
+      [expect.any(String)], expect.any(Object),
     )
   })
 
@@ -197,12 +287,12 @@ describe('pomodoro desktop reminder sync', () => {
 
     usePomodoroStore.getState().setBackgroundImage(backgroundImage)
 
-    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage:user:7') || '{}')
     expect(stored.state.backgroundImage).toBe(backgroundImage)
 
     usePomodoroStore.getState().setBackgroundImage(null)
 
-    const resetStored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    const resetStored = JSON.parse(window.localStorage.getItem('pomodoro-storage:user:7') || '{}')
     expect(resetStored.state.backgroundImage).toBeNull()
   })
 
@@ -212,14 +302,14 @@ describe('pomodoro desktop reminder sync', () => {
     usePomodoroStore.getState().setBackgroundImage(backgroundImage)
 
     expect(desktopPreferencesMock.setDesktopPreference).toHaveBeenCalledWith(
-      POMODORO_BACKGROUND_PREFERENCE_KEY,
+      `${POMODORO_BACKGROUND_PREFERENCE_KEY}:7`,
       { backgroundImage },
     )
 
     usePomodoroStore.getState().setBackgroundImage(null)
 
     expect(desktopPreferencesMock.setDesktopPreference).toHaveBeenLastCalledWith(
-      POMODORO_BACKGROUND_PREFERENCE_KEY,
+      `${POMODORO_BACKGROUND_PREFERENCE_KEY}:7`,
       { backgroundImage: null },
     )
   })
@@ -233,7 +323,7 @@ describe('pomodoro desktop reminder sync', () => {
     await usePomodoroStore.getState().loadBackgroundImagePreference()
 
     expect(usePomodoroStore.getState().backgroundImage).toBe(desktopBackground)
-    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage:user:7') || '{}')
     expect(stored.state.backgroundImage).toBe(desktopBackground)
     expect(desktopPreferencesMock.setDesktopPreference).not.toHaveBeenCalled()
   })
@@ -245,7 +335,7 @@ describe('pomodoro desktop reminder sync', () => {
     await usePomodoroStore.getState().loadBackgroundImagePreference()
 
     expect(usePomodoroStore.getState().backgroundImage).toBeNull()
-    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage') || '{}')
+    const stored = JSON.parse(window.localStorage.getItem('pomodoro-storage:user:7') || '{}')
     expect(stored.state.backgroundImage).toBeNull()
     expect(desktopPreferencesMock.setDesktopPreference).not.toHaveBeenCalled()
   })

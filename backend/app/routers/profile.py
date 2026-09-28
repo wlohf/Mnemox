@@ -1,12 +1,15 @@
 """用户学习画像路由"""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Any
 
 from ..database import get_db
 from ..auth import get_current_user
 from ..models.user import User
+from app.schemas.behavior_evidence import BehaviorEvidenceReport
+from app.services.behavior_evidence_service import get_behavior_evidence
+from app.utils.utc import to_utc_iso
 from app.services.profile_service import (
     get_or_compute_profile,
     compute_and_save_profile,
@@ -47,23 +50,25 @@ class ProfileResponse(BaseModel):
     avg_pomodoro_per_day: float
     optimal_hours: Optional[str]
     preferred_time_slots: Optional[Any]
-    self_control_score: float
-    consistency_score: float
-    focus_score: float
-    planning_score: float
+    self_control_score: float = Field(deprecated=True, description="Legacy compatibility value; not a validated trait. Use evidence_summary.")
+    consistency_score: float = Field(deprecated=True, description="Legacy compatibility value; not a validated trait. Use evidence_summary.")
+    focus_score: float = Field(deprecated=True, description="Legacy compatibility value; not a validated trait. Use evidence_summary.")
+    planning_score: float = Field(deprecated=True, description="Legacy compatibility value; not a validated trait. Use evidence_summary.")
     streak_days: int
     weak_points: Optional[Any]
     recent_performance: Optional[Any]
     last_updated: Optional[str]
     data_insufficient: bool = False
     insights: list[str] = []
+    evidence_summary: Optional[dict[str, Any]] = None
+    lifetime_metrics: Optional[dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 
 
 def _build_response(uid: int, profile: Any) -> ProfileResponse:
     lu = profile.last_updated
-    last_updated: Optional[str] = lu.isoformat() if lu is not None else None  # type: ignore[union-attr]
+    last_updated: Optional[str] = to_utc_iso(lu) if lu is not None else None
     perf: dict[str, Any] = profile.recent_performance or {}
     return ProfileResponse(
         user_id=uid,
@@ -84,10 +89,21 @@ def _build_response(uid: int, profile: Any) -> ProfileResponse:
         last_updated=last_updated,
         data_insufficient=bool(perf.get("data_insufficient", False)),
         insights=list(perf.get("insights", [])),
+        evidence_summary=perf.get("focus_evidence"),
+        lifetime_metrics=perf.get("lifetime_metrics"),
     )
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
+
+@router.get("/evidence", response_model=BehaviorEvidenceReport)
+async def get_profile_evidence(
+    days: int = Query(30, ge=1, le=366),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> BehaviorEvidenceReport:
+    """Read current user evidence; no inference, memory writes or model calls."""
+    return await get_behavior_evidence(db, int(current_user.id), days=days)
 
 @router.get("", response_model=ProfileResponse)
 async def get_profile(

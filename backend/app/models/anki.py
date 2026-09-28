@@ -10,7 +10,7 @@ class AnkiCard(Base):
     __tablename__ = "anki_cards"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     front = Column(Text, nullable=False, comment="问题面")
     back = Column(Text, nullable=False, comment="答案面")
     source = Column(String(20), default="manual", index=True, comment="来源: manual | ai")

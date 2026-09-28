@@ -1,6 +1,9 @@
 import type { WebSearchMode } from './aiSettingsApi'
+import { captureApiSession } from './sessionScope'
 
 export interface ChatMessage {
+  status?: 'streaming' | 'interrupted' | 'completed'
+  turn_id?: string
   role: 'user' | 'assistant'
   content: string
   image_data?: string[]
@@ -93,8 +96,10 @@ export async function sendMessageStream(
   onWebSearchResults?: (results: WebSearchResult[]) => void,
   onWebSearchNotice?: (notice: string) => void,
 ): Promise<void> {
+  const session = captureApiSession()
   try {
     const payload: any = {
+      turn_id: crypto.randomUUID(),
       message,
       history: history.map(m => ({ role: m.role, content: m.content })),
     }
@@ -132,14 +137,17 @@ export async function sendMessageStream(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(session.userId === null ? {} : { 'X-Mnemox-User-Id': String(session.userId) }),
       },
       body: JSON.stringify(payload),
-      signal,
+      signal: signal ? AbortSignal.any([signal, session.signal]) : session.signal,
       credentials: 'same-origin',
     })
+    session.assertActive()
 
     if (!res.ok) {
       const err = await res.json().catch(() => null)
+      session.assertActive()
       const detail = err?.detail
       const rawMessage =
         typeof detail === 'string' ? detail : detail?.message || `请求失败 (${res.status})`
@@ -158,6 +166,7 @@ export async function sendMessageStream(
 
     while (true) {
       const { done, value } = await reader.read()
+      session.assertActive()
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
@@ -214,11 +223,11 @@ export async function sendMessageStream(
       }
     }
 
-    onDone()
+    onError('连接在回复完成前中断，请检查历史记录后重试')
   } catch (e: any) {
+    if (session.signal.aborted) return
     if (e?.name === 'AbortError') {
-      // User stopped streaming — treat as done, not error
-      onDone()
+      onError('已停止生成，当前回复尚未完成')
       return
     }
     onError(enhanceChatErrorMessage(e?.message || '网络错误，请检查后端是否启动'))

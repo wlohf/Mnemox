@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,11 @@ from app.utils.error_safety import safe_error_diagnostic, safe_exception_summary
 from app.utils.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils.outbound_url import validate_ai_provider_url
 from app.utils.paths import get_chromadb_dir, get_data_dir
+
+VECTOR_INCOMPATIBLE_MESSAGE = (
+    "检测到 Embedding 向量维度与现有向量索引不一致，已暂停语义检索并回退到关键词检索；"
+    "旧索引清理后请重建资料索引。"
+)
 
 
 def _get_rag_settings_path():
@@ -192,6 +197,11 @@ class RAGService:
         self._last_error: str = ""
         self._last_retrieval_status: Dict[str, Any] = {"ok": True, "mode": "not_run", "message": "尚未检索"}
         self._last_retrieval_status_by_user: Dict[str, Dict[str, Any]] = {}
+        # Set when the embedding dimension no longer matches the shared
+        # collection. Semantic reads and writes pause until the lifecycle
+        # handler resets the collection and flags projections for rebuild.
+        self._vector_incompatible = False
+        self._incompatibility_handler: Optional[Callable[[], None]] = None
 
     def _ensure_chroma_collection(self):
         if self._chroma_client is None:
@@ -237,10 +247,44 @@ class RAGService:
             )
         )
 
+    @property
+    def vector_incompatible(self) -> bool:
+        return self._vector_incompatible
+
+    def set_incompatibility_handler(self, handler: Optional[Callable[[], None]]) -> None:
+        """Register the callback that schedules a serialized collection reset."""
+        self._incompatibility_handler = handler
+
+    def clear_vector_incompatible(self) -> None:
+        self._vector_incompatible = False
+
+    def mark_vector_incompatible(self, exc: Exception, user_id: Optional[int] = None) -> None:
+        """Pause semantic search after a dimension mismatch instead of wiping here.
+
+        The collection is shared by every user, so it is reset only by the
+        registered lifecycle handler, which also flags SQL projections.
+        """
+        first_detection = not self._vector_incompatible
+        self._vector_incompatible = True
+        self._last_error = VECTOR_INCOMPATIBLE_MESSAGE
+        self._set_retrieval_status(
+            {"ok": False, "mode": "fallback", "message": VECTOR_INCOMPATIBLE_MESSAGE},
+            user_id,
+        )
+        if not first_detection:
+            return
+        logger.warning("RAG 向量维度与现有索引不一致，暂停语义检索: %s", safe_exception_summary(exc))
+        if self._incompatibility_handler is not None:
+            try:
+                self._incompatibility_handler()
+            except Exception as handler_exc:
+                logger.warning("调度向量索引重置失败: %s", safe_exception_summary(handler_exc))
+
     async def reset_index(self, message: Optional[str] = None, user_id: Optional[int] = None) -> None:
         """清空 Chroma collection。用于 embedding 模型维度变化后的安全重建。"""
         await asyncio.to_thread(self._reset_chroma_collection)
         self._initialized = True
+        self._vector_incompatible = False
         self._last_error = ""
         self._set_retrieval_status(
             {
@@ -434,14 +478,21 @@ class RAGService:
         title: str,
         content: str,
         file_type: Optional[str] = None,
-        project_ids: Optional[List[int]] = None,
         user_id: Optional[int] = None,
     ) -> int:
-        """将资料内容切片并嵌入 ChromaDB，返回 chunk 数量。"""
+        """将资料内容切片并嵌入 ChromaDB，返回 chunk 数量。
+
+        每个 chunk 只写一份向量；项目范围由 SQL 解析为资料 ID 后再过滤，
+        因此资料加入或移出项目不需要重新嵌入。
+        """
         if not self._initialized or not content:
             return 0
         if self._embed_model is None:
             logger.info("RAG 索引跳过资料 id=%s：未配置 embedding API Key", material_id)
+            return 0
+        if self._vector_incompatible:
+            # Embedding calls would be wasted until the collection is reset.
+            self._last_error = VECTOR_INCOMPATIBLE_MESSAGE
             return 0
 
         # 先删除当前用户该资料的旧 chunk，避免误删其他用户同 id/历史数据
@@ -458,49 +509,35 @@ class RAGService:
             documents = [n.get_content() for n in nodes]
             embeddings = self._embed_model.get_text_embedding_batch(documents)
 
-            normalized_project_ids = project_ids or [0]
-            for project_id in normalized_project_ids:
-                ids = [f"mat{material_id}_p{project_id}_chunk{i}" for i in range(len(nodes))]
-                metadatas = [
-                    {
-                        "material_id": str(material_id),
-                        "title": title,
-                        "file_type": file_type or "",
-                        "chunk_index": i,
-                        "project_id": str(project_id),
-                        "user_id": str(user_id or 0),
-                    }
-                    for i in range(len(nodes))
-                ]
+            ids = [f"mat{material_id}_chunk{i}" for i in range(len(nodes))]
+            metadatas = [
+                {
+                    "material_id": str(material_id),
+                    "title": title,
+                    "file_type": file_type or "",
+                    "chunk_index": i,
+                    "user_id": str(user_id or 0),
+                }
+                for i in range(len(nodes))
+            ]
 
-                self._collection.add(
-                    ids=ids,
-                    documents=documents,
-                    metadatas=metadatas,
-                    embeddings=embeddings,
-                )
+            self._collection.add(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
             return len(nodes)
 
         try:
             count = await asyncio.to_thread(_index)
         except Exception as exc:
             if self._looks_like_dimension_mismatch(exc):
-                reset_message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引所有资料。"
-                logger.warning(
-                    "RAG 索引遇到向量维度不匹配，准备清空旧索引后重试: %s",
-                    safe_exception_summary(exc),
-                )
-                await self.reset_index(reset_message, user_id=user_id)
-                try:
-                    count = await asyncio.to_thread(_index)
-                except Exception as retry_exc:
-                    self._last_error = safe_exception_summary(retry_exc)
-                    logger.warning("资料 '%s' (id=%d) 索引重试失败: %s", title, material_id, self._last_error)
-                    return 0
-            else:
-                self._last_error = safe_exception_summary(exc)
-                logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, self._last_error)
+                self.mark_vector_incompatible(exc, user_id=user_id)
                 return 0
+            self._last_error = safe_exception_summary(exc)
+            logger.warning("资料 '%s' (id=%d) 索引失败，已跳过向量索引: %s", title, material_id, self._last_error)
+            return 0
         if count <= 0:
             return 0
         self._last_error = ""
@@ -543,10 +580,12 @@ class RAGService:
         query: str,
         top_k: Optional[int] = None,
         material_ids: Optional[List[int]] = None,
-        project_id: Optional[int] = None,
         user_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """语义检索，返回 [{text, score, material_id, material_title}]。"""
+        """语义检索，返回 [{text, score, material_id, material_title}]。
+
+        项目范围需由调用方在 SQL 中解析成 ``material_ids``。
+        """
         if not self._initialized:
             self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "RAG 服务未初始化，已回退到普通资料上下文"}, user_id)
             return []
@@ -557,6 +596,9 @@ class RAGService:
         if self._embed_model is None:
             logger.info("RAG 检索跳过：未配置 embedding API Key")
             self._set_retrieval_status({"ok": False, "mode": "fallback", "message": "未配置 embedding API Key，已回退到普通资料上下文"}, user_id)
+            return []
+        if self._vector_incompatible:
+            self._set_retrieval_status({"ok": False, "mode": "fallback", "message": VECTOR_INCOMPATIBLE_MESSAGE}, user_id)
             return []
 
         def _retrieve():
@@ -571,8 +613,6 @@ class RAGService:
                     filters.append({"material_id": str_ids[0]})
                 else:
                     filters.append({"material_id": {"$in": str_ids}})
-            elif project_id is not None:
-                filters.append({"project_id": str(project_id)})
 
             if len(filters) > 1:
                 where_filter = {"$and": filters}
@@ -581,14 +621,17 @@ class RAGService:
             else:
                 where_filter = None
 
+            # Indexes written before single-copy vectors hold one copy of each
+            # chunk per project; oversample so duplicates cannot crowd out top-k.
             results = self._collection.query(
                 query_embeddings=[query_embedding],
-                n_results=k,
+                n_results=k * 4,
                 where=where_filter,
                 include=["documents", "metadatas", "distances"],
             )
 
             items = []
+            seen_chunks = set()
             if results and results["documents"] and results["documents"][0]:
                 docs = results["documents"][0]
                 metas = results["metadatas"][0] if results["metadatas"] else [{}] * len(docs)
@@ -599,12 +642,18 @@ class RAGService:
                     score = 1.0 - dist / 2.0
                     if score < threshold:
                         continue
+                    chunk_key = (meta.get("material_id"), meta.get("chunk_index"), doc)
+                    if chunk_key in seen_chunks:
+                        continue
+                    seen_chunks.add(chunk_key)
                     items.append({
                         "text": doc,
                         "score": round(score, 4),
                         "material_id": int(meta.get("material_id", 0)),
                         "material_title": meta.get("title", ""),
                     })
+                    if len(items) >= k:
+                        break
             return items
 
         try:
@@ -617,12 +666,7 @@ class RAGService:
             return items
         except Exception as exc:
             if self._looks_like_dimension_mismatch(exc):
-                message = "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引资料后再使用语义检索。"
-                await self.reset_index(message, user_id=user_id)
-                logger.warning(
-                    "RAG 检索遇到向量维度不匹配，已清空旧索引并返回 fallback: %s",
-                    safe_exception_summary(exc),
-                )
+                self.mark_vector_incompatible(exc, user_id=user_id)
                 return []
             self._last_error = safe_exception_summary(exc)
             self._set_retrieval_status({"ok": False, "mode": "fallback", "message": f"RAG 检索失败，已回退到普通资料上下文: {self._last_error}"}, user_id)
@@ -691,10 +735,16 @@ class RAGService:
             "last_error_code": diagnostic.code if diagnostic else None,
             "last_error_fingerprint": diagnostic.fingerprint if diagnostic else None,
             "last_retrieval_status": retrieval_status,
-            "fallback_active": retrieval_status.get("mode") == "fallback" or self._embed_model is None,
+            "vector_incompatible": self._vector_incompatible,
+            "fallback_active": (
+                retrieval_status.get("mode") == "fallback"
+                or self._embed_model is None
+                or self._vector_incompatible
+            ),
             "message": (
                 "未配置 embedding API Key，将使用普通资料上下文 fallback"
                 if self._embed_model is None
+                else VECTOR_INCOMPATIBLE_MESSAGE if self._vector_incompatible
                 else "RAG 服务运行正常" if not self._last_error
                 else f"RAG embedding 最近一次调用失败: {self._last_error}"
             ),

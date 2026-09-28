@@ -93,6 +93,11 @@ if (-not $SkipBackendExe) {
         "--specpath `"$SpecPath`"",
         "--collect-all app",
         "--collect-submodules app",
+        "--collect-submodules schema_repairs",
+        # SQLite migrates through Alembic at startup; revisions load by path.
+        "--collect-submodules alembic",
+        "--add-data `"$BackendDir\alembic;alembic`"",
+        "--add-data `"$BackendDir\alembic.ini;.`"",
         "--collect-submodules uvicorn",
         "--collect-submodules fastapi",
         "--collect-submodules sqlalchemy",

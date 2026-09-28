@@ -1,4 +1,10 @@
 import unittest
+import hashlib
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.database import Base
+from app.models.user import User
+from app.models.material import Material
+from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 
 from app.services.material_retrieval_backend import (
     ChromaMaterialRetrievalBackend,
@@ -66,6 +72,7 @@ class _FakeRag:
         self._embed_model = _FakeEmbedding()
         self._collection = _FakeCollection()
         self._similarity_threshold = 0.0
+        self.vector_incompatible = False
         self.indexed = []
         self.removed = []
 
@@ -103,15 +110,35 @@ class _FailingBackend:
 
 class MaterialRetrievalBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_chroma_hit_exposes_chunk_source_and_scope(self):
-        db = _SequenceDb([_RowsResult([(7,)])])
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.addAsyncCleanup(engine.dispose)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
         rag = _FakeRag()
-        backend = ChromaMaterialRetrievalBackend(db, rag=rag)
-
-        hits = await backend.search(
-            "RRF",
-            scope=MaterialSearchScope(user_id=42, material_id_min=5, material_id_max=9),
-            top_k=4,
-        )
+        text = "RRF combines ranked lists"
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            db.add(User(id=42, username="owner", email="owner@test.invalid", hashed_password="hash"))
+            db.add(Material(id=7, user_id=42, title="RAG notes", content=text, file_type="md"))
+            projection = RetrievalProjection(user_id=42, source_id=7, status="ready",
+                indexed_version=1, content_hash=digest)
+            db.add(projection)
+            await db.flush()
+            db.add(RetrievalProjectionChunk(projection_id=projection.id, user_id=42, source_id=7,
+                chunk_index=3, chunk_hash=digest, text=text))
+            await db.commit()
+            backend = ChromaMaterialRetrievalBackend(db, rag=rag)
+            scope = MaterialSearchScope(user_id=42, material_id_min=5, material_id_max=9)
+            hits = await backend.search("RRF", scope=scope, top_k=4)
+            # Old vectors must disappear immediately, even before the new index runs.
+            material = await db.get(Material, 7)
+            material.content = "changed canonical text"
+            await db.commit()
+            self.assertEqual(await backend.search("RRF", scope=scope, top_k=4), [])
+            material.content = text
+            projection.status = "pending"
+            await db.commit()
+            self.assertEqual(await backend.search("RRF", scope=scope, top_k=4), [])
 
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0].material_id, 7)
@@ -126,6 +153,39 @@ class MaterialRetrievalBackendTests(unittest.IsolatedAsyncioTestCase):
             where_filter,
             {"$and": [{"user_id": "42"}, {"material_id": "7"}]},
         )
+
+    async def test_dimension_mismatch_pauses_search_without_wiping_the_collection(self):
+        from app.ai.rag_service import RAGService
+
+        class _MismatchCollection(_FakeCollection):
+            def query(self, **kwargs):
+                raise ValueError("Embedding dimension 2 does not match collection dimensionality 3")
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.addAsyncCleanup(engine.dispose)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        rag = RAGService()
+        rag._initialized = True
+        rag._embed_model = _FakeEmbedding()
+        rag._collection = _MismatchCollection()
+        rag._similarity_threshold = 0.0
+        handler_calls = []
+        rag.set_incompatibility_handler(lambda: handler_calls.append(True))
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            db.add(User(id=5, username="u5", email="u5@test.invalid", hashed_password="hash"))
+            db.add(Material(id=9, user_id=5, title="T", content="text", file_type="md"))
+            await db.commit()
+            backend = ChromaMaterialRetrievalBackend(db, rag=rag)
+            scope = MaterialSearchScope(user_id=5)
+            first = await backend.search("text", scope=scope, top_k=2)
+            second = await backend.search("text", scope=scope, top_k=2)
+
+        self.assertEqual((first, second), ([], []))
+        self.assertIsNone(rag._collection.deleted_where)
+        self.assertTrue(rag.vector_incompatible)
+        # One lifecycle reset is requested, not one per query or per user.
+        self.assertEqual(handler_calls, [True])
 
     async def test_hybrid_rrf_merges_same_chunk_and_keeps_provenance(self):
         semantic_hit = MaterialChunkHit(

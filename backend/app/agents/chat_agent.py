@@ -11,7 +11,7 @@ from app.models.goal import Goal, Task
 from app.models.material import Material
 from app.models.memory import UserMemory
 from app.models.question import Question, WrongQuestion
-from app.models.user_profile import UserProfile
+from app.services.behavior_evidence_service import get_behavior_evidence
 from app.services.note_retriever import NoteRetriever
 from app.services.retrieval_router import RetrievalRouter
 from app.utils.utc import utc_now_db, utc_today
@@ -149,24 +149,12 @@ class ChatAgent(BaseAgent):
         )
 
     async def _get_profile(self, ctx: AgentRunContext) -> dict:
-        result = await ctx.db.execute(select(UserProfile).where(UserProfile.user_id == ctx.user_id))
-        profile = result.scalar_one_or_none()
-        if not profile:
-            return {"tool": "get_profile", "profile": None}
+        report = await get_behavior_evidence(ctx.db, ctx.user_id)
         return {
             "tool": "get_profile",
-            "profile": {
-                "total_study_hours": profile.total_study_hours,
-                "total_pomodoros": profile.total_pomodoros,
-                "focus_score": profile.focus_score,
-                "consistency_score": profile.consistency_score,
-                "planning_score": profile.planning_score,
-                "self_control_score": profile.self_control_score,
-                "optimal_hours": profile.optimal_hours,
-                "preferred_time_slots": profile.preferred_time_slots,
-                "weak_points": profile.weak_points,
-                "coaching_suggestions": profile.coaching_suggestions,
-            },
+            "profile": report.model_dump(exclude={"records"}) if report.records else None,
+            "evidence_summary": report.model_dump(exclude={"records", "daily"}) if not report.records else None,
+            "interpretation": "仅为当前记录的描述性观察；缺失不是零，时段数量不代表效率，不据此推断人格、情绪或掌握度。",
         }
 
     async def _get_agent_learning_profile(self, ctx: AgentRunContext) -> dict:

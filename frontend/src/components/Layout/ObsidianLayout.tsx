@@ -65,7 +65,7 @@ import { useThemeStore } from '../../stores/themeStore'
 import { sendMessageStream, type ChatMessage, type DetectedMaterial, type MemoryIndicator, type NoteContextIndicator } from '../../services/chatApi'
 import { ChatMessageBubble } from '../ChatMessageBubble'
 import { ConversationSidebar } from '../ConversationSidebar'
-import { useChatStore } from '../../stores/chatStore'
+import { useChatStore, beginChatStream } from '../../stores/chatStore'
 import { getProject, archiveUnassignedMaterials, addProjectMaterial, removeProjectMaterial, forkConversation, appendConversationMessages } from '../../services/conversationApi'
 import { listWrongQuestions } from '../../services/wrongQuestionApi'
 import { useAuthStore } from '../../stores/authStore'
@@ -106,7 +106,7 @@ import {
 } from '../../services/motivationApi'
 import { getApiErrorMessage, withAuthQuery } from '../../services/apiClient'
 import { deleteMaterial as deleteMaterialApi, getMaterial, listMaterials, searchMaterials, uploadMaterial } from '../../services/materialApi'
-import { listPlans, savePlan } from '../../services/planApi'
+import { listPlans, savePlan, readPlanDraft, writePlanDraft } from '../../services/planApi'
 import { getRagHealth } from '../../services/ragApi'
 import { syncEngine } from '../../sync/SyncEngine'
 import { SyncStatusIndicator } from '../SyncStatusIndicator'
@@ -353,6 +353,7 @@ export function ObsidianLayout() {
   // 日历相关（计划持久化到后端）
   const [calendarExpanded, setCalendarExpanded] = useState(() => readLocalRightSidebarLayoutPreference().calendarExpanded)
   const [dailyPlans, setDailyPlans] = useState<Record<string, string>>({})
+  const [dailyPlanVersions, setDailyPlanVersions] = useState<Record<string, number>>({})
   const [, setWeeklyPlans] = useState<DailyPlan[]>([])
   const [showSettings, setShowSettings] = useState(false)
   const [syncConflictsOpen, setSyncConflictsOpen] = useState(false)
@@ -439,6 +440,7 @@ export function ObsidianLayout() {
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  useEffect(() => () => abortControllerRef.current?.abort(), [])
   const initialConversationRestoreRef = useRef(false)
   const shownCoachNudgeIdsRef = useRef<Set<string>>(new Set())
 
@@ -598,6 +600,33 @@ export function ObsidianLayout() {
       setMaterialsLoading(false)
     }
   }, [])
+
+  // 新资料的向量化在后台进行：存在排队/索引中的资料时，静默刷新索引状态直到完成
+  const hasIndexingMaterials = materials.some((material) => (
+    material.retrieval_projection?.status === 'pending'
+    || material.retrieval_projection?.status === 'indexing'
+  ))
+  useEffect(() => {
+    if (!hasIndexingMaterials) return
+    const timer = setInterval(async () => {
+      try {
+        const latestById = new Map((await listMaterials(100) || []).map((item) => [item.id, item]))
+        setMaterials((previous) => previous.map((material) => {
+          const latest = latestById.get(material.id)
+          return latest
+            ? {
+              ...material,
+              retrieval_projection: latest.retrieval_projection || null,
+              knowledge_extraction: latest.knowledge_extraction || null,
+            }
+            : material
+        }))
+      } catch {
+        // keep the current status; the next tick retries
+      }
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [hasIndexingMaterials])
 
   const loadCurrentQuote = useCallback(async (offset?: number) => {
     const res = await getCurrentQuote(offset ?? refreshOffset)
@@ -1302,6 +1331,7 @@ export function ObsidianLayout() {
     setDetectedMaterials([])
     let accumulated = ''
     const controller = new AbortController()
+    const isCurrentStream = beginChatStream(convId, controller)
     abortControllerRef.current = controller
     const webSearchMode = getStoredWebSearchMode()
     const webSearchProviderName = getStoredWebSearchProviderName()
@@ -1310,10 +1340,12 @@ export function ObsidianLayout() {
       text,
       historyForRequest,
       (chunk) => {
+        if (!isCurrentStream()) return
         accumulated += chunk
         setStreamingContent(accumulated)
       },
       () => {
+        if (!isCurrentStream()) return
         if (accumulated) {
           addMessage({ role: 'assistant', content: accumulated })
         }
@@ -1330,6 +1362,8 @@ export function ObsidianLayout() {
         void getRagHealth().then(setRagStatus).catch(() => undefined)
       },
       (error) => {
+        if (!isCurrentStream()) return
+        if (accumulated) addMessage({ role: 'assistant', content: accumulated, status: 'interrupted' })
         message.error(error)
         setChatLoading(false)
         setStreamingContent('')
@@ -1337,6 +1371,7 @@ export function ObsidianLayout() {
       },
       Array.from(selectedMaterialIds),
       (detected) => {
+        if (!isCurrentStream()) return
         setDetectedMaterials(detected)
         if (detected.length > 0) {
           message.info(`AI 自动识别到资料：${detected.map((d) => d.title).join('、')}`)
@@ -1355,14 +1390,17 @@ export function ObsidianLayout() {
       })(),
       chatMode,
       (memories) => {
+        if (!isCurrentStream()) return
         setMemoryIndicators(memories)
       },
       (notes: NoteContextIndicator[]) => {
+        if (!isCurrentStream()) return
         if (notes.length > 0) {
           message.info(`已参考 ${notes.length} 条相关笔记：${notes.map((n) => n.title).join('、')}`)
         }
       },
       (feedback) => {
+        if (!isCurrentStream()) return
         notification.open({
           key: 'progress-feedback',
           message: '进度提醒',
@@ -1390,6 +1428,7 @@ export function ObsidianLayout() {
       webSearchMode,
       webSearchProviderName,
       (results) => {
+        if (!isCurrentStream()) return
         if (results.length > 0) {
           message.info(`已检索到 ${results.length} 条网页结果，并作为上下文提供给模型`)
         } else {
@@ -1397,6 +1436,7 @@ export function ObsidianLayout() {
         }
       },
       (notice) => {
+        if (!isCurrentStream()) return
         message.warning(notice)
       },
     )
@@ -2096,7 +2136,12 @@ export function ObsidianLayout() {
   }
 
   // 删除资料
-  const deleteMaterial = async (id: number) => {
+  const deleteMaterial = (id: number) => {
+    Modal.confirm({
+      title: '删除资料及关联学习内容？',
+      content: '将删除该资料、章节、关联目标与任务、题目、答题记录、错题和对应复习计划。独立笔记与专注历史会保留。',
+      okText: '确认删除', okButtonProps: { danger: true }, cancelText: '取消',
+      onOk: async () => {
     try {
       await deleteMaterialApi(id)
 
@@ -2111,6 +2156,8 @@ export function ObsidianLayout() {
     } catch (e: any) {
       message.error(e?.message || '删除失败（请确认后端已启动）')
     }
+      },
+    })
   }
 
   // loadWeeklyPlans is called by the backendReady effect above
@@ -2125,6 +2172,7 @@ export function ObsidianLayout() {
       const arr = await listPlans(startStr, endStr)
       const list: DailyPlan[] = (arr || []).map((p) => ({ date: p.date, content: p.content || '' }))
       setWeeklyPlans(list)
+      setDailyPlanVersions(prev => ({ ...prev, ...Object.fromEntries(arr.map(p => [p.date, p.version ?? 0])) }))
       // 合并到缓存，使日历上的小绿点即时显示
       setDailyPlans((prev) => {
         const next = { ...prev }
@@ -2158,7 +2206,7 @@ export function ObsidianLayout() {
     for (const task of dashboardData?.today_tasks || []) {
       const title = String(task.title || '').trim()
       if (!title) continue
-      const key = title.toLowerCase()
+      const key = `task:${task.id}`
       if (seen.has(key)) continue
       seen.add(key)
       result.push({
@@ -2174,9 +2222,10 @@ export function ObsidianLayout() {
     for (const [lineIndex, line] of planContent.split('\n').entries()) {
       const match = line.match(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.+?)\s*$/)
       if (!match) continue
-      const title = match[2].replace(/[*_`#]/g, '').trim()
+      const linkedId = match[2].match(/<!-- task:(\d+):v\d+ -->/)?.[1]
+      const title = match[2].replace(/<!-- task:\d+:v\d+ -->/g, '').replace(/[*_`#]/g, '').trim()
       if (!title) continue
-      const key = title.toLowerCase()
+      const key = linkedId ? `task:${linkedId}` : `line:${lineIndex}`
       if (seen.has(key)) continue
       seen.add(key)
       result.push({
@@ -2225,7 +2274,8 @@ export function ObsidianLayout() {
         }
 
         setDailyPlans((prev) => ({ ...prev, [today]: nextContent }))
-        const saved = await savePlan(today, nextContent)
+        const saved = await savePlan(today, nextContent, dailyPlanVersions[today] ?? 0)
+        setDailyPlanVersions(prev => ({ ...prev, [today]: saved.version ?? 0 }))
         setDailyPlans((prev) => ({ ...prev, [today]: saved?.content ?? nextContent }))
       }
     } catch (error) {
@@ -2696,6 +2746,7 @@ export function ObsidianLayout() {
                                             : item.retrieval_projection.status === 'failed'
                                               ? '索引失败，可重试'
                                               : item.retrieval_projection.status === 'indexing'
+                                                || item.retrieval_projection.status === 'pending'
                                                 ? '索引处理中'
                                                 : '关键词检索'}
                                         </Tag>
@@ -2908,9 +2959,9 @@ export function ObsidianLayout() {
                   try {
                     const result = await generateDailyPlan(today)
                     if (result) {
-                      message.success(`已生成今日计划，共 ${result.item_count} 项`)
-                      await loadWeeklyPlans()
-                      setDailyPlans((prev) => ({ ...prev, [today]: result.content }))
+                      const old = readPlanDraft(today)
+                      writePlanDraft(today, { content: [old?.content ?? dailyPlans[today] ?? '', result.content].filter(Boolean).join('\n\n'), version: old?.version ?? result.base_version })
+                      message.success(`已生成草稿，共 ${result.item_count} 项，请检查后保存`)
                       openPlanDocument(today)
                     } else {
                       message.warning('生成计划失败')
@@ -3037,6 +3088,7 @@ export function ObsidianLayout() {
                       key={idx}
                       role={msg.role}
                       content={msg.content}
+                      status={msg.status}
                       imageData={msg.image_data}
                       onQuoteToNote={msg.role === 'assistant' ? quoteAssistantToNote : undefined}
                       onRegenerate={msg.role === 'assistant' ? () => void handleRegenerateAssistant(idx) : undefined}

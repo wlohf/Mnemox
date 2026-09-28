@@ -133,6 +133,7 @@ async def add_session_message(
         "content": msg.content,
         "message_type": msg.message_type,
         "created_at": msg.created_at.isoformat() if msg.created_at else None,
+        "status": msg.status, "turn_id": msg.turn_id,
     }
 
 
@@ -187,31 +188,11 @@ async def complete_session(
             task.status = "completed"
             task.completed_at = now
 
-    # Auto-create ReviewSchedule for the chapter if applicable
+    # An existing archived or completed schedule is still the same item.
     if session.chapter_id:
-        try:
-            existing_review = await db.execute(
-                select(ReviewSchedule).where(
-                    ReviewSchedule.item_type == "chapter",
-                    ReviewSchedule.item_id == session.chapter_id,
-                    ReviewSchedule.status == "pending",
-                    ReviewSchedule.user_id == current_user.id,
-                )
-            )
-            if not existing_review.scalar_one_or_none():
-                review = ReviewSchedule(
-                    user_id=current_user.id,
-                    item_type="chapter",
-                    item_id=session.chapter_id,
-                    scheduled_date=now + timedelta(days=1),
-                    interval_days=1,
-                    ease_factor=250,
-                    repetitions=0,
-                    status="pending",
-                )
-                db.add(review)
-        except Exception:
-            pass  # Non-blocking
+        from app.services.review_schedule_identity import ensure_review_schedule
+        await ensure_review_schedule(db, user_id=current_user.id, item_type="chapter", item_id=session.chapter_id,
+            scheduled_date=now + timedelta(days=1), interval_days=1, ease_factor=250, repetitions=0, status="pending")
 
     await db.flush()
     await db.refresh(session)

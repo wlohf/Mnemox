@@ -5,6 +5,8 @@
 > 决策：**PostgreSQL / SQLite 保持 Canonical；Neo4j 从 Shadow 候选升级为“可选正式 Graph Backend”建设目标；Graphiti 作为独立 Temporal/Episodic Vertical Slice 建设，不替代现有 Temporal SQL。**
 > 目标窗口：正式上线前约 2～4 周。
 
+> 2026-09-28 增量：后续产品目标按[动态用户理解与连续辅导](2026-09-28-dynamic-user-understanding.md)推进，以具体用户任务和持续证据评估图组件价值。本文的 SQL Canonical、可选运行时与历史评测继续有效；阶段状态以[路线图](../../roadmap.md)为准。
+
 ---
 
 ## 1. 为什么重新打开这个决策

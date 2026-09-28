@@ -14,7 +14,7 @@ from app.database import get_db
 from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
 from app.models.question import ReviewSchedule, WrongQuestion, Question
-from app.models.material import Chapter
+from app.models.material import Chapter, Material
 from app.ai.factory import AIProviderFactory
 from app.utils.prompt_safety import wrap_untrusted_context
 from app.auth import get_current_user
@@ -30,12 +30,16 @@ _MAX_WRONGS = 2
 
 
 class PlanUpsertRequest(BaseModel):
-    content: str = Field(default="", description="计划/记录内容（markdown 或纯文本）")
+    content: str = Field(default="", max_length=100000, description="计划/记录内容（markdown 或纯文本）")
+
+
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class PlanResponse(BaseModel):
     date: str
     content: str
+    version: int = 0
 
 
 
@@ -234,18 +238,18 @@ async def generate_daily_plan(
 
     chapter_map = {}
     if chapter_item_ids:
-        ch_result = await db.execute(select(Chapter).where(Chapter.id.in_(chapter_item_ids)))
+        ch_result = await db.execute(select(Chapter).join(Material).where(Chapter.id.in_(chapter_item_ids), Material.user_id == current_user.id))
         chapter_map = {c.id: c for c in ch_result.scalars().all()}
 
     wq_map = {}
     if question_item_ids:
-        wq_result = await db.execute(select(WrongQuestion).where(WrongQuestion.id.in_(question_item_ids)))
+        wq_result = await db.execute(select(WrongQuestion).where(WrongQuestion.id.in_(question_item_ids), WrongQuestion.user_id == current_user.id))
         wq_map = {wq.id: wq for wq in wq_result.scalars().all()}
 
     wq_question_ids = [wq.question_id for wq in wq_map.values()]
     question_map = {}
     if wq_question_ids:
-        q_result = await db.execute(select(Question).where(Question.id.in_(wq_question_ids)))
+        q_result = await db.execute(select(Question).where(Question.id.in_(wq_question_ids), Question.user_id == current_user.id))
         question_map = {q.id: q for q in q_result.scalars().all()}
 
     for r in reviews:
@@ -271,7 +275,7 @@ async def generate_daily_plan(
         ).limit(_MAX_TASKS)
     )
     for t in task_result.scalars().all():
-        items.append({"emoji": "📝", "label": t.title, "priority": 80})
+        items.append({"emoji": "📝", "label": t.title, "priority": 80, "task_id": t.id, "task_version": t.sync_version})
 
     # 3. Overdue Tasks — only most recent
     overdue_result = await db.execute(
@@ -285,7 +289,7 @@ async def generate_daily_plan(
     )
     for t in overdue_result.scalars().all():
         days_overdue = (target - t.planned_date).days if t.planned_date else 0
-        items.append({"emoji": "⚠️", "label": f"[逾期{days_overdue}天] {t.title}", "priority": 90})
+        items.append({"emoji": "⚠️", "label": f"[逾期{days_overdue}天] {t.title}", "priority": 90, "task_id": t.id, "task_version": t.sync_version})
 
     # 4. Due WrongQuestions (deduplicated)
     review_wq_ids = {r.item_id for r in reviews if r.item_type == "question"}
@@ -302,22 +306,8 @@ async def generate_daily_plan(
         label = f"错题重练：{(q.content or '')[:30]}" if q else f"错题重练 #{wq.id}"
         items.append({"emoji": "❌", "label": label, "priority": 70})
 
-    # Try AI summary if available
+    # Deterministic draft: no model call or implied AI provenance.
     ai_intro = ""
-    try:
-        from app.services.ai_client import get_ai_client
-        client = await get_ai_client(db, current_user.id)
-        if client and items:
-            item_list = "\n".join(f"- {i['emoji']} {i['label']}" for i in items)
-            prompt = (
-                f"今天是{target_date}，以下是学生今日待办事项：\n{item_list}\n\n"
-                "请用1-2句话给出简短、温暖的学习建议，帮助学生轻松开始今天的学习。不要列清单，只给建议。"
-            )
-            resp = await client.chat(prompt, max_tokens=80)
-            if resp:
-                ai_intro = resp.strip()
-    except Exception:
-        pass
 
     lines = [f"# {target_date} 学习计划", ""]
     if ai_intro:
@@ -326,7 +316,9 @@ async def generate_daily_plan(
         lines.append("今日暂无待办，自由学习吧！🎉")
     else:
         for item in sorted(items, key=lambda x: x["priority"], reverse=True):
-            lines.append(f"- [ ] {item['emoji']} {item['label']}")
+            marker = f" <!-- task:{item['task_id']}:v{item['task_version']} -->" if "task_id" in item else ""
+            label = re.sub(r'<!--.*?-->', '', str(item['label']).replace('\n', ' '))
+            lines.append(f"- [ ] {item['emoji']} {label}" + marker)
 
     lines += [
         "",
@@ -345,14 +337,8 @@ async def generate_daily_plan(
         select(DailyPlan).where(DailyPlan.date == target_date, DailyPlan.user_id == current_user.id)
     )
     row = result.scalar_one_or_none()
-    if row is None:
-        row = DailyPlan(user_id=current_user.id, date=target_date, content=content)
-        db.add(row)
-    else:
-        row.content = content
-
-    await db.commit()
-    return {"date": target_date, "content": row.content, "item_count": len(items)}
+    return {"date": target_date, "content": content, "item_count": len(items),
+            "base_version": row.version if row else 0, "saved": False, "generator": "rules"}
 
 
 @router.post("/{target_date}/feynman-probe", response_model=FeynmanProbeResponse)
@@ -428,7 +414,8 @@ async def get_plan(
         select(DailyPlan).where(DailyPlan.date == date, DailyPlan.user_id == current_user.id)
     )
     row = result.scalar_one_or_none()
-    return PlanResponse(date=date, content=row.content if row else "")
+    from app.services.plan_integrity_service import render_plan
+    return PlanResponse(date=date, content=await render_plan(db, row) if row else "", version=row.version if row else 0)
 
 
 @router.put("/{date}", response_model=PlanResponse)
@@ -438,18 +425,14 @@ async def upsert_plan(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(DailyPlan).where(DailyPlan.date == date, DailyPlan.user_id == current_user.id)
-    )
-    row = result.scalar_one_or_none()
-    if row is None:
-        row = DailyPlan(user_id=current_user.id, date=date, content=body.content or "")
-        db.add(row)
-    else:
-        row.content = body.content or ""
-
+    from app.services.plan_integrity_service import save_plan
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "日期格式错误")
+    row = await save_plan(db, current_user, date, body.content, body.expected_version)
     await db.commit()
-    return PlanResponse(date=date, content=row.content)
+    return PlanResponse(date=date, content=row.content, version=row.version)
 
 
 @router.get("/", response_model=list[PlanResponse])
@@ -470,4 +453,5 @@ async def list_plans(
         ).order_by(DailyPlan.date.asc())
     )
     rows = result.scalars().all()
-    return [PlanResponse(date=r.date, content=r.content) for r in rows]
+    from app.services.plan_integrity_service import render_plan
+    return [PlanResponse(date=r.date, content=await render_plan(db, r), version=r.version) for r in rows]

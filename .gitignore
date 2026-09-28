@@ -82,6 +82,7 @@ nul
 backend/venv/
 backend/.venv/
 # Secrets and runtime data
+runtime-backup-*/
 *.db-shm
 *.db-wal
 chromadb/

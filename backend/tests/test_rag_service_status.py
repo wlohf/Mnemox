@@ -31,14 +31,21 @@ class RAGServiceStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["embedding_enabled"])
         self.assertIn("fallback", status["message"])
 
-    async def test_dimension_mismatch_resets_index_and_reports_reindex_needed(self):
+    async def test_dimension_mismatch_pauses_search_and_requests_one_reset(self):
         class FakeEmbedding:
             def get_text_embedding(self, _text):
                 return [0.1, 0.2]
 
         class DimensionMismatchCollection:
+            def __init__(self):
+                self.queries = 0
+
             def query(self, **_kwargs):
+                self.queries += 1
                 raise ValueError("Embedding dimension 2 does not match collection dimensionality 3")
+
+            def count(self):
+                return 3
 
         class EmptyCollection:
             def count(self):
@@ -57,18 +64,32 @@ class RAGServiceStatusTests(unittest.IsolatedAsyncioTestCase):
 
         rag = RAGService()
         chroma = FakeChromaClient()
+        mismatched = DimensionMismatchCollection()
         rag._initialized = True
         rag._embed_model = FakeEmbedding()
-        rag._collection = DimensionMismatchCollection()
+        rag._collection = mismatched
         rag._chroma_client = chroma
+        reset_requests = []
+        rag.set_incompatibility_handler(lambda: reset_requests.append(True))
 
         items = await rag.retrieve("hello", user_id=7)
+        again = await rag.retrieve("hello", user_id=8)
         status = await rag.get_status(user_id=7)
 
-        self.assertEqual(items, [])
-        self.assertTrue(chroma.deleted)
+        # A read path must not wipe the collection every other user shares.
+        self.assertEqual((items, again), ([], []))
+        self.assertFalse(chroma.deleted)
+        self.assertEqual(mismatched.queries, 1)
+        self.assertEqual(reset_requests, [True])
+        self.assertTrue(status["vector_incompatible"])
         self.assertTrue(status["fallback_active"])
-        self.assertIn("重新索引", status["last_retrieval_status"]["message"])
+        self.assertIn("重建资料索引", status["last_retrieval_status"]["message"])
+        self.assertEqual(await rag.index_material(1, "t", "content", user_id=7), 0)
+
+        # The lifecycle reset clears the collection once and resumes semantic search.
+        await rag.reset_index()
+        self.assertTrue(chroma.deleted)
+        self.assertFalse(rag.vector_incompatible)
 
     async def test_vector_delete_failure_is_reported_to_recoverable_lifecycle(self):
         class BrokenCollection:

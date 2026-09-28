@@ -1,5 +1,6 @@
 """Learner evidence counters and explainable, user-isolated learning decisions."""
 from __future__ import annotations
+import uuid
 
 import tempfile
 import unittest
@@ -202,7 +203,7 @@ class LearningRecommendationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([row.evidence_type for row in initial], ["answer"])
 
             reviewed = await review_wrong_question(
-                int(created["id"]), WrongQuestionReview(quality=5, recall_difficulty="easy"),
+                int(created["id"]), WrongQuestionReview(attempt_id=uuid.uuid4(), quality=5, recall_difficulty="easy"),
                 db=session, current_user=self.owner,
             )
             self.assertEqual(reviewed["concept_id"], concept_id)

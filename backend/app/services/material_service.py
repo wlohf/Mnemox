@@ -4,7 +4,7 @@ import logging
 import asyncio
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete, update, or_
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +12,29 @@ from app.models.material import Material, Chapter
 from app.ai.rag_service import get_rag_service
 from app.config import settings
 from app.utils.paths import from_repo_relative
-from app.utils.file_extract import extract_text
+from app.utils.file_extract import extract_text_isolated
 from app.utils.prompt_safety import wrap_untrusted_context
 from app.utils.error_safety import safe_exception_summary
+from app.services.background_runner import material_projection_runner
 from app.services.retrieval_projection_service import RetrievalProjectionService
 from app.services.concept_graph_service import forget_material_concepts, sync_material_concepts
 from app.services.knowledge_source_service import delete_source, register_material_source
+
+
+async def _ingest_material_in_background(bind, rag, *, user_id: int, material_id: int) -> None:
+    """Vectorize a new material on its own session after the upload returned."""
+    async with AsyncSession(bind=bind, expire_on_commit=False) as db:
+        material = await db.scalar(
+            select(Material).where(Material.id == material_id, Material.user_id == user_id)
+        )
+        if material is None:
+            return  # Deleted before vectorization started; forget owns cleanup.
+        projection = await RetrievalProjectionService(db, rag=rag).ingest(
+            material,
+            user_id=user_id,
+            operation="ingest",
+        )
+        logger.info("资料 id=%s 后台检索投影状态: %s", material_id, projection.get("status"))
 
 
 class MaterialService:
@@ -48,22 +65,24 @@ class MaterialService:
         file_hash: Optional[str] = None,
         content_hash: Optional[str] = None,
         sync_to_rag: bool = True,
-        user_id: int = 1,
+        *,
+        user_id: int,
     ) -> Material:
         """创建新资料"""
         content_status = "pending"
         if (content is None or content.strip() == "") and file_path:
             try:
-                extracted = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        extract_text,
-                        from_repo_relative(file_path),
-                        settings.MATERIAL_EXTRACT_MAX_CHARS,
-                    ),
-                    timeout=settings.MATERIAL_EXTRACT_TIMEOUT_SECONDS,
+                extracted = await asyncio.to_thread(
+                    extract_text_isolated,
+                    from_repo_relative(file_path),
+                    settings.MATERIAL_EXTRACT_MAX_CHARS,
+                    settings.MATERIAL_EXTRACT_TIMEOUT_SECONDS,
                 )
-            except asyncio.TimeoutError:
-                logger.warning("资料文本提取超时，已跳过: %s", file_path)
+            except TimeoutError:
+                logger.warning("资料文本提取超时，已终止解析进程: %s", file_path)
+                extracted = None
+            except RuntimeError as exc:
+                logger.warning("资料文本提取进程失败: %s", safe_exception_summary(exc))
                 extracted = None
             if extracted:
                 content = extracted
@@ -95,14 +114,14 @@ class MaterialService:
                 user_id=int(user_id),
                 material_id=int(material.id),
             )
+        await self.projections.prepare_refresh(material, user_id=int(user_id))
         await self.db.commit()
         await self.db.refresh(material)
 
         try:
-            projection = await self.projections.ingest(
+            projection = await self._ingest_new_material(
                 material,
                 user_id=int(user_id),
-                operation="ingest",
                 sync_vectors=bool(sync_to_rag),
             )
             logger.info("资料 id=%s 检索投影状态: %s", material.id, projection.get("status"))
@@ -120,6 +139,48 @@ class MaterialService:
             logger.warning("资料概念抽取降级 id=%s: %s", graph_material_id, safe_exception_summary(exc))
 
         return material
+
+    async def _ingest_new_material(
+        self,
+        material: Material,
+        *,
+        user_id: int,
+        sync_vectors: bool,
+    ) -> Dict[str, Any]:
+        """Keep the upload request free of per-chunk embedding calls.
+
+        Without vectors the ingest only writes SQL chunks and finishes in the
+        request. With an embedding provider the projection stays ``pending``
+        and is vectorized in the background; if the process stops first,
+        startup recovery re-ingests every pending projection.
+        """
+        if sync_vectors and settings.RAG_ENABLED and await self._embedding_available(user_id):
+            bind = self.db.bind
+            rag = self.rag
+            material_id = int(material.id)
+            material_projection_runner.submit(
+                ("material", int(user_id), material_id),
+                lambda: _ingest_material_in_background(
+                    bind, rag, user_id=int(user_id), material_id=material_id,
+                ),
+            )
+            return {"status": "pending"}
+        return await self.projections.ingest(
+            material,
+            user_id=int(user_id),
+            operation="ingest",
+            sync_vectors=sync_vectors,
+        )
+
+    async def _embedding_available(self, user_id: int) -> bool:
+        try:
+            await self.rag.initialize()
+            status = await self.rag.get_status(int(user_id))
+        except Exception as exc:
+            # The in-request ingest records the failure on the projection.
+            logger.warning("检查 embedding 配置失败: %s", safe_exception_summary(exc))
+            return False
+        return bool(status.get("embedding_enabled"))
 
     async def update_material(
         self,
@@ -148,9 +209,15 @@ class MaterialService:
                 user_id=int(user_id),
                 material_id=int(material.id),
             )
+        await self.projections.prepare_refresh(material, user_id=int(user_id))
         await self.db.commit()
         await self.db.refresh(material)
-        await self.projections.refresh(material, user_id=int(user_id))
+        try:
+            await self.projections.refresh(material, user_id=int(user_id))
+        except Exception as exc:
+            await self.db.rollback()
+            await self.db.refresh(material)
+            logger.warning("资料已保存，检索更新待重试 id=%s: %s", material_id, safe_exception_summary(exc))
         try:
             await sync_material_concepts(self.db, int(user_id), material)
             await self.db.commit()
@@ -160,10 +227,10 @@ class MaterialService:
             logger.warning("资料概念更新降级 id=%s: %s", material_id, safe_exception_summary(exc))
         return material
 
-    async def get_material(self, material_id: int) -> Optional[Material]:
-        """获取资料详情"""
+    async def get_material(self, material_id: int, *, user_id: int) -> Optional[Material]:
+        """获取当前用户的资料详情"""
         result = await self.db.execute(
-            select(Material).where(Material.id == material_id)
+            select(Material).where(Material.id == material_id, Material.user_id == int(user_id))
         )
         return result.scalar_one_or_none()
 
@@ -171,23 +238,20 @@ class MaterialService:
         self,
         skip: int = 0,
         limit: int = 100,
-        user_id: Optional[int] = None,
+        *,
+        user_id: int,
     ) -> List[Material]:
-        """获取资料列表"""
-        query = select(Material)
-        if user_id is not None:
-            query = query.where(Material.user_id == user_id)
+        """获取当前用户的资料列表"""
+        query = select(Material).where(Material.user_id == int(user_id))
         result = await self.db.execute(query.offset(skip).limit(limit))
         return list(result.scalars().all())
 
-    async def delete_material(self, material_id: int, user_id: Optional[int] = None) -> bool:
+    async def delete_material(self, material_id: int, user_id: int) -> bool:
         """删除资料记录及其本地文件。"""
-        material = await self.get_material(material_id)
+        material = await self.get_material(material_id, user_id=user_id)
         if not material:
             return False
-        material_user_id = int(getattr(material, "user_id", 0) or 0)
-        if user_id is not None and material_user_id != int(user_id):
-            return False
+        material_user_id = int(material.user_id)
 
         abs_file_path = None
         file_path_value = material.__dict__.get("file_path")
@@ -205,6 +269,7 @@ class MaterialService:
                 source_record_id=int(material_id),
             )
         await self.projections.prepare_forget(material_user_id, material_id)
+        await self._delete_material_dependents(material_id, material_user_id)
         await self.db.delete(material)
         await self.db.commit()
 
@@ -223,13 +288,49 @@ class MaterialService:
 
         return True
 
+    async def _delete_material_dependents(self, material_id: int, user_id: int) -> None:
+        """Remove owned exercises; retain independent notes and time history."""
+        from app.models.question import Question, QuizRecord, WrongQuestion, ReviewSchedule
+        from app.models.goal import Goal, Task
+        from app.models.pomodoro import Pomodoro
+        from app.models.session import StudySession
+        from app.models.note import Note
+        from app.models.concept import ConceptLink, ConceptSourceEvidence
+
+        chapters = select(Chapter.id).where(Chapter.material_id == material_id)
+        questions = select(Question.id).where(Question.chapter_id.in_(chapters))
+        wrongs = select(WrongQuestion.id).where(WrongQuestion.question_id.in_(questions))
+        tasks = select(Task.id).join(Goal).where(Goal.material_id == material_id)
+        await self.db.execute(delete(ReviewSchedule).where(or_(
+            (ReviewSchedule.item_type == "chapter") & ReviewSchedule.item_id.in_(chapters),
+            (ReviewSchedule.item_type == "question") & ReviewSchedule.item_id.in_(wrongs),
+        )))
+        await self.db.execute(delete(ConceptLink).where(
+            ConceptLink.target_type == "wrong_question", ConceptLink.target_id.in_(wrongs)))
+        await self.db.execute(delete(ConceptSourceEvidence).where(
+            ConceptSourceEvidence.source_type == "wrong_question", ConceptSourceEvidence.source_id.in_(wrongs)))
+        await self.db.execute(delete(QuizRecord).where(QuizRecord.question_id.in_(questions)))
+        await self.db.execute(delete(WrongQuestion).where(WrongQuestion.question_id.in_(questions)))
+        await self.db.execute(delete(Question).where(Question.chapter_id.in_(chapters)))
+        for model in (Pomodoro, StudySession):
+            await self.db.execute(update(model).where(model.task_id.in_(tasks)).values(task_id=None))
+            await self.db.execute(update(model).where(model.chapter_id.in_(chapters)).values(chapter_id=None))
+        await self.db.execute(update(Task).where(Task.chapter_id.in_(chapters))
+                              .values(chapter_id=None, sync_version=Task.sync_version + 1))
+        await self.db.execute(update(Goal).where(Goal.plan_current_chapter_id.in_(chapters))
+                              .values(plan_current_chapter_id=None, sync_version=Goal.sync_version + 1))
+        await self.db.execute(update(Note).where(Note.chapter_id.in_(chapters))
+                              .values(chapter_id=None, sync_version=Note.sync_version + 1))
+        await self.db.execute(update(Note).where(Note.material_id == material_id)
+                              .values(material_id=None, sync_version=Note.sync_version + 1))
+
     async def analyze_material_with_rag(
         self,
         material_id: int,
         user_id: int,
     ) -> Dict[str, Any]:
         """使用 RAG 检索 + AI 分析资料"""
-        material = await self.get_material(material_id)
+        material = await self.get_material(material_id, user_id=user_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
 
@@ -273,7 +374,7 @@ class MaterialService:
         user_id: int,
     ) -> str:
         """向 AI 提问关于某份资料的问题"""
-        material = await self.get_material(material_id)
+        material = await self.get_material(material_id, user_id=user_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
 
@@ -305,7 +406,7 @@ class MaterialService:
         user_id: int,
     ) -> Dict[str, Any]:
         """为资料生成章节大纲"""
-        material = await self.get_material(material_id)
+        material = await self.get_material(material_id, user_id=user_id)
         if not material:
             raise ValueError(f"资料不存在: {material_id}")
 

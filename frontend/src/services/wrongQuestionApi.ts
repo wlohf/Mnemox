@@ -1,4 +1,6 @@
 import { apiFetch } from './apiClient'
+import { fetchAllPages } from './pagedCollection'
+import { submitReviewAttempt } from './reviewAttempt'
 
 export interface WrongQuestionItem {
   id: number
@@ -29,11 +31,7 @@ export async function listWrongQuestions(params?: {
   if (params?.mastery_status) query.set('mastery_status', params.mastery_status)
   if (params?.due_only) query.set('due_only', 'true')
   const qs = query.toString()
-  try {
-    return await apiFetch<WrongQuestionItem[]>(`/api/wrong-questions${qs ? `?${qs}` : ''}`)
-  } catch {
-    return []
-  }
+  return fetchAllPages<WrongQuestionItem>(`/api/wrong-questions${qs ? `?${qs}` : ''}`)
 }
 
 export async function createWrongQuestion(data: {
@@ -81,15 +79,7 @@ export async function reviewWrongQuestion(
   quality: number,
   recall_difficulty?: 'easy' | 'hard' | 'forgot'
 ): Promise<WrongQuestionItem | null> {
-  try {
-    return await apiFetch<WrongQuestionItem>(`/api/wrong-questions/${id}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality, recall_difficulty }),
-    })
-  } catch {
-    return null
-  }
+  return submitReviewAttempt<WrongQuestionItem>(`/api/wrong-questions/${id}/review`, { quality, recall_difficulty })
 }
 
 export async function deleteWrongQuestion(id: number): Promise<boolean> {

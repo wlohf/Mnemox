@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV MNEMOX_DATA_DIR=/app/data
 
 # Install system dependencies for psycopg/asyncpg
 RUN apt-get update && apt-get install -y --no-install-recommends \

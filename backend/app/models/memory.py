@@ -11,7 +11,7 @@ class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     conversation_id = Column(Integer, ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
     summary = Column(Text, comment="会话摘要")
     key_points = Column(Text, comment="JSON 列表，关键点")
@@ -32,7 +32,7 @@ class UserMemory(Base):
     __tablename__ = "user_memories"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     memory_key = Column(String(100), nullable=False, index=True, comment="记忆键")
     memory_value = Column(Text, nullable=False, comment="记忆值")
     category = Column(String(50), default="preference", comment="类别: preference/goal/weakness/style")

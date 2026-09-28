@@ -306,9 +306,9 @@ export function EDAReportPage() {
                 </Space>
 
       <Row gutter={[12, 12]}>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="总学习时长(分钟)" value={report?.summary.total_minutes || 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="日均学习(分钟)" value={report?.summary.avg_daily_minutes || 0} /></Card></Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="番茄完成率" value={report?.summary.completion_rate || 0} suffix="%" /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="已记录实际时长(分钟)" value={report?.summary.total_minutes ?? '未知'} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="已记录日期均值(分钟)" value={report?.summary.avg_daily_minutes ?? '未知'} /></Card></Col>
+        <Col xs={12} md={6}><Card size="small"><Statistic title="番茄完成率" value={report?.summary.completion_rate ?? '未知'} suffix="%" /></Card></Col>
         <Col xs={12} md={6}><Card size="small"><Statistic title="任务完成" value={`${report?.summary.completed_tasks || 0}/${report?.summary.total_tasks || 0}`} /></Card></Col>
       </Row>
 
@@ -317,10 +317,10 @@ export function EDAReportPage() {
           style={{ marginTop: 12 }}
           type="info"
           showIcon
-          message={`学习画像：${report.profile.profile_type}（置信度 ${(report.profile.confidence * 100).toFixed(1)}%）`}
+          message={report.profile.profile_type}
           description={(
             <div>
-              <div>最佳学习窗口：{report.profile.best_study_window}</div>
+              <div>记录峰值窗口：{report.profile.best_study_window}</div>
               <div style={{ marginTop: 4 }}>
                 证据：{(report.profile.evidence || []).join('；')}
               </div>

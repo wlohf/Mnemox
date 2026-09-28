@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learning_event import LearningEvent
 from app.models.memory import UserMemory
+from app.services.learning_event_service import normalize_learning_event_type
+from app.services.behavior_evidence_service import valid_duration_minutes
 from app.services.agent_long_memory_service import (
     CONFIRMED,
     STAGED,
@@ -164,17 +166,30 @@ def _aggregate_candidates(events: list[LearningEvent]) -> list[dict[str, Any]]:
             }
         )
 
-    duration_by_type: defaultdict[str, int] = defaultdict(int)
+    duration_by_type: defaultdict[str, float] = defaultdict(float)
+    duration_sources: set[str] = set()
     for event in events:
-        if event.duration:
-            duration_by_type[event.event_type] += int(event.duration or 0)
+        payload = _payload(event)
+        kind = normalize_learning_event_type(event.event_type or "unknown")
+        # A start records a plan, not elapsed work. Summaries and generated
+        # advice are never fresh duration evidence. Unknown legacy values stay
+        # unknown; same-session outcome replays contribute only once.
+        if kind not in {"pomodoro.completed", "pomodoro.interrupted"}:
+            continue
+        if payload.get("duration_basis") != "actual":
+            continue
+        minutes = valid_duration_minutes(payload.get("actual_duration"))
+        source = f"pomodoro:{payload['pomodoro_id']}" if payload.get("pomodoro_id") else f"event:{event.id}"
+        if minutes is not None and source not in duration_sources:
+            duration_sources.add(source)
+            duration_by_type[kind] += minutes * 60
     if duration_by_type:
         top_duration_type, seconds = max(duration_by_type.items(), key=lambda item: (item[1], item[0]))
-        minutes = max(1, round(seconds / 60))
+        minutes = round(seconds / 60, 1)
         candidates.append(
             {
                 "memory_key": "agent_time_investment_pattern",
-                "memory_value": f"近期时间投入最多的是 {top_duration_type}，约 {minutes} 分钟。",
+                "memory_value": f"本批事件中明确报告的实际时长以 {top_duration_type} 最多，共 {minutes:g} 分钟；不代表效率或学习能力。",
                 "category": "pattern",
                 "confidence": 0.74,
                 "review_status": CONFIRMED,
@@ -287,7 +302,12 @@ async def run_agent_memory_learning(
             "core_profile": profile,
         }
 
-    candidates = _aggregate_candidates(events) + _subjective_or_raw_candidates(events)
+    observed_events = [event for event in events if not (
+        _payload(event).get("demo") or _payload(event).get("simulation")
+        or _payload(event).get("record_origin") in {"demo", "simulation"}
+        or (event.extra_metadata or {}).get("record_origin") in {"demo", "simulation"}
+    )]
+    candidates = _aggregate_candidates(observed_events) + _subjective_or_raw_candidates(observed_events)
     auto_confirmed = 0
     staged = 0
     written_ids: list[int] = []

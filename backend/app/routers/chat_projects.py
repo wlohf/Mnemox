@@ -8,11 +8,8 @@ from typing import Optional, List
 from app.database import get_db
 from app.models.chat import ChatProject, ChatProjectMaterial, ChatConversation
 from app.models.material import Material
-from app.ai.rag_service import get_rag_service
-from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
-from app.services.retrieval_projection_service import RetrievalProjectionService
 
 router = APIRouter()
 
@@ -37,28 +34,8 @@ async def _ensure_user_materials(db: AsyncSession, material_ids: List[int], user
         raise HTTPException(status_code=404, detail="资料不存在")
 
 
-async def _reindex_material_for_projects(db: AsyncSession, material_id: int, user_id: int) -> None:
-    result = await db.execute(
-        select(Material).where(Material.id == material_id, Material.user_id == user_id)
-    )
-    material = result.scalar_one_or_none()
-    if not material or not material.content:
-        return
-
-    assoc_result = await db.execute(
-        select(ChatProjectMaterial.project_id)
-        .join(ChatProject, ChatProjectMaterial.project_id == ChatProject.id)
-        .where(ChatProject.user_id == user_id)
-        .where(ChatProjectMaterial.material_id == material_id)
-    )
-    project_ids = [row[0] for row in assoc_result.all()]
-
-    await RetrievalProjectionService(db, rag=get_rag_service()).ingest(
-        material,
-        operation="refresh",
-        project_ids=project_ids,
-        user_id=user_id,
-    )
+# Project membership lives only in SQL: retrieval resolves a project to its
+# material IDs before querying vectors, so association changes never re-embed.
 
 
 # ---- Schemas ----
@@ -386,7 +363,6 @@ async def add_material(
     assoc = ChatProjectMaterial(project_id=project_id, material_id=body.material_id)
     db.add(assoc)
     await db.flush()
-    await _reindex_material_for_projects(db, body.material_id, current_user.id)
     return {"ok": True}
 
 
@@ -424,7 +400,6 @@ async def remove_material(
 
     await db.delete(assoc)
     await db.flush()
-    await _reindex_material_for_projects(db, material_id, current_user.id)
     return {"ok": True}
 
 
@@ -454,7 +429,6 @@ async def batch_update_materials(
 
     added = 0
     removed = 0
-    impacted_ids = sorted(set(body.add_material_ids) | set(body.remove_material_ids))
 
     # 移除关联
     if body.remove_material_ids:
@@ -484,8 +458,6 @@ async def batch_update_materials(
                 added += 1
 
     await db.flush()
-    for mid in impacted_ids:
-        await _reindex_material_for_projects(db, mid, current_user.id)
     return {
         "ok": True,
         "added": added,

@@ -5,6 +5,8 @@ import { clearSavedLogin, getSavedLogin, saveLoginIfAvailable } from '../service
 import { closeStudyDatabase, openStudyDatabase } from '../db/studyDb'
 import { syncEngine } from '../sync/SyncEngine'
 import { announceSessionChange, SESSION_INVALIDATED_EVENT, setApiSessionUser } from '../services/sessionScope'
+import { resetChatSession } from './chatStore'
+import { switchPomodoroAccount } from './pomodoroStore'
 
 interface LoginOptions {
   rememberPassword?: boolean
@@ -44,6 +46,8 @@ function suspendAccount(): number {
   ++generation
   authCheck = null
   setApiSessionUser(null)
+  resetChatSession()
+  void switchPomodoroAccount(null)
   syncEngine.stop()
   closeStudyDatabase()
   return generation
@@ -80,6 +84,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       await openStudyDatabase(user)
       assertGeneration(current)
       setApiSessionUser(user.id)
+      await switchPomodoroAccount(user.id, user.created_at)
+      assertGeneration(current)
       set({ user, isAuthenticated: true, isLoading: false })
     } catch (e) {
       if (generation === current) {
@@ -119,6 +125,8 @@ export const useAuthStore = create<AuthState>((set) => ({
         await openStudyDatabase(user)
         assertGeneration(current)
         setApiSessionUser(user.id)
+        await switchPomodoroAccount(user.id, user.created_at)
+        assertGeneration(current)
         set({ user, isAuthenticated: true, isLoading: false })
         return true
       }

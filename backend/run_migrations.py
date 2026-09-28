@@ -1,8 +1,9 @@
 """Run the versioned database migration entrypoint.
 
-SQLite remains a local-development convenience backed by ``init_db``. Every
-non-SQLite environment must use Alembic revisions; the legacy SQL files are
-kept only as historical references and are no longer a second migration path.
+SQLite and PostgreSQL share one Alembic chain. SQLite is migrated by
+``init_db`` (the desktop runtime has no separate step); PostgreSQL is migrated
+here under an advisory lock. The legacy SQL files are historical references
+only and are no longer a migration path.
 """
 from __future__ import annotations
 
@@ -274,9 +275,9 @@ async def run_migrations() -> None:
     """Run migrations for the configured database."""
 
     if _is_sqlite_url(settings.DATABASE_URL):
-        print("检测到 SQLite，执行 Base.metadata.create_all + 轻量迁移。")
+        print("检测到 SQLite，执行 Alembic 迁移（未纳入 Alembic 的旧库会先补齐并标记基线）。")
         await init_db()
-        print("SQLite 迁移检查完成。")
+        print("SQLite 已升级到 Alembic head。")
         return
 
     await _run_postgresql_migrations()

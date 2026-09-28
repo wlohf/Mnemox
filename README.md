@@ -24,6 +24,7 @@ Mnemox 是本地优先的个性化学习系统，把学习资料、笔记、行�
 - [路线图](docs/roadmap.md) 是当前 Phase/Stage 状态、执行顺序、完成标准与冻结清单的权威来源。
 - [技术基线](docs/technical.md) 是当前代码实现、运行边界与维护约定的权威来源。
 - [需求基线](docs/requirements.md) 维护产品需求范围。
+- [动态用户理解与连续辅导方向](docs/superpowers/specs/2026-09-28-dynamic-user-understanding.md) 是已确认的后续产品方向：开放发现行为假设，依据样本、情境、反例与时间变化持续评估；[实施计划](docs/superpowers/plans/2026-09-28-dynamic-user-understanding-plan.md)拆解任务，状态以路线图为准。
 - [进度文档](docs/progress.md) 汇总版本、验证证据与已知限制；涉及 Phase/Stage 状态时以路线图为准。
 - 当前架构决策（2026-08-03，混合 RAG / 概念图谱 / 时态记忆 / 学习者模型）：`/docs/superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md`
 - 笔记、上下文与记忆边界（2026-08-13，三层逻辑存储 / 三阶段检索）：`/docs/superpowers/specs/2026-08-13-note-context-memory-architecture.md`
@@ -78,7 +79,7 @@ flowchart TB
     SQL --> Learner["LearnerModel / FSRS\n可重算状态与复习调度"]
 ```
 
-SQL 与原始文件是规范来源；Chroma、未来候选向量库、图存储和运行时 checkpoint 都只能作为可重建投影。现有 Chroma 保持不变；Qdrant、Neo4j、Graphiti 与 LangGraph 仍处于候选或未评估状态，不属于当前运行时依赖。Neo4j/Graphiti 只有在形成可评测的 Claim 关系数据并满足路线图门槛后，才允许进入独立 Shadow。
+SQL 与原始文件是规范来源；Chroma、图存储和运行时 checkpoint 都只能作为可重建投影。默认图后端为 SQL。Neo4j 已作为可选图后端接入关联查询、学习路径、投影重建和 SQL 回退；Graphiti 已接入独立、默认关闭的时态记忆实验接口，不替代日常聊天与 Coach 的 SQL 记忆主链。两者的 Python SDK 随标准后端依赖安装，图服务仍需显式配置并启用，详见[后端图功能说明](backend/README.md#可选图功能neo4j--graphiti)。Qdrant 保留为可选评测依赖，LangGraph 不属于当前运行时。
 
 ---
 
@@ -116,6 +117,8 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - **薄弱知识点**：错题本高频知识点 Top 10
 - 画像自动注入 AI system prompt，实现真正个性化回复
 
+以上画像属于现有聚合与规则能力。后续将按[动态用户理解方向](docs/superpowers/specs/2026-09-28-dynamic-user-understanding.md)增加带依据、适用条件和不确定性的候选规律及持续验证；按完成数量得到的活动时段不能直接证明学习效率，现有分数也不能作为永久特性。新增能力尚待实施与效果验收。
+
 ### 3. AI 教练记忆系统
 - **Episodic 记忆**：对话摘要，带时间衰减（久远记忆权重降低）
 - **Semantic 记忆**：从对话中提炼长期事实（学习偏好、目标、薄弱点）
@@ -128,7 +131,7 @@ EventType.REVIEW_COMPLETE      # 完成一次复习
 - 根路径和 `/conversations/:conversationId` 都能直接恢复指定历史对话，刷新页面不会丢失当前上下文
 - 左侧会话栏支持新建、搜索、按时间分组、置顶、重命名、项目筛选和项目资料管理
 - 支持流式回复、会话持久化、学习会话聊天记录同步、对话摘要、长期记忆提取、错题自动检测和学习事件追踪
-- 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容
+- 流式回复后处理采用分阶段提交：摘要、记忆、反思、错题检测、事件追踪中某一步失败时，不会连带回滚已保存的聊天内容；后处理在回复落库后于后台执行，不延迟回复结束，用户断开连接也不会中断
 - 聊天输入区支持模型覆盖默认路由；开启联网搜索后，可选择 Tavily、供应商 hosted search、专用搜索总结或本地兜底搜索
 - 自动模式会在配置 Tavily Key 时优先使用 Tavily；没有 Key 或搜索链路失败时，DuckDuckGo / Bing 会作为最终兜底
 - `RetrievalRouter` 统一融合当前用户的资料、笔记、概念、记忆和学习状态；笔记通过 `ContextStore` 保留来源、检索模式和 SQL 关键词降级

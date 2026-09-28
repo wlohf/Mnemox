@@ -217,11 +217,21 @@ describe('pull reconciliation and UTC boundaries', () => {
     finish(response([])); await pull
     expect((await db.notes.get('n1'))?._serverId).toBe(42)
   })
-  it.each([ankiCardsSyncAdapter, wrongQuestionsSyncAdapter])('never infers deletion from the capped $module page', async adapter => {
-    await db.table(adapter.module).put(note())
+  it.each([ankiCardsSyncAdapter, wrongQuestionsSyncAdapter])('reconciles $module only after all cursor pages arrive', async adapter => {
+    await db.table(adapter.module).put(note({ _serverId: 251 }))
+    const fetch = vi.fn(async (url: string) => {
+      const after = Number(new URL(url, 'http://localhost').searchParams.get('after_id'))
+      return response(Array.from({ length: 251 }, (_, i) => ({ ...serverNote(), id: i + 1 }))
+        .filter(row => row.id > after).slice(0, 200))
+    })
+    vi.stubGlobal('fetch', fetch)
+    await adapter.pullAll()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(await db.table(adapter.module).get('n1')).toBeDefined()
+    expect(await db.table(adapter.module).count()).toBe(251)
     vi.stubGlobal('fetch', vi.fn(async () => response([])))
     await adapter.pullAll()
-    expect(await db.table(adapter.module).get('n1')).toBeDefined()
+    expect(await db.table(adapter.module).count()).toBe(0)
   })
   it('treats naive datetime as UTC and offset time as the same instant', () => {
     expect(utcTimestamp('2026-09-12T12:00:00')).toBe(now)

@@ -326,6 +326,8 @@ async def delete_task(
 
     await db.delete(task)
     await flush_sync_mutation(db)
+    from app.services.understanding_runtime import enqueue_understanding
+    await enqueue_understanding(db, current_user.id)
     item = {"ok": True}
     await complete_idempotent_operation(db, operation, item)
     return item
@@ -443,10 +445,8 @@ async def delete_goal(
     require_matching_version(goal.sync_version, if_match)
 
     # 显式查询任务，避免异步 Session 上访问 goal.tasks 懒加载导致 MissingGreenlet
-    tasks_result = await db.execute(select(Task.id, Task.chapter_id).where(Task.goal_id == goal.id))
-    task_rows = tasks_result.all()
-    task_ids = [row.id for row in task_rows]
-    chapter_ids = list({row.chapter_id for row in task_rows if row.chapter_id})
+    tasks_result = await db.execute(select(Task.id).where(Task.goal_id == goal.id))
+    task_ids = list(tasks_result.scalars())
 
     # 先解除外部表对 Task 的引用，避免 Goal 级联删除 Task 时触发外键错误
     if task_ids:
@@ -461,19 +461,13 @@ async def delete_goal(
             .values(task_id=None)
         )
 
-    # 级联删除关联的 ReviewSchedule（Task 关联章节的复习计划）
-    if chapter_ids:
-        from app.models.question import ReviewSchedule
-        await db.execute(
-            delete(ReviewSchedule).where(
-                ReviewSchedule.item_type == "chapter",
-                ReviewSchedule.item_id.in_(chapter_ids),
-                ReviewSchedule.user_id == current_user.id,
-            )
-        )
+    # ReviewSchedule belongs to the user's chapter, not to a goal referencing it.
+    # Preserve FSRS and archive state even when this is the last referencing goal.
 
     await db.delete(goal)
     await flush_sync_mutation(db)
+    from app.services.understanding_runtime import enqueue_understanding
+    await enqueue_understanding(db, current_user.id)
     item = {"ok": True}
     await complete_idempotent_operation(db, operation, item)
     return item

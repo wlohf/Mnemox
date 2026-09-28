@@ -392,7 +392,11 @@ async def patch_preferences(
     current_user: User = Depends(get_current_user),
 ):
     patch = body.model_dump(exclude_unset=True)
-    return await update_coach_preferences(db, int(current_user.id), patch)
+    result = await update_coach_preferences(db, int(current_user.id), patch)
+    if 'time_zone' in patch:
+        from app.services.understanding_runtime import enqueue_understanding
+        await enqueue_understanding(db, int(current_user.id))
+    return result
 
 
 @router.post("/workflows")

@@ -17,6 +17,8 @@ export interface Conversation {
 }
 
 export interface ConversationMessage {
+  status?: 'streaming' | 'interrupted' | 'completed'
+  turn_id?: string
   id: number
   role: 'user' | 'assistant'
   content: string

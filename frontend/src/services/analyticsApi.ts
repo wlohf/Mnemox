@@ -11,10 +11,10 @@ export interface EDAReport {
   start_date: string
   end_date: string
   summary: {
-    total_minutes: number
-    avg_daily_minutes: number
+    total_minutes: number | null
+    avg_daily_minutes: number | null
     pomodoro_count: number
-    completion_rate: number
+    completion_rate: number | null
     active_days: number
     total_tasks: number
     completed_tasks: number
@@ -22,25 +22,25 @@ export interface EDAReport {
     peak_hour?: number | null
     best_study_window?: string
     profile_type?: string
-    profile_confidence?: number
+    profile_confidence?: number | null
     stop_reason_counts?: Record<string, number>
     weak_points_top?: Array<{ knowledge_point: string; wrong_count: number; mastery_status: string }>
   }
-  daily_points: Array<{ date: string; study_minutes: number; pomodoro_count: number; completion_rate: number; rolling7_minutes?: number }>
+  daily_points: Array<{ date: string; study_minutes: number | null; pomodoro_count: number; completion_rate: number | null; rolling7_minutes?: number | null }>
   insights: EDAInsight[]
   recommendations: string[]
   profile: {
     profile_type: string
-    confidence: number
+    confidence: number | null
     best_study_window: string
     evidence: string[]
   }
   chart_analysis: string[]
   charts: {
-    daily_trend: Array<{ date: string; study_minutes: number; pomodoro_count: number; completion_rate: number; rolling7_minutes?: number }>
-    hourly_distribution: Array<{ hour: number; sessions: number; minutes: number; completion_rate: number; avg_duration: number }>
-    weekday_distribution: Array<{ weekday: number; label: string; sessions: number; minutes: number; completion_rate: number }>
-    hour_week_heatmap: { hours: number[]; weekdays: string[]; points: Array<[number, number, number]> }
+    daily_trend: Array<{ date: string; study_minutes: number | null; pomodoro_count: number; completion_rate: number | null; rolling7_minutes?: number | null }>
+    hourly_distribution: Array<{ hour: number; sessions: number; minutes: number | null; completion_rate: number | null; avg_duration: number | null }>
+    weekday_distribution: Array<{ weekday: number; label: string; sessions: number; minutes: number | null; completion_rate: number | null }>
+    hour_week_heatmap: { hours: number[]; weekdays: string[]; points: Array<[number, number, number | null]> }
     stop_reason_distribution: Array<{ reason: string; key: string; count: number }>
     duration_bucket_distribution: Array<{ bucket: string; count: number }>
     completion_funnel: Array<{ stage: string; value: number }>

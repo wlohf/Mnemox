@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 class Pomodoro(Base):
     """番茄钟记录表"""
     __tablename__ = "pomodoros"
+    __table_args__ = (Index("uq_pomodoro_user_client", "user_id", "client_record_id", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -54,9 +55,14 @@ class Pomodoro(Base):
         comment="由 Coach 建议发起的行动尝试 ID",
     )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="开始时间", nullable=True)
+    client_record_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    time_basis: Mapped[str] = mapped_column(String(20), default="legacy", server_default="legacy")
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, comment="结束时间", nullable=True)
     task_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, comment="任务名称（前端传入）")
     duration: Mapped[float] = mapped_column(Float, default=25.0, comment="时长（分钟）")
+    planned_duration: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="开始时的计划分钟数；历史未知不回填")
+    actual_duration: Mapped[Optional[float]] = mapped_column(Float, nullable=True, comment="结束时明确报告的实际分钟数；缺失不等于零")
+    record_origin: Mapped[str] = mapped_column(String(20), default="legacy", server_default="legacy", comment="recorded / offline_estimated / demo / simulation / legacy")
     completed: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否完成（未中断）")
     stop_reason: Mapped[Optional[str]] = mapped_column(
         String(20),

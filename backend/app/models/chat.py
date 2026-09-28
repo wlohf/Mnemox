@@ -1,5 +1,5 @@
 """AI 对话相关模型：项目、对话、消息"""
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -10,7 +10,7 @@ class ChatProject(Base):
     __tablename__ = "chat_projects"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     name = Column(String(200), nullable=False, comment="项目名称")
     description = Column(Text, comment="项目描述")
     default_instructions = Column(Text, comment="默认系统指令")
@@ -40,7 +40,7 @@ class ChatConversation(Base):
     __tablename__ = "chat_conversations"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="所属用户")
     project_id = Column(Integer, ForeignKey("chat_projects.id", ondelete="SET NULL"), nullable=True, index=True, comment="所属项目")
     title = Column(String(200), default="新对话", comment="对话标题")
     summary = Column(Text, comment="对话摘要")
@@ -55,6 +55,10 @@ class ChatConversation(Base):
 class ChatMessage(Base):
     """对话消息表"""
     __tablename__ = "chat_messages"
+    __table_args__ = (Index("uq_chat_message_turn_role", "conversation_id", "turn_id", "role", unique=True),)
+
+    turn_id = Column(String(36), nullable=True)
+    status = Column(String(20), nullable=False, default="completed", server_default="completed")
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     conversation_id = Column(Integer, ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -64,3 +68,15 @@ class ChatMessage(Base):
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
 
     conversation = relationship("ChatConversation", back_populates="messages")
+
+
+class ChatTurn(Base):
+    """Durable stream identity; progress is committed before its SSE payload."""
+    __tablename__ = "chat_turns"
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(Integer, ForeignKey("chat_conversations.id", ondelete="CASCADE"))
+    study_session_id = Column(Integer, ForeignKey("study_sessions.id", ondelete="CASCADE"))
+    request_hash = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False)
+    updated_at = Column(DateTime, nullable=False)

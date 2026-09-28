@@ -454,6 +454,10 @@ async def seed_demo_workspace(
             started_at=started,
             ended_at=started + timedelta(minutes=minutes),
             note="Demo 专注记录",
+            record_origin="demo",
+            time_basis="utc",
+            planned_duration=25,
+            actual_duration=minutes,
         ))
     created["pomodoros"] += 4
 
@@ -547,7 +551,7 @@ async def seed_demo_workspace(
             from app.ai.rag_service import get_rag_service
             rag = get_rag_service()
             await rag.initialize()
-            await rag.index_material(material.id, material.title, material.content or "", file_type="md", project_ids=[project.id], user_id=user_id)
+            await rag.index_material(material.id, material.title, material.content or "", file_type="md", user_id=user_id)
         except Exception:
             pass
 

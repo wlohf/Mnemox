@@ -878,7 +878,7 @@ export function AgentPage() {
           {item.inaccurate && <Tag color="red">不准确</Tag>}
           {item.ignored && <Tag color="default">已忽略</Tag>}
         </Space>
-        {item.confidence !== undefined && <Text type="secondary">置信度：{Math.round(Number(item.confidence) * 100)}%</Text>}
+        {item.confidence != null && <Text type="secondary">置信度：{Math.round(Number(item.confidence) * 100)}%</Text>}
       </Space>
     </List.Item>
   )

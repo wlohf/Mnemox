@@ -79,7 +79,8 @@ class SyncProtocolAPITests(unittest.IsolatedAsyncioTestCase):
         ]
 
     async def test_capabilities_and_entire_crud_replay_contract(self):
-        self.assertEqual((await self.client.get('/api/sync/capabilities')).json(), {'protocol_version': 1})
+        self.assertEqual((await self.client.get('/api/sync/capabilities')).json(),
+            {'protocol_version': 1, 'review_attempts': True, 'keyset_collections': True})
         for module, collection, item_path, body, first_edit, second_edit in await self.resources():
             with self.subTest(module=module):
                 create_headers = self.headers()

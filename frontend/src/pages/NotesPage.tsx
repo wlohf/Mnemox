@@ -39,6 +39,7 @@ import {
 import { MarkdownLiveEditor, type MarkdownLiveEditorHandle, type MarkdownLiveEditorImageResult } from '../components/MarkdownLiveEditor'
 import { PageShell } from '../components/PageShell'
 import { syncEngine } from '../sync/SyncEngine'
+import { NoteDraftBuffer } from '../services/noteDraftBuffer'
 import '../components/ChatMessageBubble.css'
 
 const { Text } = Typography
@@ -167,6 +168,12 @@ export function NotesPage() {
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const editorRef = useRef<MarkdownLiveEditorHandle | null>(null)
+  const draftBufferRef = useRef<NoteDraftBuffer | null>(null)
+  if (!draftBufferRef.current) {
+    draftBufferRef.current = new NoteDraftBuffer(localStorage, () => message.error('本地草稿保存失败，请复制内容或点击保存后再离开'))
+  }
+  const editorSnapshotRef = useRef('')
+  editorSnapshotRef.current = JSON.stringify([active?._localId, title, content, tagsText, materialIdText, chapterIdText, linksText])
 
   const [aiOpen, setAiOpen] = useState(false)
   const [aiAction, setAiAction] = useState<NoteAIAssistAction>('continue')
@@ -220,6 +227,7 @@ export function NotesPage() {
   )
 
   const openNote = (note: OfflineNoteItem) => {
+    if (!draftBufferRef.current!.flush()) return
     setActive(note)
     let nextTitle = note.title || ''
     let nextContent = note.content || ''
@@ -253,6 +261,7 @@ export function NotesPage() {
   }
 
   const clearActive = () => {
+    if (!draftBufferRef.current!.flush()) return
     setActive(null)
     setTitle('')
     setContent('')
@@ -305,26 +314,46 @@ export function NotesPage() {
       chapterIdText !== activeChapterText ||
       linksText !== activeLinksText
     if (!dirty) {
-      setDraftStatus((prev) => prev === 'restored' ? prev : 'clean')
+      draftBufferRef.current!.discard(getDraftKey(active._localId))
+      try {
+        localStorage.removeItem(getDraftKey(active._localId))
+      } catch {
+        message.error('旧草稿清理失败，请检查本地存储权限')
+      }
+      setDraftStatus('clean')
+      setDraftSavedAt(null)
       return
     }
     setDraftStatus('dirty')
-    const timeoutId = window.setTimeout(() => {
-      const savedAt = new Date().toISOString()
-      localStorage.setItem(getDraftKey(active._localId), JSON.stringify({
-        title,
-        content,
-        tagsText,
-        materialIdText,
-        chapterIdText,
-        linksText,
-        savedAt,
-      }))
+    draftBufferRef.current!.schedule(getDraftKey(active._localId), {
+      title,
+      content,
+      tagsText,
+      materialIdText,
+      chapterIdText,
+      linksText,
+    }, (savedAt) => {
       setDraftSavedAt(savedAt)
       setDraftStatus('saved')
-    }, 700)
-    return () => window.clearTimeout(timeoutId)
+    })
   }, [active, title, content, tagsText, materialIdText, chapterIdText, linksText])
+
+  useEffect(() => {
+    const flush = () => { draftBufferRef.current!.flush() }
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!draftBufferRef.current!.flush()) {
+        event.preventDefault()
+        event.returnValue = ''
+      }
+    }
+    window.addEventListener('pagehide', flush)
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => {
+      flush()
+      window.removeEventListener('pagehide', flush)
+      window.removeEventListener('beforeunload', beforeUnload)
+    }
+  }, [])
 
   const doUploadImage = async (file: File) => {
     setUploading(true)
@@ -472,24 +501,35 @@ export function NotesPage() {
     const material_id = parseNumericId(materialIdText)
     const chapter_id = parseNumericId(chapterIdText)
     const links = parseLinks(linksText)
+    const snapshotAtSave = editorSnapshotRef.current
     setSaving(true)
-    const saved = await updateNote(active._localId, {
-      title,
-      content,
-      tags,
-      material_id,
-      chapter_id,
-      links,
-    })
-    setSaving(false)
+    let saved: OfflineNoteItem | null = null
+    try {
+      saved = await updateNote(active._localId, {
+        title,
+        content,
+        tags,
+        material_id,
+        chapter_id,
+        links,
+      })
+    } catch {
+      message.error('保存失败，草稿仍保留，请重试')
+      return
+    } finally {
+      setSaving(false)
+    }
     if (!saved) {
       message.error('保存失败')
       return
     }
+    message.success('已保存')
+    // An edit or note switch while IndexedDB was writing must not be overwritten.
+    if (snapshotAtSave !== editorSnapshotRef.current) return
+    draftBufferRef.current!.discard(getDraftKey(active._localId))
     localStorage.removeItem(getDraftKey(active._localId))
     setDraftStatus('clean')
     setDraftSavedAt(null)
-    message.success('已保存')
     openNote(saved)
   }
 

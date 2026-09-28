@@ -8,6 +8,13 @@ from app.utils import paths
 
 
 class DesktopRuntimePathsTests(unittest.TestCase):
+    def test_legacy_docker_paths_follow_migrated_data_root(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"MNEMOX_DATA_DIR": tmp}):
+            expected = Path(tmp) / "uploads" / "example.md"
+            for value in ("data/uploads/example.md", "/data/uploads/example.md", "/app/data/uploads/example.md", "app/data/uploads/example.md", "uploads/example.md"):
+                self.assertEqual(paths.from_repo_relative(value), expected)
+            self.assertEqual(paths.to_repo_relative(expected), "data/uploads/example.md")
+
     def test_mnemox_data_dir_redirects_runtime_data_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "MnemoxData"

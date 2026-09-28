@@ -89,7 +89,7 @@ export interface LocalWrongQuestion extends SyncMeta {
 
 // ── Operation queue ──
 
-export type OpType = 'create' | 'update' | 'delete'
+export type OpType = 'create' | 'update' | 'delete' | 'review'
 export type ModuleName = 'notes' | 'goals' | 'goalTasks' | 'ankiCards' | 'wrongQuestions'
 
 export interface QueuedOperation {

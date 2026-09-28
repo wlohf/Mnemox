@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { ChatMessage } from '../services/chatApi'
 import { getApiErrorMessage } from '../services/apiClient'
+import { captureApiSession } from '../services/sessionScope'
 import {
   listConversations,
   createConversation,
@@ -88,6 +89,33 @@ const persistId = (key: string, val: number | null) => {
 let _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 // Monotonic token so concurrent detail loads only apply the latest selection.
 let _activeConversationRequestId = 0
+let streamGeneration = 0
+let activeStream: AbortController | null = null
+
+function cancelActiveStream() {
+  ++streamGeneration
+  activeStream?.abort()
+  activeStream = null
+}
+
+export function beginChatStream(conversationId: number, controller: AbortController) {
+  cancelActiveStream()
+  activeStream = controller
+  const generation = streamGeneration
+  const session = captureApiSession()
+  return () => generation === streamGeneration && !session.signal.aborted
+    && useChatStore.getState().activeConversationId === conversationId
+}
+
+export function resetChatSession() {
+  cancelActiveStream()
+  ++_activeConversationRequestId
+  if (_searchDebounceTimer) clearTimeout(_searchDebounceTimer)
+  useChatStore.setState({ projects: [], conversations: [], activeProjectId: null, activeConversationId: null,
+    messages: [], streamingContent: '', isStreaming: false, searchQuery: '', lastConversationError: null })
+  persistId('chat_activeProjectId', null)
+  persistId('chat_activeConversationId', null)
+}
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   projects: [],
@@ -201,6 +229,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   createNewConversation: async (projectId) => {
+    cancelActiveStream()
+    set({ isStreaming: false, streamingContent: '' })
     const state = get()
     // 已在一个空对话中，直接返回当前对话
     if (state.activeConversationId !== null && state.messages.length === 0) {
@@ -228,6 +258,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   setActiveConversation: async (id) => {
+    cancelActiveStream()
+    set({ isStreaming: false, streamingContent: '' })
     const requestId = ++_activeConversationRequestId
     const previousId = get().activeConversationId
     const previousMessages = get().messages
@@ -246,6 +278,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             role: m.role as 'user' | 'assistant',
             content: m.content,
             image_data: m.image_data || undefined,
+            status: m.status, turn_id: m.turn_id,
           })),
           streamingContent: '',
           lastConversationError: null,
@@ -278,6 +311,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   clearConversationError: () => set({ lastConversationError: null }),
 
   deleteConversation: async (id) => {
+    if (get().activeConversationId === id) cancelActiveStream()
     await apiDeleteConversation(id)
     if (get().activeConversationId === id) {
       set({ activeConversationId: null, messages: [], streamingContent: '' })

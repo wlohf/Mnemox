@@ -21,11 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentExecutionLog
 from app.models.daily_plan import DailyPlan
+from app.services.plan_integrity_service import render_plan
 from app.models.goal import Goal, Task
 from app.models.material import Material
 from app.models.memory import UserMemory
 from app.models.note import Note
-from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.services.memory_service import get_relevant_memories
 from app.services.learning_snapshot_service import build_learning_snapshot
@@ -458,33 +458,6 @@ async def _collect_review_state(db: AsyncSession, user_id: int, now: datetime) -
     return {"due_review_count": due_count, "due_review_items": items}
 
 
-async def _collect_learning_state(db: AsyncSession, user_id: int, today: date, now: datetime) -> dict[str, Any]:
-    today_result = await db.execute(
-        select(Pomodoro).where(Pomodoro.user_id == user_id, func.date(Pomodoro.started_at) == today.isoformat())
-    )
-    today_pomodoros = today_result.scalars().all()
-    today_minutes = sum(float(p.duration or 0) for p in today_pomodoros)
-    completed_today = len([p for p in today_pomodoros if p.completed])
-
-    recent_result = await db.execute(
-        select(Pomodoro).where(Pomodoro.user_id == user_id, Pomodoro.started_at >= now - timedelta(days=7))
-    )
-    recent = recent_result.scalars().all()
-    distracted_count = len([p for p in recent if p.stop_reason == "distracted"])
-    interrupted_count = len([p for p in recent if p.stop_reason == "interrupted"])
-    recent_attempts = len(recent)
-
-    return {
-        "today_minutes": round(today_minutes, 1),
-        "today_pomodoro_count": len(today_pomodoros),
-        "today_completed_pomodoros": completed_today,
-        "recent_distracted_count": distracted_count,
-        "recent_interrupted_count": interrupted_count,
-        "recent_attempts": recent_attempts,
-        "recent_distracted_rate": round(distracted_count / recent_attempts, 4) if recent_attempts else 0.0,
-    }
-
-
 async def _collect_weakness_state(db: AsyncSession, user_id: int) -> dict[str, Any]:
     result = await db.execute(
         select(WrongQuestion.knowledge_point, func.count(WrongQuestion.id).label("cnt"))
@@ -699,7 +672,7 @@ async def _collect_agent_personalization(db: AsyncSession, user_id: int, context
         names = "、".join(str(w.get("name")) for w in weak_points if w.get("name"))
         add_item(summary_items, "weak_points", f"常见薄弱点：{names}", "wrong_questions", 0.78)
     if profile.get("optimal_hours"):
-        add_item(summary_items, "optimal_hours", f"高效学习时段倾向：{profile['optimal_hours']}", "profile", 0.72)
+        add_item(summary_items, "optimal_hours", f"记录较多的时段（不代表效率）：{profile['optimal_hours']}", "profile", 0.72)
     if material_sources:
         add_item(summary_items, "material_sources", "常用资料来源：" + "、".join(f"{m['file_type']}×{m['count']}" for m in material_sources), "materials", 0.68)
     if learning.get("recent_distracted_rate", 0) >= 0.25:
@@ -813,62 +786,16 @@ def _build_agent_traits(
     inaccurate = set(existing_controls.get("inaccurate") or [])
     locked = set(existing_controls.get("locked") or [])
     locked_values = existing_profile.get("locked_trait_values", {}) if isinstance(existing_profile.get("locked_trait_values"), dict) else {}
-    traits: list[dict[str, Any]] = []
-
-    def add_trait(trait_id: str, text: str, evidence: list[str], confidence: float, category: str = "learning_style") -> None:
-        final_text = str(locked_values.get(trait_id) or text) if trait_id in locked else text
-        traits.append({
-            "id": trait_id,
-            "text": final_text,
-            "category": category,
-            "evidence": evidence[:4],
-            "confidence": round(max(0.0, min(1.0, confidence)), 2),
-            "locked": trait_id in locked,
-            "ignored": trait_id in ignored,
-            "inaccurate": trait_id in inaccurate,
-        })
-
-    memory_text = "\n".join(str(m.get("value") or m.get("memory_value") or m.get("value_preview") or "") for m in memories).lower()
-    if "短" in memory_text or "低打扰" in memory_text or reason_counts.get("too_long"):
-        add_trait("prefers_short_clear_steps", "更适合短任务、低打扰、明确下一步", ["长期记忆/反馈提到短任务或低打扰", "too_long 反馈次数：%s" % reason_counts.get("too_long", 0)], 0.82, "planning_style")
-    if reason_counts.get("too_disruptive"):
-        add_trait("sensitive_to_interruptions", "对打断式提醒较敏感，建议低频、集中提示", ["too_disruptive 反馈次数：%s" % reason_counts.get("too_disruptive", 0)], 0.78, "friction")
-    if reason_counts.get("too_hard"):
-        add_trait("needs_scaffolded_difficulty", "遇到偏难建议时更需要台阶式拆解", ["too_hard 反馈次数：%s" % reason_counts.get("too_hard", 0)], 0.76, "friction")
-    if reason_counts.get("too_easy"):
-        add_trait("prefers_challenging_tasks", "对过于简单的建议容忍度较低，可适当提高挑战度", ["too_easy 反馈次数：%s" % reason_counts.get("too_easy", 0)], 0.72, "motivation_style")
-    if learning.get("recent_distracted_rate", 0) >= 0.25:
-        add_trait("benefits_from_short_focus_blocks", "近期更适合短专注块和即时反馈", [f"近 7 天走神率约 {round(float(learning.get('recent_distracted_rate') or 0) * 100)}%"], 0.74, "focus_pattern")
-    if profile.get("optimal_hours"):
-        add_trait("has_preferred_study_window", f"可能在 {profile.get('optimal_hours')} 学习效率更高", ["学习画像统计出的高效时段"], 0.7, "time_preference")
-    if accepted_rate is not None and feedback_total >= 3:
-        if accepted_rate < 0.4:
-            add_trait("needs_more_explainable_suggestions", "对 Agent 建议较谨慎，需要更强解释和确认", [f"最近 {feedback_total} 条建议接受率约 {round(accepted_rate * 100)}%"], 0.8, "interaction_style")
-        elif accepted_rate >= 0.7:
-            add_trait("accepts_agent_coaching", "对 Agent 学习建议接受度较高，可适度主动提醒", [f"最近 {feedback_total} 条建议接受率约 {round(accepted_rate * 100)}%"], 0.76, "interaction_style")
-    for action_type, stats in action_type_stats.items():
-        total = stats.get("positive", 0) + stats.get("negative", 0)
-        if total >= 2 and stats.get("negative", 0) > stats.get("positive", 0):
-            add_trait(f"avoid_{action_type}_overuse", f"近期对 {action_type} 类建议反馈偏低，避免高频重复", [f"负反馈 {stats.get('negative', 0)} 次，正反馈 {stats.get('positive', 0)} 次"], 0.73, "friction")
-
-    visible = [t for t in traits if not t["ignored"] and not t["inaccurate"]]
-    do_more = []
-    avoid = []
-    if any(t["id"] == "prefers_short_clear_steps" for t in visible):
-        do_more.extend(["把任务拆成 10-25 分钟的小步", "给出明确的下一步和完成标准"])
-        avoid.extend(["一次性安排过长任务", "频繁打断式提醒"])
-    if any(t["id"] == "needs_more_explainable_suggestions" for t in visible):
-        do_more.append("解释建议依据并先征求确认")
-        avoid.append("直接替用户改计划")
-    if any(t["id"] == "accepts_agent_coaching" for t in visible):
-        do_more.append("在低风险场景主动给出教练式建议")
-    if any(t["id"] == "benefits_from_short_focus_blocks" for t in visible):
-        do_more.append("优先推荐短专注块和复盘")
+    # Old threshold rules manufactured 0.7–0.82 confidence from a few feedback
+    # items. Preserve explicit user annotations only; open hypotheses now live
+    # in the versioned understanding service and retain their own opt-in.
+    traits = [{"id": key, "text": str(locked_values[key]), "category": "user_annotation",
+               "evidence": ["用户保留的说明；未经行为验证"], "confidence": None,
+               "locked": True, "ignored": key in ignored, "inaccurate": key in inaccurate}
+              for key in sorted(locked) if key in locked_values]
     return {
-        "traits": visible[:10],
-        "all_trait_items": traits[:16],
-        "do_more": list(dict.fromkeys(do_more))[:8],
-        "avoid": list(dict.fromkeys(avoid))[:8],
+        "traits": [item for item in traits if not item["ignored"] and not item["inaccurate"]][:10],
+        "all_trait_items": traits[:16], "do_more": [], "avoid": [],
         "trait_controls": {"ignored": sorted(ignored), "inaccurate": sorted(inaccurate), "locked": sorted(locked)},
         "locked_trait_values": locked_values,
     }
@@ -888,7 +815,11 @@ async def _get_agent_learning_profile(db: AsyncSession, user_id: int) -> dict[st
     if not row:
         return {}
     data = _parse_memory_json(row.memory_value, {})
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    data['traits'] = [item for item in data.get('traits', []) if isinstance(item, dict) and item.get('category') == 'user_annotation']
+    data['trait_items'] = [item for item in data.get('trait_items', []) if isinstance(item, dict) and item.get('category') == 'user_annotation']
+    return data
 
 
 async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload: dict[str, Any]) -> None:
@@ -902,9 +833,9 @@ async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload
             return
         row.memory_value = value
         row.category = "style"
-        row.confidence = max(float(row.confidence or 0.0), 0.82)
+        row.confidence = 0.0
         row.status = "active"
-        row.review_status = CONFIRMED_REVIEW_STATUS
+        row.review_status = "staged"
         row.memory_type = "semantic"
         row.last_seen_at = now
     else:
@@ -914,9 +845,9 @@ async def _upsert_agent_learning_profile(db: AsyncSession, user_id: int, payload
                 memory_key=key,
                 memory_value=value,
                 category="style",
-                confidence=0.82,
+                confidence=0.0,
                 status="active",
-                review_status=CONFIRMED_REVIEW_STATUS,
+                review_status="staged",
                 is_locked=0,
                 memory_type="semantic",
                 last_seen_at=now,
@@ -1383,10 +1314,9 @@ def _compute_scores(context: dict[str, Any]) -> tuple[float, str, str]:
     learning = context["learning"]
     memory_count = context["memory"].get("active_memory_count", 0)
 
-    focus = float(profile.get("focus_score") or 50)
-    consistency = float(profile.get("consistency_score") or 50)
-    planning = float(profile.get("planning_score") or 50)
-    score = focus * 0.35 + consistency * 0.3 + planning * 0.2 + min(memory_count * 2, 15)
+    # Legacy trait scores and memory volume are not validated measures of the
+    # learner. This remains a workload heuristic, not behavioral confidence.
+    score = 50.0
 
     if review["due_review_count"] >= 8:
         score -= 18
@@ -1396,7 +1326,8 @@ def _compute_scores(context: dict[str, Any]) -> tuple[float, str, str]:
         score -= 15
     elif tasks["overdue_task_count"] > 0:
         score -= 6
-    if learning["today_minutes"] < 15 and tasks["today_task_count"] > 0:
+    actual_minutes = learning.get("today_actual_minutes")
+    if actual_minutes is not None and actual_minutes < 15 and tasks["today_task_count"] > 0:
         score -= 8
     if learning["recent_distracted_rate"] >= 0.3:
         score -= 8
@@ -1429,7 +1360,7 @@ def _build_summary(context: dict[str, Any], readiness: float, risk: str, autonom
     weak = context["weaknesses"].get("weak_points_ranked", [])
     parts = [f"Agent 当前处于 {autonomy} 模式，准备度 {readiness:.0f}/100，风险等级 {risk}。"]
     if profile.get("optimal_hours"):
-        parts.append(f"你的高效时段倾向于 {profile['optimal_hours']}。")
+        parts.append(f"近期结束记录较多的时段为 {profile['optimal_hours']}，尚不能判断哪个时段效果更好。")
     if review["due_review_count"]:
         parts.append(f"现在有 {review['due_review_count']} 条到期复习。")
     if tasks["overdue_task_count"] or tasks["today_task_count"]:
@@ -1908,7 +1839,7 @@ async def _annotate_write_draft_duplicates(db: AsyncSession, user_id: int, inten
         draft["date"] = plan_date
         result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
         row = result.scalar_one_or_none()
-        existing_content = row.content if row else ""
+        existing_content = await render_plan(db, row) if row else ""
         existing_lines = [re.sub(r"^[-*]\s*\[[ xX]\]\s*", "", line).strip() for line in existing_content.splitlines()]
         existing_lines = [re.sub(r"^[📖📝⚠️❌✅💡\s]+", "", line).strip() for line in existing_lines if line.strip()]
         for item in draft.get("items") or []:
@@ -1995,9 +1926,13 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
 
     if intent == "add_daily_plan_items":
         plan_date = str(draft.get("date") or utc_today().isoformat())[:10]
+        from app.utils.mutation_lock import lock_user_mutation
+        from app.services.plan_integrity_service import save_plan, render_plan
+        from types import SimpleNamespace
+        await lock_user_mutation(db, user_id)
         result = await db.execute(select(DailyPlan).where(DailyPlan.user_id == user_id, DailyPlan.date == plan_date))
         row = result.scalar_one_or_none()
-        existing_content = row.content if row else ""
+        existing_content = await render_plan(db, row) if row else ""
         existing_lines = [re.sub(r"^[-*]\s*\[[ xX]\]\s*", "", line).strip() for line in existing_content.splitlines()]
         existing_lines = [re.sub(r"^[📖📝⚠️❌✅💡\s]+", "", line).strip() for line in existing_lines if line.strip()]
         created_items: list[dict[str, Any]] = []
@@ -2017,15 +1952,11 @@ async def execute_agent_write_draft(db: AsyncSession, user_id: int, intent: str,
             existing_lines.append(title)
             created_items.append({"title": title, "line": line, "task_type": task_type})
         if row is None:
-            header = f"# {plan_date} 学习计划\n"
-            content = header + ("\n".join(item["line"] for item in created_items) if created_items else "今日计划已存在类似内容，未新增。")
-            row = DailyPlan(user_id=user_id, date=plan_date, content=content)
-            db.add(row)
-        elif created_items:
-            suffix = "\n" if row.content and not row.content.endswith("\n") else ""
-            row.content = (row.content or "") + suffix + "\n".join(item["line"] for item in created_items)
-        await db.flush()
-        await db.refresh(row)
+            content = f"# {plan_date} 学习计划\n" + "\n".join(item["line"] for item in created_items)
+        else:
+            suffix = "\n" if existing_content and not existing_content.endswith("\n") else ""
+            content = existing_content + suffix + "\n".join(item["line"] for item in created_items)
+        row = await save_plan(db, SimpleNamespace(id=user_id), plan_date, content, row.version if row else 0)
         return {
             "status": "created" if created_items else "skipped_duplicate",
             "intent": intent,

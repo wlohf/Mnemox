@@ -64,24 +64,145 @@ def _is_sqlite() -> bool:
     return _is_sqlite_url(settings.DATABASE_URL)
 
 
-def _alembic_head_revision() -> str:
-    """Read the bundled Alembic head without opening another database connection."""
+# SQLite and PostgreSQL share one Alembic chain. SQLite files created before
+# that switch carry no ``alembic_version``: they are caught up once by the
+# frozen hand-written DDL in ``_run_lightweight_migrations``, stamped at this
+# revision, and upgraded normally from then on. Schema changes after this
+# revision are Alembic-only and must run on both dialects.
+SQLITE_LEGACY_BASELINE_REVISION = "20260928_31"
+
+# Indexes the hand-written SQLite DDL never created (Alembic ``20260801_01``).
+# The matching ``wrong_questions.concept_id`` foreign key needs a table rebuild
+# on SQLite and is intentionally left out of the legacy catch-up.
+_LEGACY_SQLITE_INDEX_GAPS = (
+    "CREATE INDEX IF NOT EXISTS ix_notes_source_path ON notes (source_path)",
+    "CREATE INDEX IF NOT EXISTS ix_wrong_questions_concept_id ON wrong_questions (concept_id)",
+)
+
+
+def _alembic_config(database_url: str | None = None):
+    """Alembic config for in-process use; the application keeps its logging."""
     from pathlib import Path
 
     from alembic.config import Config
-    from alembic.script import ScriptDirectory
 
     backend_dir = Path(__file__).resolve().parents[1]
     config = Config(str(backend_dir / "alembic.ini"))
     config.set_main_option("script_location", str(backend_dir / "alembic"))
-    head = ScriptDirectory.from_config(config).get_current_head()
+    if database_url:
+        # ConfigParser interpolation treats "%" specially.
+        config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    config.attributes["configure_logger"] = False
+    return config
+
+
+def _alembic_head_revision() -> str:
+    """Read the bundled Alembic head without opening another database connection."""
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(_alembic_config()).get_current_head()
     if not head:
         raise RuntimeError("No Alembic head revision is available for the production schema.")
     return str(head)
 
 
+def _frozen_sqlite_schema_statements() -> list[tuple[str, str, str]]:
+    """Exact SQLite DDL of the legacy baseline, produced by the Alembic chain.
+
+    Missing tables in a legacy file are created from this snapshot rather than
+    from the current ORM models, so revisions after the baseline still apply.
+    """
+    import sqlite3
+    import tempfile
+    from contextlib import closing
+    from pathlib import Path
+
+    from alembic import command
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "legacy-baseline.db"
+        command.upgrade(
+            _alembic_config(f"sqlite+aiosqlite:///{path.as_posix()}"),
+            SQLITE_LEGACY_BASELINE_REVISION,
+        )
+        with closing(sqlite3.connect(path)) as connection:
+            return [
+                (str(kind), str(table_name), str(sql))
+                for kind, table_name, sql in connection.execute(
+                    "SELECT type, tbl_name, sql FROM sqlite_master "
+                    "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+                    "AND tbl_name != 'alembic_version' ORDER BY rowid"
+                )
+            ]
+
+
+async def _sqlite_schema_state() -> tuple[bool, frozenset[str]]:
+    """Return whether business tables exist and the recorded Alembic revisions."""
+    from sqlalchemy import inspect
+
+    def _inspect(sync_connection):
+        tables = set(inspect(sync_connection).get_table_names())
+        revisions: frozenset[str] = frozenset()
+        if "alembic_version" in tables:
+            revisions = frozenset(
+                str(version)
+                for version in sync_connection.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version"
+                ).scalars()
+            )
+        business_tables = tables - {"alembic_version", "mnemox_lightweight_migrations"}
+        return bool(business_tables), revisions
+
+    async with engine.connect() as connection:
+        return await connection.run_sync(_inspect)
+
+
+async def _catch_up_legacy_sqlite() -> None:
+    """Bring an unversioned SQLite file to the frozen baseline shape."""
+    import asyncio
+
+    from sqlalchemy import inspect
+
+    statements = await asyncio.to_thread(_frozen_sqlite_schema_statements)
+    async with engine.begin() as conn:
+        existing = set(await conn.run_sync(lambda sync: inspect(sync).get_table_names()))
+        missing = {table for kind, table, _ in statements if kind == "table" and table not in existing}
+        for _kind, table_name, sql in statements:
+            if table_name in missing:
+                await conn.exec_driver_sql(sql)
+        await _run_lightweight_migrations(conn)
+        for sql in _LEGACY_SQLITE_INDEX_GAPS:
+            await conn.exec_driver_sql(sql)
+
+
+async def _migrate_sqlite() -> None:
+    """Upgrade the SQLite file through the shared Alembic chain."""
+    import asyncio
+    import logging
+
+    from alembic import command
+
+    logger = logging.getLogger(__name__)
+    config = _alembic_config(engine.url.render_as_string(hide_password=False))
+    has_tables, revisions = await _sqlite_schema_state()
+    if has_tables and not revisions:
+        logger.warning(
+            "SQLite 数据库尚未纳入 Alembic，先补齐旧结构并标记为 %s",
+            SQLITE_LEGACY_BASELINE_REVISION,
+        )
+        await _catch_up_legacy_sqlite()
+        await asyncio.to_thread(command.stamp, config, SQLITE_LEGACY_BASELINE_REVISION)
+    # Alembic's env runs its own event loop, so it must not share this one.
+    await asyncio.to_thread(command.upgrade, config, "head")
+
+
 async def _run_lightweight_migrations(conn):
-    """Add new columns to existing tables if they don't exist (SQLite-safe)."""
+    """FROZEN legacy catch-up for SQLite files that predate Alembic management.
+
+    Do not add DDL here: every schema change after
+    ``SQLITE_LEGACY_BASELINE_REVISION`` is an Alembic revision that runs on
+    both SQLite (batch mode) and PostgreSQL.
+    """
     if not _is_sqlite():
         return  # PostgreSQL uses Alembic
 
@@ -113,6 +234,11 @@ async def _run_lightweight_migrations(conn):
     # CURRENT_TIMESTAMP is NOT allowed — use NULL or a literal string instead,
     # then backfill with UPDATE afterwards.
     other_migrations = [
+        ("chat_messages", "turn_id", "VARCHAR(36)"),
+        ("chat_messages", "status", "VARCHAR(20) NOT NULL DEFAULT 'completed'"),
+        ("conversations", "turn_id", "VARCHAR(36)"),
+        ("conversations", "status", "VARCHAR(20) NOT NULL DEFAULT 'completed'"),
+        ("ai_provider_settings", "credential_source", "VARCHAR(20) NOT NULL DEFAULT 'legacy'"),
         ("users", "token_version", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "failed_login_count", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "login_failed_window_started_at", "DATETIME"),
@@ -152,7 +278,13 @@ async def _run_lightweight_migrations(conn):
         ("wrong_questions", "recall_difficulty", "VARCHAR(20)"),
         ("wrong_questions", "mastery_score", "REAL DEFAULT 0.0"),
         ("tasks", "parent_task_id", "INTEGER"),
+        ("daily_plans", "version", "INTEGER NOT NULL DEFAULT 1"),
         ("pomodoros", "task_id", "INTEGER"),
+        ("pomodoros", "client_record_id", "VARCHAR(100)"),
+        ("pomodoros", "time_basis", "VARCHAR(20) NOT NULL DEFAULT 'legacy'"),
+        ("pomodoros", "planned_duration", "FLOAT"),
+        ("pomodoros", "actual_duration", "FLOAT"),
+        ("pomodoros", "record_origin", "VARCHAR(20) NOT NULL DEFAULT 'legacy'"),
         ("pomodoros", "coach_action_attempt_id", "VARCHAR(40)"),
         ("agent_jobs", "payload", "JSON"),
         ("agent_jobs", "result", "JSON"),
@@ -1011,9 +1143,25 @@ async def _run_lightweight_migrations(conn):
     except Exception as exc:
         raise RuntimeError("SQLite Coach action-attempt migration failed") from exc
 
+    for table, parent, name in (("chat_messages", "conversation_id", "uq_chat_message_turn_role"),
+                                ("conversations", "session_id", "uq_study_message_turn_role")):
+        await conn.execute(sqlalchemy.text(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {table}({parent}, turn_id, role)"))
+
+    from schema_repairs.review_schedules_v1 import merge_duplicate_schedules
+    await conn.execute(sqlalchemy.text("""CREATE TABLE IF NOT EXISTS review_schedule_merge_audit (
+        original_id INTEGER PRIMARY KEY, kept_id INTEGER NOT NULL, snapshot JSON NOT NULL
+    )"""))
+    await conn.run_sync(merge_duplicate_schedules)
+    await conn.execute(sqlalchemy.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_review_schedule_user_item ON review_schedule(user_id, item_type, item_id)"
+    ))
+    await conn.execute(sqlalchemy.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_pomodoro_user_client ON pomodoros(user_id, client_record_id)"
+    ))
+
 
 async def init_db():
-    """Initialize SQLite development storage without mutating production schema."""
+    """Migrate SQLite in-process; require an already-migrated PostgreSQL schema."""
     import logging
     import app.models  # noqa: F401
 
@@ -1038,11 +1186,10 @@ async def init_db():
         _logger.info("PostgreSQL schema is managed by Alembic; skipping create_all.")
         return
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await _run_lightweight_migrations(conn)
-
-    _logger.info("SQLite development database initialized with lightweight migrations.")
+    # Desktop and self-hosted SQLite have no separate migration step, so the
+    # same Alembic chain PostgreSQL uses is applied at startup.
+    await _migrate_sqlite()
+    _logger.info("SQLite schema is at the Alembic head.")
 
 async def close_db():
     """关闭数据库连接"""

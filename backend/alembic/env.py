@@ -14,17 +14,28 @@ import app.models  # noqa: F401
 
 config = context.config
 
-if config.config_file_name is not None:
+# The desktop/SQLite runtime migrates in-process at startup; it passes
+# ``configure_logger=False`` so the ini file cannot reset application logging.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
+
+
+# Disposable sparse-search projections that app.services.sparse_knowledge_index
+# creates at runtime (SQLite FTS5 and its shadow tables, PostgreSQL FTS tables).
+# They are rebuilt on demand, so autogenerate must never propose dropping them.
+_RUNTIME_TABLE_PREFIXES = ("knowledge_claim_fts", "knowledge_claim_sparse", "knowledge_sparse_dirty")
 
 
 def _include_object(obj, name, type_, reflected, compare_to):
     # Local SQLite keeps a small one-time migration ledger outside Alembic.
     # It is not part of the production schema and must not appear as a pending
     # drop during ``alembic check``.
-    return not (type_ == "table" and name == "mnemox_lightweight_migrations")
+    if type_ == "table":
+        return name != "mnemox_lightweight_migrations" and not str(name).startswith(_RUNTIME_TABLE_PREFIXES)
+    table = getattr(obj, "table", None)
+    return not (table is not None and str(table.name).startswith(_RUNTIME_TABLE_PREFIXES))
 
 # The application runner and tests can provide a specific connection URL through
 # Alembic's Config object.  The bundled ini intentionally leaves it empty so
@@ -43,6 +54,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_comments=False,
         include_object=_include_object,
+        render_as_batch=str(url or "").startswith("sqlite"),
     )
 
     with context.begin_transaction():
@@ -63,6 +75,9 @@ def do_run_migrations(connection):
         target_metadata=target_metadata,
         compare_comments=False,
         include_object=_include_object,
+        # Every revision must run on SQLite and PostgreSQL; autogenerate emits
+        # batch operations for SQLite, which cannot ALTER most constraints.
+        render_as_batch=connection.dialect.name == "sqlite",
     )
     with context.begin_transaction():
         context.run_migrations()

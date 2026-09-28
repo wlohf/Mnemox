@@ -92,6 +92,11 @@ class _BrokenProvider(_FakeProvider):
 
 
 class ChatStreamSessionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        progress = patch("app.routers.chat.save_chat_progress", AsyncMock(return_value=None))
+        progress.start()
+        self.addCleanup(progress.stop)
+
     async def test_chat_send_releases_request_db_session_before_streaming(self):
         db = _FakeDb()
         current_user = User(id=1, username="u", email="u@example.com", hashed_password="x")

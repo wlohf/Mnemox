@@ -1,4 +1,6 @@
 import { apiFetch } from './apiClient'
+import { fetchAllPages } from './pagedCollection'
+import { submitReviewAttempt } from './reviewAttempt'
 
 export interface AnkiCardItem {
   id: number
@@ -21,11 +23,8 @@ export interface AnkiQueueResponse {
 }
 
 export async function listAnkiCards(scope: 'due' | 'all' = 'due', limit = 50): Promise<AnkiCardItem[]> {
-  try {
-    return await apiFetch<AnkiCardItem[]>(`/api/anki/cards?scope=${scope}&limit=${limit}`)
-  } catch {
-    return []
-  }
+  const cards = await fetchAllPages<AnkiCardItem>(`/api/anki/cards?scope=${scope}`)
+  return limit > 0 ? cards.slice(0, limit) : cards
 }
 
 export async function createAnkiCard(data: {
@@ -61,15 +60,7 @@ export async function deleteAnkiCard(cardId: number): Promise<void> {
 }
 
 export async function reviewAnkiCard(cardId: number, quality: number): Promise<AnkiCardItem | null> {
-  try {
-    return await apiFetch<AnkiCardItem>(`/api/anki/cards/${cardId}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality }),
-    })
-  } catch {
-    return null
-  }
+  return submitReviewAttempt<AnkiCardItem>(`/api/anki/cards/${cardId}/review`, { quality })
 }
 
 export async function aiGenerateAnkiCards(data: {

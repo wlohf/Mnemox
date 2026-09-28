@@ -1,4 +1,7 @@
 import { apiFetch } from './apiClient'
+import type { ApiSessionScope } from './sessionScope'
+
+export type StopReason = 'early_done' | 'interrupted' | 'distracted'
 
 const API_BASE = '/api/pomodoro'
 
@@ -13,14 +16,17 @@ export interface PomodoroStartResponse {
   completed: boolean
   note: string | null
   coach_action_attempt_id?: string | null
+  client_record_id?: string | null
+  stop_reason?: StopReason | null
+  time_basis?: string
   created_at: string
 }
 
 export interface PomodoroStatsResponse {
   total_count: number
   completed_count: number
-  total_minutes: number
-  completion_rate: number
+  total_minutes: number | null
+  completion_rate: number | null
   avg_daily: number
 }
 
@@ -28,7 +34,7 @@ export interface DailyStatsResponse {
   date: string
   count: number
   completed_count: number
-  total_minutes: number
+  total_minutes: number | null
 }
 
 export interface BatchCreateResponse {
@@ -41,6 +47,9 @@ export async function startPomodoro(
   duration: number,
   taskId?: number | null,
   coachActionAttemptId?: string | null,
+  clientRecordId?: string,
+  startedAt?: string,
+  session?: ApiSessionScope,
 ): Promise<PomodoroStartResponse> {
   return await apiFetch<PomodoroStartResponse>(`${API_BASE}/start`, {
     method: 'POST',
@@ -50,8 +59,9 @@ export async function startPomodoro(
       duration,
       task_id: taskId ?? null,
       coach_action_attempt_id: coachActionAttemptId ?? null,
+      client_record_id: clientRecordId, started_at: startedAt,
     }),
-  })
+  }, session)
 }
 
 export async function completePomodoro(
@@ -73,9 +83,10 @@ export async function completePomodoro(
 }
 
 export async function getRecentPomodoros(
-  limit: number = 10
+  limit: number = 10,
+  session?: ApiSessionScope,
 ): Promise<PomodoroStartResponse[]> {
-  return await apiFetch<PomodoroStartResponse[]>(`${API_BASE}/recent?limit=${limit}`)
+  return await apiFetch<PomodoroStartResponse[]>(`${API_BASE}/recent?limit=${limit}`, {}, session)
 }
 
 export async function getTotalStats(): Promise<PomodoroStatsResponse> {
@@ -103,20 +114,27 @@ export async function getDailyStats(
   return await apiFetch<DailyStatsResponse[]>(`${API_BASE}/statistics/daily?days=${days}`)
 }
 
+export interface PomodoroSyncRecord {
+  note?: string | null
+  task_name: string
+  duration: number
+  planned_duration?: number
+  task_id?: number | null
+  client_record_id: string
+  backend_id?: number
+  started_at?: string
+  completed: boolean
+  stop_reason?: StopReason | null
+  coach_action_attempt_id?: string | null
+}
+
 export async function batchCreatePomodoros(
-  records: { task_name: string; duration: number; task_id?: number | null }[],
-  completedAts: string[]
+  records: PomodoroSyncRecord[],
+  completedAts: string[],
+  session?: ApiSessionScope,
 ): Promise<BatchCreateResponse> {
   return await apiFetch<BatchCreateResponse>(`${API_BASE}/batch`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      records: records.map((r) => ({
-        task_name: r.task_name,
-        duration: r.duration,
-        task_id: r.task_id ?? null,
-      })),
-      completed_ats: completedAts,
-    }),
-  })
+    body: JSON.stringify({ records, completed_ats: completedAts }),
+  }, session)
 }

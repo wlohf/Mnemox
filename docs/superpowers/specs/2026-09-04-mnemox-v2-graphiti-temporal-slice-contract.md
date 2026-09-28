@@ -4,6 +4,8 @@
 > Status: implemented / verified  
 > Depends on: SQL `MemoryDeclaration` temporal lifecycle + Stage 6 Graphiti shadow evidence
 
+> 2026-09-28: This contract continues to govern the implemented model-free Temporal V1 slice. The approved [dynamic user understanding direction](2026-09-28-dynamic-user-understanding.md) defines a separate episode-based extension for continuous coaching and evolving hypotheses. That extension must distinguish unverified hypotheses from confirmed facts; it is not implemented by relaxing V1 input filters. See the [roadmap](../../roadmap.md) for execution status.
+
 ## 1. Why this slice exists
 
 Stage 6 proved that Graphiti can reproduce the current SQL temporal lookup with correct user isolation, but it did not prove enough product/runtime benefit to replace SQL. Stage 7 therefore does **not** turn Graphiti into the memory source of truth.

@@ -1,13 +1,15 @@
 """Anki 风格记忆卡路由"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import re
 import csv
 import io
 from typing import Optional
 
+from uuid import UUID
+from app.services.review_attempts import reserve_review_attempt, finish_review_attempt, replay_review_attempt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -41,7 +43,10 @@ class AnkiCardCreate(BaseModel):
 
 
 class AnkiCardReview(BaseModel):
+    attempt_id: UUID
     quality: int = Field(..., ge=0, le=5)
+    expected_version: Optional[int] = Field(None, ge=1)
+    reviewed_at: Optional[datetime] = None
 
 
 class AnkiCardUpdate(BaseModel):
@@ -97,12 +102,17 @@ async def list_cards(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    after_id: Optional[int] = Query(None, ge=0),
 ):
     query = select(AnkiCard).where(AnkiCard.user_id == current_user.id)
     if scope == "due":
-        query = query.where(AnkiCard.due_at <= datetime.now())
+        query = query.where(AnkiCard.due_at <= utc_now_db())
 
-    query = query.order_by(AnkiCard.due_at.asc(), AnkiCard.id.asc()).limit(limit)
+    if isinstance(after_id, int):
+        query = query.where(AnkiCard.id > after_id).order_by(AnkiCard.id.asc())
+    else:
+        query = query.order_by(AnkiCard.due_at.asc(), AnkiCard.id.asc())
+    query = query.limit(limit)
     result = await db.execute(query)
     cards = list(result.scalars().all())
     return [_to_item(card) for card in cards]
@@ -141,7 +151,7 @@ async def create_card(
         int(current_user.id),
         entity_type="anki_card",
         entity_id=int(card.id),
-        due_at=card.due_at or datetime.now(),
+        due_at=card.due_at or utc_now_db(),
         source="anki_router",
         item_type="anki_card",
         item_id=int(card.id),
@@ -216,16 +226,25 @@ async def review_card(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(AnkiCard).where(AnkiCard.id == card_id, AnkiCard.user_id == current_user.id))
+    operation = await reserve_review_attempt(db, int(current_user.id), f"/api/anki/cards/{card_id}/review", body)
+    if operation.replay is not None:
+        return operation.replay
+    result = await db.execute(select(AnkiCard).execution_options(populate_existing=True).where(AnkiCard.id == card_id, AnkiCard.user_id == current_user.id))
     card = result.scalar_one_or_none()
     if not card:
         raise HTTPException(status_code=404, detail="卡片不存在")
 
-    now = datetime.now()
+    if body.expected_version is not None:
+        require_matching_version(card.sync_version, str(body.expected_version))
+    now = to_db_utc(body.reviewed_at) if body.reviewed_at else utc_now_db()
+    if now > utc_now_db() + timedelta(minutes=5):
+        raise HTTPException(status_code=422, detail="复习时间不能晚于当前时间")
+    if card.last_review_at and now < to_db_utc(card.last_review_at):
+        raise HTTPException(status_code=409, detail={"code": "SYNC_CONFLICT", "message": "其他设备已提交较新的复习，请核对后处理"})
     scheduled_for = card.due_at or now
     schedule = apply_review(card, body.quality, now, due_attr="due_at")
 
-    await db.flush()
+    await flush_sync_mutation(db)
     await db.refresh(card)
     completed_event = await record_review_completed_event(
         db,
@@ -260,7 +279,7 @@ async def review_card(
         reason="review_completed",
         occurred_at=now,
     )
-    return _to_item(card)
+    return await finish_review_attempt(db, operation, _to_item(card))
 
 
 @router.post("/cards/ai-generate")
@@ -312,7 +331,7 @@ async def ai_generate_cards(
             back=back,
             source="ai",
             tags=(body.tags or "").strip() or None,
-            due_at=datetime.now(),
+            due_at=utc_now_db(),
             interval_days=1,
             ease_factor=250,
             repetitions=0,
@@ -328,7 +347,7 @@ async def ai_generate_cards(
             int(current_user.id),
             entity_type="anki_card",
             entity_id=int(card.id),
-            due_at=card.due_at or datetime.now(),
+            due_at=card.due_at or utc_now_db(),
             source="anki_router",
             item_type="anki_card",
             item_id=int(card.id),
@@ -348,7 +367,7 @@ async def get_anki_queue(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    now = datetime.now()
+    now = utc_now_db()
 
     review_result = await db.execute(
         select(AnkiCard)
@@ -425,7 +444,7 @@ async def export_cards_csv(
         )
 
     return {
-        "filename": f"anki_cards_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        "filename": f"anki_cards_{utc_now_db().strftime('%Y%m%d_%H%M%S')}.csv",
         "csv": output.getvalue(),
         "count": len(cards),
     }
@@ -491,7 +510,7 @@ async def import_cards_csv(
             source=str(row.get("source", "manual") or "manual")[:20],
             tags=str(row.get("tags", "") or "").strip() or None,
             note=str(row.get("note", "") or "").strip() or None,
-            due_at=due_at or datetime.now(),
+            due_at=due_at or utc_now_db(),
             interval_days=interval_days,
             ease_factor=ease_factor,
             repetitions=repetitions,
@@ -508,7 +527,7 @@ async def import_cards_csv(
             int(current_user.id),
             entity_type="anki_card",
             entity_id=int(card.id),
-            due_at=card.due_at or datetime.now(),
+            due_at=card.due_at or utc_now_db(),
             source="anki_router",
             item_type="anki_card",
             item_id=int(card.id),

@@ -17,7 +17,8 @@ from app.config import settings
 from app.auth import get_current_user
 from app.models.user import User
 from app.utils.ai_errors import format_ai_provider_error
-from app.utils.secret_crypto import decrypt_secret, encrypt_secret
+from app.utils.secret_crypto import encrypt_secret
+from app.utils.provider_credentials import user_provider_key
 from app.utils.outbound_url import validate_ai_provider_url
 from app.utils.outbound_transport import create_ai_http_client
 from app.models.search_settings import AISearchSettings
@@ -46,6 +47,7 @@ class ProviderOut(BaseModel):
     provider_name: str
     display_name: str
     api_key_masked: str
+    requires_key_confirmation: bool = False
     base_url: str
     model: str
     available_models: List[str] = []
@@ -231,7 +233,7 @@ def _dump_available_models(models: List[str], fallback_model: str = "") -> str:
 
 def _get_effective_values(row: AIProviderSetting) -> tuple[str, str, str]:
     env_attrs = _ENV_MAP.get(row.provider_name, (None, None, None))
-    stored_key = decrypt_secret(row.api_key)
+    stored_key = user_provider_key(row)
     # API keys are user-owned. Do not fall back to .env here; otherwise a key
     # cleared in the UI can reappear as "configured" and still be used by tests.
     model = row.model or ""
@@ -312,6 +314,7 @@ def _to_out(row: AIProviderSetting) -> ProviderOut:
         provider_name=row.provider_name,
         display_name=row.display_name,
         api_key_masked=mask_key(api_key or ""),
+        requires_key_confirmation=bool(row.api_key) and getattr(row, "credential_source", None) != "user",
         base_url=base_url or "",
         model=model or "",
         available_models=available_models,
@@ -481,7 +484,7 @@ _ENV_MAP = {
 
 
 async def seed_user_providers(db: AsyncSession, user_id: int):
-    """为新用户插入默认提供商行，并从 .env 迁移已有配置"""
+    """Create empty user-owned settings; server credentials are never inherited."""
     result = await db.execute(
         select(AIProviderSetting).where(AIProviderSetting.user_id == user_id)
     )
@@ -491,11 +494,8 @@ async def seed_user_providers(db: AsyncSession, user_id: int):
         if prov["provider_name"] in existing:
             continue
 
-        # 从 .env 迁移已有值
-        env_attrs = _ENV_MAP.get(prov["provider_name"], (None, None, None))
-        api_key = getattr(settings, env_attrs[0], "") if env_attrs[0] else ""
-        model = getattr(settings, env_attrs[1], prov["model"]) if env_attrs[1] else prov["model"]
-        base_url = getattr(settings, env_attrs[2], prov["base_url"]) if env_attrs[2] else prov["base_url"]
+        model = prov["model"]
+        base_url = prov["base_url"]
 
         # 如果 .env 中配置了 DEFAULT_AI_PROVIDER，标记为 active
         is_active = (prov["provider_name"] == settings.DEFAULT_AI_PROVIDER)
@@ -504,7 +504,8 @@ async def seed_user_providers(db: AsyncSession, user_id: int):
             user_id=user_id,
             provider_name=prov["provider_name"],
             display_name=prov["display_name"],
-            api_key=encrypt_secret(api_key) if api_key else "",
+            api_key="",
+            credential_source="user",
             base_url=base_url or prov["base_url"],
             model=model or prov["model"],
             available_models=_dump_available_models([model or prov["model"]], model or prov["model"]),
@@ -639,6 +640,7 @@ async def create_provider(
         provider_name=provider_name,
         display_name=display_name,
         api_key=encrypt_secret(body.api_key) if body.api_key else "",
+        credential_source="user",
         base_url=base_url,
         model=body.model or "",
         available_models=_dump_available_models(body.available_models or [], body.model or ""),
@@ -675,6 +677,7 @@ async def update_provider(
 
     if body.api_key is not None:
         row.api_key = encrypt_secret(body.api_key) if body.api_key else ""
+        row.credential_source = "user"
     if body.base_url is not None:
         row.base_url = await validate_ai_provider_url(body.base_url)
     if body.model is not None:

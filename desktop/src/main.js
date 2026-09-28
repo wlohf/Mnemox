@@ -1,7 +1,6 @@
 const { app, BrowserWindow, Menu, Notification, Tray, dialog, shell, ipcMain, safeStorage, nativeImage } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
-const net = require('node:net')
 const path = require('node:path')
 const {
   createAutoUpdateManager,
@@ -24,6 +23,7 @@ const { createDesktopPreferenceStore } = require('./desktopPreferences')
 const { createReminderManager } = require('./desktopReminder')
 const { isSafeExternalUrl, isTrustedRendererUrl } = require('./desktopSecurity')
 const { createTrayIcon } = require('./trayIcon')
+const { stableBackendPort } = require('./stableOrigin')
 
 app.setName('Mnemox')
 
@@ -49,19 +49,6 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.unref()
-    server.on('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const port = address.port
-      server.close(() => resolve(port))
-    })
-  })
-}
-
 async function waitForHealth(port, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
@@ -81,7 +68,7 @@ async function waitForHealth(port, timeoutMs = 45000) {
 }
 
 async function startBackend() {
-  backendPort = await findFreePort()
+  backendPort = await stableBackendPort(app.getPath('userData'))
   const resourcesPath = process.resourcesPath
   const appPath = app.getAppPath()
   const frontendDistDir = getFrontendDistDir({

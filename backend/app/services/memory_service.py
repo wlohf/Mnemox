@@ -165,7 +165,8 @@ async def build_memory_prompt_fragment(
     limit: int = 10,
     topic_hint: str = "",
     material_ids: Optional[List[int]] = None,
-    user_id: int = 1,
+    *,
+    user_id: int,
 ) -> str:
     """构建可注入 system prompt 的长期记忆片段。"""
     await expire_memory_facts(db, user_id=user_id)
@@ -178,6 +179,7 @@ async def build_memory_prompt_fragment(
         UserMemory.status == "active",
         UserMemory.user_id == user_id,
         UserMemory.review_status == CONFIRMED_REVIEW_STATUS,
+        UserMemory.memory_key != "agent_learning_profile",
         or_(UserMemory.expires_at.is_(None), UserMemory.expires_at > datetime.now()),
     ).order_by(UserMemory.last_seen_at.desc(), UserMemory.updated_at.desc()).limit(50)
     result = await db.execute(query)
@@ -249,7 +251,7 @@ async def build_memory_prompt_fragment(
     return wrap_untrusted_context("用户长期记忆（个性化参考）", "\n".join(lines), source="user_memory")
 
 
-async def decay_old_memories(db: AsyncSession, user_id: int = 1) -> None:
+async def decay_old_memories(db: AsyncSession, user_id: int) -> None:
     """对超过7天未访问的记忆降低 confidence（每次衰减5%，低于0.2则归档）。"""
     from sqlalchemy import update
     cutoff = datetime.now() - timedelta(days=7)
@@ -275,7 +277,8 @@ async def get_relevant_memories(
     db: AsyncSession,
     topic: str = "",
     limit: int = 10,
-    user_id: int = 1,
+    *,
+    user_id: int,
 ) -> List[dict]:
     """Return topic-scored memories for frontend display / SSE indicators."""
     await expire_memory_facts(db, user_id=user_id)
@@ -324,7 +327,7 @@ async def get_relevant_memories(
     ]
 
 
-async def get_conversation_summary_text(conversation_id: int, db: AsyncSession, user_id: int = 1) -> str:
+async def get_conversation_summary_text(conversation_id: int, db: AsyncSession, user_id: int) -> str:
     result = await db.execute(
         select(ConversationSummary).where(
             ConversationSummary.conversation_id == conversation_id,
@@ -373,7 +376,7 @@ async def get_conversation_summary_text(conversation_id: int, db: AsyncSession, 
     )
 
 
-async def upsert_conversation_summary(conversation_id: int, db: AsyncSession, user_id: int = 1) -> None:
+async def upsert_conversation_summary(conversation_id: int, db: AsyncSession, user_id: int) -> None:
     """对指定对话做滚动摘要（轻量启发式）。"""
     msg_result = await db.execute(
         select(ChatMessage)
@@ -431,7 +434,7 @@ async def upsert_user_memories_from_turn(
     user_message: str,
     assistant_reply: str,
     db: AsyncSession,
-    user_id: int = 1,
+    user_id: int,
 ) -> None:
     """从本轮对话提炼长期记忆：优先 LLM，失败回退启发式。"""
     await expire_memory_facts(db, user_id=user_id)
@@ -528,7 +531,7 @@ async def upsert_user_memories_from_turn(
         )
 
 
-async def list_memories(db: AsyncSession, user_id: int = 1) -> List[dict]:
+async def list_memories(db: AsyncSession, user_id: int) -> List[dict]:
     await expire_memory_facts(db, user_id=user_id)
     result = await db.execute(
         select(UserMemory)
@@ -557,7 +560,7 @@ async def list_memories(db: AsyncSession, user_id: int = 1) -> List[dict]:
     return out
 
 
-async def list_summaries(db: AsyncSession, user_id: int = 1) -> List[dict]:
+async def list_summaries(db: AsyncSession, user_id: int) -> List[dict]:
     result = await db.execute(
         select(ConversationSummary)
         .where(ConversationSummary.user_id == user_id)
@@ -596,7 +599,7 @@ def _parse_reflection_json(raw: str) -> Optional[dict]:
     return None
 
 
-async def run_conversation_reflection(conversation_id: int, db: AsyncSession, user_id: int = 1) -> None:
+async def run_conversation_reflection(conversation_id: int, db: AsyncSession, user_id: int) -> None:
     """Analyze conversation to extract structured learning insights.
 
     Triggered when message_count >= previous reflection_turn_count + 10.
@@ -709,6 +712,7 @@ async def run_conversation_reflection(conversation_id: int, db: AsyncSession, us
         existing_summary.message_count = total_msg_count
     else:
         new_summary = ConversationSummary(
+            user_id=user_id,
             conversation_id=conversation_id,
             summary=summary_text,
             key_points=json.dumps([], ensure_ascii=False),
@@ -759,7 +763,7 @@ async def _upsert_reflection_memories(
     conversation_id: int,
     material_ids: List[int],
     db: AsyncSession,
-    user_id: int = 1,
+    user_id: int,
 ) -> None:
     """Store memory candidates from reflection, deduplicating by memory_key."""
     await expire_memory_facts(db, user_id=user_id)
@@ -875,7 +879,7 @@ async def _create_review_schedules_from_reflection(
     misconceptions: List[str],
     review_prompts: List[str],
     db: AsyncSession,
-    user_id: int = 1,
+    user_id: int,
 ) -> None:
     """Create ReviewSchedule entries for misconceptions detected by reflection.
 
@@ -929,7 +933,8 @@ async def _create_review_schedules_from_reflection(
             db.add(mem_row)
             await db.flush()  # Get mem_row.id
 
-        review = ReviewSchedule(
+        from app.services.review_schedule_identity import ensure_review_schedule
+        await ensure_review_schedule(db,
             user_id=user_id,
             item_type="reflection",
             item_id=mem_row.id,
@@ -939,7 +944,6 @@ async def _create_review_schedules_from_reflection(
             repetitions=0,
             status="pending",
         )
-        db.add(review)
 
 
 _UNDERSTANDING_TEMPLATES = [

@@ -130,7 +130,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
                   </Space>
                   <Row gutter={[12, 12]}>
                     <Col xs={24} sm={12} style={{ minWidth: 0 }}>
-                      <Text strong><LaptopOutlined /> {item._conflictOpType === 'delete' ? '本机操作：删除这条记录' : '本机未同步版本'}</Text>
+                      <Text strong><LaptopOutlined /> {item._conflictOpType === 'review' ? '本机复习与云端进度冲突' : item._conflictOpType === 'delete' ? '本机操作：删除这条记录' : '本机未同步版本'}</Text>
                       <Paragraph ellipsis={{ rows: 3, expandable: true, symbol: '展开' }} style={{ margin: '4px 0 0', overflowWrap: 'anywhere' }}>
                         {preview(item, module)}
                       </Paragraph>
@@ -148,7 +148,7 @@ export function SyncConflictModal({ open, onClose }: SyncConflictModalProps) {
                       loading={resolvingKey === `${key}:keep_local`}
                       onClick={() => void resolve(module, item._localId, 'keep_local')}
                     >
-                      {item._conflictOpType === 'delete' ? '继续删除云端记录' : server?.__deleted ? '用本机内容重新创建' : '保留本机并同步'}
+                      {item._conflictOpType === 'review' ? '按当前时间重新提交此评分' : item._conflictOpType === 'delete' ? '继续删除云端记录' : server?.__deleted ? '用本机内容重新创建' : '保留本机并同步'}
                     </Button>
                     <Button
                       danger

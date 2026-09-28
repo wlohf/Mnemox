@@ -26,6 +26,18 @@ class TransactionOwner:
 
 
 TRANSACTION_OWNERS: dict[str, TransactionOwner] = {
+    "app.services.understanding_runtime.transaction": TransactionOwner(
+        TransactionOwnerKind.INDEPENDENT_WORKER,
+        "Owns short AgentJob leases, reservations and source-fenced results; external model/graph I/O is outside transactions.",
+    ),
+    "app.services.chat_progress.save_chat_progress": TransactionOwner(
+        TransactionOwnerKind.DURABLE_WORKFLOW,
+        "Owns an independent short transaction that commits input and partial replies before SSE delivery.",
+    ),
+    "app.services.retrieval_projection_service.RetrievalProjectionService._finish_version": TransactionOwner(
+        TransactionOwnerKind.DURABLE_WORKFLOW,
+        "Commits a version-fenced projection outcome after external indexing, preserving newer pending updates.",
+    ),
     "app.agents.manager.AgentManager.trigger": TransactionOwner(
         TransactionOwnerKind.DURABLE_WORKFLOW,
         "Persists a complete synchronous Agent job or its terminal failure before returning.",
@@ -53,6 +65,10 @@ TRANSACTION_OWNERS: dict[str, TransactionOwner] = {
     "app.services.retrieval_projection_service.RetrievalProjectionService._forget_user_locked": TransactionOwner(
         TransactionOwnerKind.DURABLE_WORKFLOW,
         "Finalizes user-scoped SQL projection deletion after external vector cleanup succeeds.",
+    ),
+    "app.services.retrieval_projection_service.reset_incompatible_vector_collection": TransactionOwner(
+        TransactionOwnerKind.INDEPENDENT_WORKER,
+        "Owns its session under the exclusive configuration lock and commits rebuild flags after the shared vector reset.",
     ),
     "app.services.retrieval_projection_service.RetrievalProjectionService.mark_configuration_stale": TransactionOwner(
         TransactionOwnerKind.DURABLE_WORKFLOW,

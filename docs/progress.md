@@ -2,12 +2,34 @@
 
 > 状态：维护中
 >
-> 更新日期：2026-09-12
+> 更新日期：2026-09-28
 >
 > 当前发布版本：v1.3.0
-> 当前阶段：正式发布候选验收准备 + Phase 2 受控纵向切片 + **Mnemox V2 Stage 7 工程收口完成**。Stage 6 的 Neo4j / Graphiti 默认 Runtime NO-GO 继续成立；Stage 7 在不改变 PostgreSQL / SQLite Canonical 的前提下完成 Optional Neo4j selector/readiness/fallback/rollout、Knowledge/Learning Path V1、Explainable Multi-hop Association V1 和 Graphiti Temporal/Episodic Slice。最终 Stage 0～7 Knowledge/Temporal 宽回归为 `149 passed, 1 warning`，真实 Neo4j/Graphiti 专项另有 `6 passed` 且显式真机运行，前端 `27 files / 93 tests`、production build 和 lint 全过；默认 Compose 不启动 Neo4j，`--profile graph` 才启用可选图服务。Graphiti 60/300 temporal declarations correctness 均 `1.0` 但显著慢于 SQL，继续 Experimental/default-off。下一步转入云端 WebUI dogfooding，导入用户自己的真实技术笔记做中文/双语产品人评，而不是继续堆 Stage 7 基础设施。
+> 当前阶段：正式发布候选验收准备 + Phase 2 受控纵向切片 + **Mnemox V2 Stage 7 工程收口完成**。Stage 6 的 Neo4j / Graphiti 默认 Runtime NO-GO 继续成立；Stage 7 在不改变 PostgreSQL / SQLite Canonical 的前提下完成 Optional Neo4j selector/readiness/fallback/rollout、Knowledge/Learning Path V1、Explainable Multi-hop Association V1 和 Graphiti Temporal/Episodic Slice。最终 Stage 0～7 Knowledge/Temporal 宽回归为 `149 passed, 1 warning`，真实 Neo4j/Graphiti 专项另有 `6 passed` 且显式真机运行，前端 `27 files / 93 tests`、production build 和 lint 全过；默认 Compose 不启动 Neo4j，`--profile graph` 才启用可选图服务。Graphiti 60/300 temporal declarations correctness 均 `1.0` 但显著慢于 SQL，继续 Experimental/default-off。后续按 2026-09-28 动态用户理解方向推进（见下方更新与路线图）；WebUI dogfooding 继续承担真实技术笔记的中文/双语产品人评。
 
 需求范围见 [需求基线](requirements.md)，工程实现见 [技术基线](technical.md)，执行顺序以 [路线图](roadmap.md) 为唯一权威来源。
+
+## 2026-09-28：DI-2 连续记忆功能补齐
+
+图检索增加实体/关系关联与时间线，保留后来变化的原始依据；分批重建、全新投影空间、阶段检查点、抽取修订、用户重试和用量展示已补齐。SQL/图对照评测脚本和实际预检查记录已准备，当前仍缺少本人 AI 凭据，因此真实模型质量与费用验收未完成。详见[本轮交付与边界](updates/2026/2026-09-28_di2-continuous-memory-completion.md)。均未部署，默认开关保持关闭。
+
+## 2026-09-28：DI-0 收口、DI-1 实现、DI-2 工程验证
+
+工作区已完成可靠经历、版本化计划与真实任务联动、开放假设及后续分组评估；学习画像提供查看依据、纠正、忽略和删除入口。Graphiti 新经历通道完成真实 SDK episode 写入、保存抽取结果、免模型重建、来源失效、跨会话检索与聊天/Coach 可选消费，沿用现有持久任务和预算设施。旧统计与画像规则已进一步统一。
+
+隔离数据库与图服务工程验证通过，未部署；当前没有可用的用户 AI 凭据，真实模型质量/费用仍待验收，DI-2 不标为最终完成。范围、限制、验收脚本见[本批交付](updates/2026/2026-09-28_dynamic-understanding-implementation.md)。
+
+## 2026-09-28：首批动态理解证据基础
+
+工作区已实现首批专注证据流程：计划/实际时长与来源分离、用户自然日、规范来源与同源分组、Demo/未知/异常说明；画像、今日统计、Coach 快照和聊天读取接入统一口径。旧画像评分退出新的 AI 证据入口，EDA 的固定人格类型与人为置信度已移除；新增两库迁移及行为/接口回归。详见[本次交付与验证](updates/2026/2026-09-28_behavior-evidence-foundation.md)。
+
+以下是当时的 DI-0 首批部分交付，后续收口见上方更新；阶段状态按[路线图 0.2](roadmap.md)推进，不能将当前描述性统计视为动态理解闭环。
+
+## 2026-09-28：确认动态用户理解与连续辅导方向
+
+已将后续方向纳入[需求基线](requirements.md)、[路线图](roadmap.md)、[设计决策](superpowers/specs/2026-09-28-dynamic-user-understanding.md)和[实施计划](superpowers/plans/2026-09-28-dynamic-user-understanding-plan.md)：AI 开放提出候选规律，以独立证据、情境、反例和时间变化持续评估；Graphiti 组织连续经历与记忆，Neo4j 支持知识补弱路径，SQL 保持规范来源。采用轻量统计处理质量与不确定性，复杂模型按实际缺口评估。
+
+本次交付为方向、契约和任务文档，不包含新增业务实现、模型调用或部署；现有画像、Coach 归因和 Graphiti Temporal V1 为可复用基础，不视为新方向已经完成。阶段状态统一维护在路线图 0.2；此前 WebUI 人评继续作为图质量证据收集渠道。验证范围见[本次记录](updates/2026/2026-09-28_dynamic-user-understanding-direction.md)。
 
 ## 2026-09-12：P0/P1 稳定化优先
 
@@ -23,7 +45,7 @@ Mnemox 已具备基础学习工作台、AI 对话、FSRS 复习、Agent/Coach �
 
 随后 [PR #10](https://github.com/wlohf/Mnemox/pull/10) 完成概念图谱和学习推荐闭环：资料正文自动生成待审核概念、括号别名、先修关系与版本化来源；更新/删除同步清理旧图谱证据，人工可确认、改名、合并、拆分或删除。错题创建和复习自动回填概念与直接学习证据；学习建议按已确认先修、FSRS 到期、活跃目标、错误频率、遗忘风险与重复疲劳解释排序。
 
-当前增量完成 SQL 时态记忆生命周期：稳定事实键和部分唯一索引保证每个用户、每个事实只有一条开放的已确认声明；跨来源冲突进入人工审核，确认前旧事实继续生效，确认后保留严格的替代时间边界。用户可填写纠错原因、设置有效期、拒绝不准确候选和追溯完整历史；到期或删除会同步退出聊天、Coach、Agent 和引用旧事实的派生画像。Qdrant、Neo4j 与 Graphiti 均不作为当前运行时依赖。
+当前增量完成 SQL 时态记忆生命周期：稳定事实键和部分唯一索引保证每个用户、每个事实只有一条开放的已确认声明；跨来源冲突进入人工审核，确认前旧事实继续生效，确认后保留严格的替代时间边界。用户可填写纠错原因、设置有效期、拒绝不准确候选和追溯完整历史；到期或删除会同步退出聊天、Coach、Agent 和引用旧事实的派生画像。默认基础流程不强制依赖 Qdrant、Neo4j 或 Graphiti；现有可选图切片与后续动态理解范围分别见技术基线和最新决策。
 
 本轮 Coach 闭环新增独立行动尝试：建议被展示、采纳和开始后会取得一个只属于该建议的关联标识；番茄钟开始/完成/中断、复习完成和日计划草案确认会在同一事务中把真实领域事件回连到该标识。无法由系统直接观察的动作仍保留用户“确认完成/不继续”的明确回退。建议详情可回放触发信号、行动尝试和最小化后的事件时间线；策略统计与北极星指标区分真实领域行为和用户确认。计划草案仍必须由用户确认才会写入。
 

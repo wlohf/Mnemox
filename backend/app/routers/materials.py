@@ -1,4 +1,5 @@
 """资料管理路由"""
+import asyncio
 from pathlib import Path
 import zipfile
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -322,16 +323,19 @@ async def upload_material(
     unique_filename = f"{uuid.uuid4().hex}{file_extension}"
     abs_file_path = upload_dir / unique_filename
 
-    # 保存文件并计算 hash（边写入边限制大小，避免超大文件先完整落盘）
+    # 保存文件并计算 hash（边写入边限制大小，避免超大文件先完整落盘）。
+    # 大文件的同步读写与哈希放到线程里，避免阻塞事件循环上的其他请求和 SSE 流。
     try:
-        file_hash, _actual_size = _save_upload_with_hash(file, abs_file_path, MAX_FILE_SIZE)
+        file_hash, _actual_size = await asyncio.to_thread(
+            _save_upload_with_hash, file, abs_file_path, MAX_FILE_SIZE
+        )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败: {redact_sensitive_text(e)}")
 
     try:
-        _validate_material_file_signature(abs_file_path, file_extension)
+        await asyncio.to_thread(_validate_material_file_signature, abs_file_path, file_extension)
     except HTTPException:
         abs_file_path.unlink(missing_ok=True)
         raise

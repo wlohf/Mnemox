@@ -1,4 +1,5 @@
 import { apiFetch } from './apiClient'
+import { submitReviewAttempt, pendingReviewAttempt } from './reviewAttempt'
 
 export interface ReviewTaskItem {
   task_id: number
@@ -31,11 +32,8 @@ export async function completeReviewTask(
   quality: number,
   coachActionAttemptId?: string | null,
 ): Promise<ReviewTaskItem | null> {
-  return await apiFetch<ReviewTaskItem>(`/api/review/tasks/${taskId}/complete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quality, coach_action_attempt_id: coachActionAttemptId ?? null }),
-  })
+  return submitReviewAttempt<ReviewTaskItem>(`/api/review/tasks/${taskId}/complete`,
+    { quality, coach_action_attempt_id: coachActionAttemptId ?? null })
 }
 
 export async function deleteReviewTask(taskId: number): Promise<boolean> {
@@ -53,6 +51,7 @@ export async function getDueReviewCount(): Promise<number> {
 }
 
 export interface ReviewContent {
+  pending_answers?: Record<number, string>
   summary: string[]
   questions: Array<{
     id: number
@@ -72,6 +71,13 @@ export interface ReviewResult {
 }
 
 export async function getReviewContent(taskId: number): Promise<ReviewContent> {
+  const pending = pendingReviewAttempt(`/api/review/${taskId}/submit`)
+  if (pending && !pending.done && Array.isArray(pending.body.answers)) {
+    const answers = pending.body.answers as Array<{ question: string; answer: string }>
+    return { summary: ['上次提交的结果尚未确认，已恢复原题目和答案，请重试提交。'],
+      questions: answers.map((a, id) => ({ id, type: 'short_answer', question: a.question })),
+      pending_answers: Object.fromEntries(answers.map((a, id) => [id, a.answer])) }
+  }
   return apiFetch<ReviewContent>(`/api/review/${taskId}/content`)
 }
 
@@ -79,8 +85,5 @@ export async function submitReviewAnswers(
   taskId: number,
   data: { answers: Array<{ question: string; answer: string }>; coach_action_attempt_id?: string | null },
 ): Promise<ReviewResult> {
-  return apiFetch<ReviewResult>(`/api/review/${taskId}/submit`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
+  return submitReviewAttempt<ReviewResult>(`/api/review/${taskId}/submit`, data)
 }

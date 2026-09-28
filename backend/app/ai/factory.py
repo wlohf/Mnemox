@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.ai.base import AIProvider
 from app.config import settings
-from app.utils.secret_crypto import decrypt_secret
+from app.utils.provider_credentials import user_provider_key
 
 
 class AIProviderFactory:
@@ -113,7 +113,7 @@ class AIProviderFactory:
         """
         创建 AI 提供商实例
 
-        有 user_id 时优先从数据库读取当前用户的提供商配置，回退到 .env 配置。
+        用户请求只使用已确认的用户密钥；无用户的内部调用才可使用环境配置。
 
         Args:
             provider_name: 提供商名称，为 None 时使用当前用户激活的提供商或 .env 默认值
@@ -161,9 +161,9 @@ class AIProviderFactory:
             if row:
                 if not row.enabled:
                     raise ValueError(f"{row.display_name or row.provider_name} 已禁用")
-                api_key = decrypt_secret(row.api_key)
+                api_key = user_provider_key(row)
                 if not api_key:
-                    raise ValueError(f"{row.display_name or row.provider_name} API Key 未配置")
+                    raise ValueError(f"{row.display_name or row.provider_name} 请在 AI 设置中重新填写自己的 API Key")
                 from app.utils.outbound_url import validate_ai_provider_url
                 safe_base_url = await validate_ai_provider_url(row.base_url)
                 return AIProviderFactory.create_provider_from_settings(
@@ -177,7 +177,10 @@ class AIProviderFactory:
                     output_price_per_million=row.output_price_per_million,
                 )
 
-        # 回退到 .env 配置
+        if user_id is not None:
+            raise ValueError("请先在 AI 设置中配置自己的提供商和 API Key")
+
+        # Only explicitly unscoped internal calls may use server credentials.
         if provider_name is None:
             provider_name = settings.DEFAULT_AI_PROVIDER
 

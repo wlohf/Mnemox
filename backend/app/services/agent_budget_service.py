@@ -195,3 +195,49 @@ def daily_budget_after_run(
         "remaining_model_calls": max(0, call_limit - model_calls),
         "remaining_estimated_tokens": max(0, token_limit - estimated_tokens),
     }
+
+
+async def reserve_understanding_call(db, job, *, category: str, estimated_tokens: int,
+                                     daily_calls: int, daily_tokens: int) -> int:
+    """Reuse AgentJob checkpoints as durable reservations, including failed calls.
+
+    Caller holds the user mutation lock and owns a short transaction. Reservations
+    are counted by their own UTC date, including when a job spans midnight.
+    """
+    if estimated_tokens > daily_tokens:
+        raise ValueError('understanding_call_exceeds_daily_budget')
+    today = utc_now_db().date().isoformat()
+    rows = (await db.scalars(select(AgentJob.checkpoint).where(
+        AgentJob.user_id == job.user_id, AgentJob.agent == 'understanding',
+    ))).all()
+    calls = [call for cp in rows for call in (cp or {}).get('calls', []) if call.get('date') == today]
+    if len(calls) >= daily_calls or sum(c.get('reserved_tokens', 0) for c in calls) + estimated_tokens > daily_tokens:
+        raise ValueError('understanding_daily_budget_exhausted')
+    checkpoint = dict(job.checkpoint or {})
+    records = list(checkpoint.get('calls', []))
+    records.append({'date': today, 'category': category, 'reserved_tokens': estimated_tokens,
+                    'state': 'reserved', 'usage': None})
+    checkpoint['calls'] = records
+    job.checkpoint = checkpoint
+    await db.flush()
+    return len(records) - 1
+
+
+async def settle_understanding_call(db, job, index, usage, succeeded):
+    checkpoint = dict(job.checkpoint or {})
+    records = list(checkpoint.get('calls', []))
+    records[index] = {**records[index], 'state': 'completed' if succeeded else 'failed', 'usage': usage or None}
+    checkpoint['calls'] = records
+    job.checkpoint = checkpoint
+    await db.flush()
+
+
+def understanding_usage_summary(calls):
+    """Unknown supplier usage/prices stay unknown, never a zero-cost claim."""
+    missing = sum(not c.get('usage') for c in calls)
+    reported = sum((c.get('usage') or {}).get('total_tokens', 0) for c in calls)
+    costs = [(c.get('usage') or {}).get('configured_cost_usd') for c in calls]
+    return {'model_calls': len(calls), 'usage_missing_calls': missing, 'reported_tokens': reported,
+            'actual_tokens': reported if not missing else None,
+            'reserved_tokens': sum(c.get('reserved_tokens', 0) for c in calls),
+            'configured_cost_usd': sum(costs) if all(c is not None for c in costs) else None}

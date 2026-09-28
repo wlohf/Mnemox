@@ -1,5 +1,6 @@
 """Learner-model evidence, replay, manual correction, and isolation tests."""
 from __future__ import annotations
+import uuid
 
 import tempfile
 import unittest
@@ -298,7 +299,7 @@ class LearnerModelServiceTests(unittest.IsolatedAsyncioTestCase):
 
             await complete_review_task(
                 int(schedule.id),
-                ReviewCompleteRequest(quality=4),
+                ReviewCompleteRequest(attempt_id=uuid.uuid4(), quality=4),
                 db=session,
                 current_user=user,
             )
@@ -325,7 +326,7 @@ class LearnerModelServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(state.mastery_estimate, 80.0, places=4)
         self.assertEqual(state.last_reviewed_at, evidence.observed_at)
 
-    async def test_ai_review_scores_are_clamped_before_learner_projection(self):
+    async def test_invalid_ai_review_scores_do_not_create_learner_evidence(self):
         user_id = await self._create_user("ai-review-owner")
         concept_id = await self._create_concept(user_id)
         async with self.sessionmaker() as session:
@@ -366,16 +367,16 @@ class LearnerModelServiceTests(unittest.IsolatedAsyncioTestCase):
                 "app.ai.factory.AIProviderFactory.create_provider",
                 new=AsyncMock(return_value=_Provider()),
             ):
-                result = await submit_review_answers(
-                    int(schedule.id),
-                    ReviewSubmitRequest(answers=[]),
-                    db=session,
-                    current_user=user,
-                )
+                from fastapi import HTTPException
+                with self.assertRaises(HTTPException) as failure:
+                    await submit_review_answers(
+                        int(schedule.id),
+                        ReviewSubmitRequest(attempt_id=uuid.uuid4(), answers=[]),
+                        db=session,
+                        current_user=user,
+                    )
+                self.assertEqual(failure.exception.status_code, 503)
             await session.commit()
-
-        self.assertEqual(result["score"], 100)
-        self.assertEqual(result["quality"], 5)
         async with self.sessionmaker() as session:
             evidence = await session.scalar(
                 select(LearnerEvidence).where(
@@ -384,8 +385,7 @@ class LearnerModelServiceTests(unittest.IsolatedAsyncioTestCase):
                     LearnerEvidence.evidence_type == "review_result",
                 )
             )
-        self.assertIsNotNone(evidence)
-        self.assertEqual(evidence.payload["quality"], 5)
+        self.assertIsNone(evidence)
 
     async def test_sqlite_foreign_keys_cascade_concept_learner_rows(self):
         user_id = await self._create_user("cascade-owner")

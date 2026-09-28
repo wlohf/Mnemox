@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select, text, update
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.concept import Concept, ConceptLink
@@ -27,6 +25,7 @@ from app.utils.error_safety import (
     safe_error_diagnostic,
     safe_exception_summary,
 )
+from app.utils.dialect import conflict_insert, is_postgresql
 from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
 
 OUTBOX_MODEL_VERSION = "projection-outbox-v1"
@@ -116,7 +115,7 @@ async def _lock_outbox_retry_policy(
     exclusive: bool,
 ) -> None:
     """Hold the retry-policy epoch lock for the current PostgreSQL transaction."""
-    if db.bind is None or db.bind.dialect.name != "postgresql":
+    if not is_postgresql(db):
         return
     lock_function = (
         "pg_advisory_xact_lock"
@@ -165,24 +164,12 @@ async def resolve_outbox_retry_policy(
             "policy_version": configured_version,
             "updated_at": current,
         }
-        dialect_name = db.bind.dialect.name if db.bind is not None else ""
-        if dialect_name == "postgresql":
-            statement = postgresql_insert(ProjectionOutboxRetryPolicy).values(**values).on_conflict_do_nothing(
-                index_elements=["id"]
-            )
-            created = await db.execute(statement)
-            if created.rowcount:
-                db.info[OUTBOX_RETRY_POLICY_CHANGED_KEY] = True
-        elif dialect_name == "sqlite":
-            statement = sqlite_insert(ProjectionOutboxRetryPolicy).values(**values).on_conflict_do_nothing(
-                index_elements=["id"]
-            )
-            created = await db.execute(statement)
-            if created.rowcount:
-                db.info[OUTBOX_RETRY_POLICY_CHANGED_KEY] = True
-        else:
-            db.add(ProjectionOutboxRetryPolicy(**values))
-            await db.flush()
+        created = await db.execute(
+            conflict_insert(db, ProjectionOutboxRetryPolicy)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        if created.rowcount:
             db.info[OUTBOX_RETRY_POLICY_CHANGED_KEY] = True
         policy = await _load_policy()
 
@@ -439,28 +426,12 @@ async def record_outbox_worker_heartbeat(
         "stopped_at": stopped_at,
         "updated_at": current,
     }
-    dialect_name = db.bind.dialect.name if db.bind is not None else ""
     update_values = {key: value for key, value in values.items() if key != "worker_id"}
-    if dialect_name == "postgresql":
-        statement = postgresql_insert(ProjectionOutboxWorkerHeartbeat).values(**values).on_conflict_do_update(
-            index_elements=["worker_id"],
-            set_=update_values,
-        )
-    elif dialect_name == "sqlite":
-        statement = sqlite_insert(ProjectionOutboxWorkerHeartbeat).values(**values).on_conflict_do_update(
-            index_elements=["worker_id"],
-            set_=update_values,
-        )
-    else:
-        existing = await db.get(ProjectionOutboxWorkerHeartbeat, clean_worker_id)
-        if existing is None:
-            db.add(ProjectionOutboxWorkerHeartbeat(**values))
-        else:
-            for key, value in update_values.items():
-                setattr(existing, key, value)
-        await db.flush()
-        return
-    await db.execute(statement)
+    await db.execute(
+        conflict_insert(db, ProjectionOutboxWorkerHeartbeat)
+        .values(**values)
+        .on_conflict_do_update(index_elements=["worker_id"], set_=update_values)
+    )
     await db.flush()
 
 
@@ -773,21 +744,11 @@ async def enqueue_projection(
         "attempts": 0,
         "available_at": occurred_at or _now(),
     }
-    dialect_name = db.bind.dialect.name if db.bind is not None else ""
-    if dialect_name == "postgresql":
-        statement = postgresql_insert(ProjectionOutbox).values(**values).on_conflict_do_nothing(
-            constraint="uq_projection_outbox_user_key"
-        )
-    elif dialect_name == "sqlite":
-        statement = sqlite_insert(ProjectionOutbox).values(**values).on_conflict_do_nothing(
-            index_elements=["user_id", "idempotency_key"]
-        )
-    else:
-        # Production and local development use PostgreSQL and SQLite. Keeping
-        # the fallback explicit makes unsupported dialects fail at the unique
-        # constraint instead of silently weakening the idempotency contract.
-        statement = ProjectionOutbox.__table__.insert().values(**values)
-    await db.execute(statement)
+    await db.execute(
+        conflict_insert(db, ProjectionOutbox)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["user_id", "idempotency_key"])
+    )
     row = await db.scalar(
         select(ProjectionOutbox).where(
             ProjectionOutbox.user_id == int(user_id),
@@ -822,6 +783,8 @@ async def enqueue_for_learning_event(
             )
             if owned is not None:
                 concept_id = int(candidate)
+    from app.services.understanding_runtime import enqueue_understanding
+    await enqueue_understanding(db, user_id)
     return await enqueue_projection(
         db, user_id, event_id, concept_id=concept_id,
         idempotency_key=f"learner_state:{event_id}:{concept_id if concept_id is not None else '*'}",
@@ -979,7 +942,7 @@ async def _lock_projection_users(
     user_ids: list[int],
 ) -> None:
     """Serialize multi-row projection batches for each PostgreSQL user scope."""
-    if not user_ids or db.bind is None or db.bind.dialect.name != "postgresql":
+    if not user_ids or not is_postgresql(db):
         return
     for lock_user_id in sorted({int(value) for value in user_ids}):
         await db.execute(

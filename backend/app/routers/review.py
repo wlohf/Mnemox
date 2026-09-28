@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
+from uuid import UUID
+from app.services.review_attempts import reserve_review_attempt, finish_review_attempt, replay_review_attempt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -16,6 +18,7 @@ from app.models.material import Chapter, Material
 from app.auth import get_current_user
 from app.models.user import User
 from app.services.review_scheduler import apply_review
+from app.services.review_schedule_identity import ensure_review_schedule
 from app.services.learning_event_service import (
     CanonicalEventType,
     record_review_completed_event,
@@ -31,8 +34,14 @@ logger = logging.getLogger(__name__)
 
 
 class ReviewCompleteRequest(BaseModel):
+    attempt_id: UUID
     quality: int  # 0-5
     coach_action_attempt_id: str | None = Field(None, max_length=40)
+
+
+class ChapterAssessment(BaseModel):
+    score: int = Field(ge=0, le=100, strict=True)
+    feedback: str = Field(min_length=1)
 
 
 class ChapterEnqueueRequest(BaseModel):
@@ -94,7 +103,7 @@ async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: in
     created: list[ReviewSchedule] = []
     for wq in new_items:
         next_time = wq.next_review_at or now
-        task = ReviewSchedule(
+        task, inserted = await ensure_review_schedule(db,
             user_id=user_id,
             item_type="question",
             item_id=wq.id,
@@ -104,8 +113,8 @@ async def _sync_wrong_questions_to_review_schedule(db: AsyncSession, user_id: in
             repetitions=wq.review_count or 0,
             status="pending",
         )
-        db.add(task)
-        created.append(task)
+        if inserted:
+            created.append(task)
     return created
 
 async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> list[ReviewSchedule]:
@@ -136,7 +145,7 @@ async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> l
     for chapter in new_chapters:
         mastery = float(chapter.mastery_level or 0)
         default_time = now if mastery < 60 else now + timedelta(days=3)
-        task = ReviewSchedule(
+        task, inserted = await ensure_review_schedule(db,
             user_id=user_id,
             item_type="chapter",
             item_id=chapter.id,
@@ -146,8 +155,8 @@ async def _sync_chapters_to_review_schedule(db: AsyncSession, user_id: int) -> l
             repetitions=0,
             status="pending",
         )
-        db.add(task)
-        created.append(task)
+        if inserted:
+            created.append(task)
     return created
 
 def _to_iso(value: Any) -> Optional[str]:
@@ -311,11 +320,14 @@ async def complete_review_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await reserve_review_attempt(db, int(current_user.id), f"/api/review/tasks/{task_id}/complete", body)
+    if operation.replay is not None:
+        return operation.replay
     if body.quality < 0 or body.quality > 5:
         raise HTTPException(status_code=400, detail="quality 必须在 0-5")
 
     task_result = await db.execute(
-        select(ReviewSchedule).where(
+        select(ReviewSchedule).execution_options(populate_existing=True).where(
             ReviewSchedule.id == task_id,
             ReviewSchedule.user_id == current_user.id,
         )
@@ -401,10 +413,10 @@ async def complete_review_task(
             reason="review_completed",
             occurred_at=now,
         )
-        return _to_task_item(task, chapter=chapter)
+        return await finish_review_attempt(db, operation, _to_task_item(task, chapter=chapter))
 
     wrong_result = await db.execute(
-        select(WrongQuestion)
+        select(WrongQuestion).execution_options(populate_existing=True)
         .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
         .where(
             WrongQuestion.id == task.item_id,
@@ -465,7 +477,7 @@ async def complete_review_task(
         occurred_at=now,
     )
 
-    return _to_task_item(task, wrong)
+    return await finish_review_attempt(db, operation, _to_task_item(task, wrong))
 
 
 @router.delete("/tasks/{task_id}")
@@ -516,7 +528,7 @@ async def enqueue_chapter_review_task(
     when = body.scheduled_date or datetime.now()
 
     if not task:
-        task = ReviewSchedule(
+        task, _ = await ensure_review_schedule(db,
             user_id=current_user.id,
             item_type="chapter",
             item_id=chapter_id,
@@ -526,7 +538,6 @@ async def enqueue_chapter_review_task(
             repetitions=0,
             status="pending",
         )
-        db.add(task)
     else:
         task.scheduled_date = when
         task.status = "pending"
@@ -534,6 +545,8 @@ async def enqueue_chapter_review_task(
     await db.flush()
     await db.refresh(task)
     await db.refresh(chapter)
+    task.is_archived = False
+    await db.flush()
     await record_review_scheduled_event(
         db,
         int(current_user.id),
@@ -556,6 +569,7 @@ class ReviewContentResponse(BaseModel):
 
 
 class ReviewSubmitRequest(BaseModel):
+    attempt_id: UUID
     answers: List[dict]
     coach_action_attempt_id: str | None = Field(None, max_length=40)
 
@@ -688,11 +702,16 @@ async def submit_review_answers(
     current_user: User = Depends(get_current_user),
 ):
     """提交复习答案，AI评估并返回分数"""
+    uid = int(current_user.id)
+    path = f"/api/review/{task_id}/submit"
+    replay = await replay_review_attempt(db, uid, path, body)
+    if replay is not None:
+        return replay
     # Get review task
     task_result = await db.execute(
         select(ReviewSchedule).where(
             ReviewSchedule.id == task_id,
-            ReviewSchedule.user_id == current_user.id,
+            ReviewSchedule.user_id == uid,
         )
     )
     task = task_result.scalar_one_or_none()
@@ -708,7 +727,7 @@ async def submit_review_answers(
         .join(Material, Chapter.material_id == Material.id)
         .where(
             Chapter.id == task.item_id,
-            Material.user_id == current_user.id,
+            Material.user_id == uid,
         )
     )
     row = chapter_result.first()
@@ -757,8 +776,10 @@ async def submit_review_answers(
         provider = await AIProviderFactory.create_provider(
             db=db,
             scenario="review",
-            user_id=current_user.id,
+            user_id=uid,
         )
+        # Release the read transaction before external I/O. Reload rows for mutation below.
+        await db.rollback()
         response = await provider.chat([{"role": "user", "content": prompt}])
         
         import json
@@ -769,18 +790,26 @@ async def submit_review_answers(
             if text.endswith("```"):
                 text = text[:-3].strip()
         
-        data = json.loads(text)
-        score = max(0, min(100, int(data.get("score", 60))))
-        quality = max(0, min(5, int(data.get("quality", 3))))
-        feedback = data.get("feedback", "")
+        assessment = ChapterAssessment.model_validate(json.loads(text))
+        score = assessment.score
+        quality = next((quality for cutoff, quality in ((90, 5), (80, 4), (60, 3), (40, 2), (20, 1)) if score >= cutoff), 0)
+        feedback = assessment.feedback
         
     except Exception as e:
         logger.warning("AI 复习答案评估失败: %s", safe_exception_summary(e))
-        # Fallback scoring
-        score = 60
-        quality = 3
-        feedback = "评估完成，建议继续复习巩固"
+        raise HTTPException(status_code=503, detail="AI 评估暂不可用，本次未计入复习，请保留答案后重试或使用自评") from e
     
+    operation = await reserve_review_attempt(db, uid, path, body)
+    if operation.replay is not None:
+        return operation.replay
+    task = await db.scalar(select(ReviewSchedule).where(ReviewSchedule.id == task_id,
+        ReviewSchedule.user_id == uid).execution_options(populate_existing=True))
+    if task is None:
+        raise HTTPException(status_code=404, detail="复习任务已删除")
+    chapter = await db.scalar(select(Chapter).join(Material).where(Chapter.id == task.item_id,
+        Material.user_id == uid).execution_options(populate_existing=True))
+    if chapter is None:
+        raise HTTPException(status_code=404, detail="章节已删除")
     # 更新复习调度（FSRS 优先，SM-2 兜底）
     now = datetime.now()
     scheduled_for = task.scheduled_date or now
@@ -796,7 +825,7 @@ async def submit_review_answers(
     await db.flush()
     completed_event = await record_review_completed_event(
         db,
-        int(current_user.id),
+        int(uid),
         entity_type="review_schedule",
         entity_id=int(task.id),
         scheduled_for=scheduled_for,
@@ -811,20 +840,20 @@ async def submit_review_answers(
     )
     await _link_coach_review_attempt(
         db,
-        int(current_user.id),
+        int(uid),
         body.coach_action_attempt_id,
         completed_event,
     )
     await process_event_projection(
         db,
-        user_id=int(current_user.id),
+        user_id=int(uid),
         source_event_id=int(completed_event["id"]),
         max_attempts=settings.OUTBOX_WORKER_MAX_ATTEMPTS,
         retry_policy_version=settings.OUTBOX_WORKER_RETRY_POLICY_VERSION,
     )
     await record_review_scheduled_event(
         db,
-        int(current_user.id),
+        int(uid),
         entity_type="review_schedule",
         entity_id=int(task.id),
         due_at=schedule.due_at,
@@ -835,9 +864,9 @@ async def submit_review_answers(
         occurred_at=now,
     )
 
-    return {
+    return await finish_review_attempt(db, operation, {
         "score": score,
         "quality": quality,
         "feedback": feedback,
         "next_review_date": schedule.due_at.isoformat(),
-    }
+    })

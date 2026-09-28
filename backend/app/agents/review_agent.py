@@ -7,6 +7,7 @@ from app.agents.base import AgentRunContext, AgentResult, BaseAgent
 from app.models.anki import AnkiCard
 from app.models.question import ReviewSchedule, WrongQuestion
 from app.utils.utc import utc_now_db
+from app.services.review_schedule_identity import ensure_review_schedule
 
 
 class ReviewAgent(BaseAgent):
@@ -48,7 +49,7 @@ class ReviewAgent(BaseAgent):
             )
             if existing:
                 continue
-            db.add(ReviewSchedule(
+            _, inserted = await ensure_review_schedule(db,
                 user_id=ctx.user_id,
                 item_type="question",
                 item_id=item.id,
@@ -57,8 +58,8 @@ class ReviewAgent(BaseAgent):
                 ease_factor=250,
                 repetitions=item.review_count or 0,
                 status="pending",
-            ))
-            created_schedules += 1
+            )
+            created_schedules += int(inserted)
         if created_schedules:
             await db.flush()
         actions = []

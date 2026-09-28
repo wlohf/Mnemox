@@ -14,6 +14,7 @@ interface ChatMessageBubbleProps {
   role: 'user' | 'assistant'
   content: string
   imageData?: string[]
+  status?: string
   isStreaming?: boolean
   onQuoteToNote?: (content: string) => void
   onRegenerate?: () => void
@@ -26,6 +27,7 @@ export function ChatMessageBubble({
   content,
   imageData,
   isStreaming,
+  status,
   onQuoteToNote,
   onRegenerate,
   onBranch,
@@ -73,6 +75,9 @@ export function ChatMessageBubble({
       )}
 
       <div className={isUser ? 'msg-bubble-user' : 'msg-bubble-assistant'}>
+        {!isUser && !isStreaming && status && status !== 'completed' && (
+          <div role="status" style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>回复未完成，已保留生成内容</div>
+        )}
         {/* User message images */}
         {isUser && imageData && imageData.length > 0 && (
           <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>

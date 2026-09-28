@@ -11,6 +11,16 @@
 
 面向下一阶段的目标架构与候选技术边界见 [2026-08-03 学习智能底座架构决策](superpowers/specs/2026-08-03-learning-intelligence-foundation-architecture.md)（混合 RAG、概念图谱、时态记忆、学习者模型与 AgentRuntime）；执行顺序见 [路线图](roadmap.md)。本文件只把已合入或已验证的能力写入“当前实现”；未提交原型、待迁移能力和实验性方案必须明确标注状态。
 
+## 后续方向边界（2026-09-28）
+
+[动态用户理解与连续辅导](superpowers/specs/2026-09-28-dynamic-user-understanding.md)已确认为后续产品方向，任务见[实施计划](superpowers/plans/2026-09-28-dynamic-user-understanding-plan.md)，状态以[路线图](roadmap.md)为准。本节登记目标与当前实现的差距，不把目标记作已交付能力。
+
+工作区新增 `BehaviorEvidenceService`：从当前用户的规范 Pomodoro 记录形成只读证据，明确来源版本、实际/计划时长、缺失、同源分组及数据质量；用户时区来自 CoachPreference，无有效配置时显式回退 UTC。画像、今日统计、Coach 学习快照及聊天 `get_profile` 已接入；旧分数只保留为兼容字段，新的画像提示与聊天工具不把它们作为能力事实。接口与计量边界见[学习 API](api/learning.md)，实现验证见[交付记录](updates/2026/2026-09-28_behavior-evidence-foundation.md)。这批代码尚未部署，不包含动态假设生成。
+
+Agent 记忆学习仍主要形成预写规则的聚合候选，其他 EDA/旧规则消费者尚未全部迁入新证据契约；Coach 已有反馈与行动归因。Graphiti Temporal V1 仍是已审核声明的 model-free 投影，尚未在产品主链实现新方向要求的 episode 抽取、连续辅导与动态假设评估。
+
+后续保留 SQL 规范数据，增加可追溯的开放候选规律、支持/反例和评估修订；统计与领域逻辑评估不确定性，Graphiti 关联经历及时间变化，Neo4j 支持知识路径。事实与假设分别建模，图命中回 SQL 核验；先使用现有 AI 和轻量统计，按真实缺口增加模型。旧画像分数、SDK 安装和既有图集成测试均不等于新能力已完成。
+
 ## 1. 系统概览
 
 Mnemox 是一个本地优先的 Web 应用，并提供 Windows Electron 桌面壳。
@@ -190,6 +200,8 @@ venv/bin/python evaluate_knowledge.py --min-explicit-recall-at-5 0.95 --summary-
 
 V2/图实验开关继续默认关闭：`KNOWLEDGE_V2_ENABLED`、`KNOWLEDGE_LLM_EXTRACTION_ENABLED`、`ASSOCIATION_V2_ENABLED`、`ASSOCIATION_V2_SHADOW`、`KNOWLEDGE_SEMANTIC_AUTO_RESOLVE_ENABLED`、`NEO4J_GRAPH_ENABLED`、`NEO4J_GRAPH_SHADOW`、`GRAPHITI_ENABLED`、`GRAPHITI_SHADOW`；Stage 7 另新增默认值为 `sql` 的 `GRAPH_BACKEND=sql|neo4j`，它是产品 GraphStore 选择器，与历史 Shadow/Enabled flags 分离。Neo4j 可选运行时还有 `NEO4J_GRAPH_ROLLOUT_PERCENT`（0～100，默认 100，仅在明确选择 Neo4j 时生效）和 `NEO4J_GRAPH_ROLLOUT_USER_IDS`（逗号分隔 canary 用户 ID）；百分比采用稳定 SHA-256 user bucket，allowlist 可显式放行 canary，但二者都不能绕过 Projection readiness。Stage 3 另有默认关闭的 `KNOWLEDGE_EMBEDDING_ENABLED`；总开关控制来源、抽取和解析，embedding 开关单独控制知识 projection worker。选择 `GRAPH_BACKEND=neo4j` 时会同时把 `neo4j_graph` 纳入知识 Projection Outbox/worker target；缺少 Neo4j 凭据 fail closed。`KNOWLEDGE_SEMANTIC_AUTO_RESOLVE_ENABLED` 仍不执行自动语义合并；Stage 4 的 `/api/knowledge/associate` 只有在 `KNOWLEDGE_V2_ENABLED` 与 `ASSOCIATION_V2_ENABLED` 同时开启时可用，V1 保持不变。
 
+2026-09-28 依赖安装收口：`requirements.txt` 同时声明 Neo4j 与 `graphiti-core>=0.30.1,<0.31` SDK，开发依赖、Docker 和安装包构建继承同一声明。这里的“默认关闭”指运行开关和外部图服务，不再表示 SDK 未安装。Graphiti Temporal Slice 仍通过独立认证 API 显式重建/查询，尚未接入聊天、Coach 或前端的自动记忆流程；SDK 安装不等于功能启用或生产部署完成。
+
 抽取安全默认值为 Unit `8,000` 字符、每 Unit `12` 个 Claim、Claim `500` 字符、结构化输出 `12,000` 字符、每次调用 `30` 秒、每 Run `64` 次预留尝试与 `64,000` Token、每用户 UTC 日 `256,000` Token。2026-09-12 稳定化第三阶段在工作区改为持久预留/实际 usage 补差，并新增 LLM 输出上限 `2,048` Token 和 worker 停机宽限 `5` 秒；不是美元硬限额。确定性 extractor 不调用 LLM，可选 embedding 的预算另行治理。
 
 Stage 1 新增 `knowledge_sources`、`knowledge_source_revisions`、`knowledge_units`、`claims` 和 `claim_evidence`。Source 用 `user_id + source_type + source_record_id` 保持稳定身份；Revision 保存内容哈希并以部分唯一索引保证每个 Source 最多一个 current；Unit 使用有界字符切片和 JSON locator；Claim 在来源版本内用规范化 SHA-256 指纹去重，数据库默认审核状态保持 `pending`，手工服务只在 Evidence 定位成功后显式确认；Evidence 保存摘录和精确字符范围。服务层只 `flush`，事务由 Material/Note/Obsidian/Agent 等调用入口拥有。
@@ -318,7 +330,7 @@ SQL 概念图额外保存别名、来源证据、审核状态和操作审计。�
 
 SQL 时态记忆以 `user_id + fact_key` 识别事实，并使用条件为 `review_status = 'confirmed' AND valid_to IS NULL AND fact_key != ''` 的部分唯一索引保证同一事实只有一条开放的已确认声明。自动矛盾值进入 `staged` 并关联 `conflicts_with_id`；旧事实在人工确认前保持生效。用户接受候选会在同一事务内关闭旧事实并设置 `supersedes_id`；拒绝、纠错和到期分别保留 `resolution_reason`。过期值在统一检索、聊天、Coach、Agent、反馈排序与学习快照的 SQL 入口均被过滤；用户纠错、删除、替代或失效会移除引用旧事实的 `agent_core_profile`。完整契约和 Graphiti 暂缓依据见 [SQL 时态记忆生命周期 ADR](superpowers/specs/2026-08-23-temporal-memory-lifecycle-adr.md)。
 
-迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明，`20260822_10` 增加资料检索投影及版本化 SQL chunk 清单，`20260822_11` 增加概念审核、别名、来源证据、操作审计及学习状态计数，`20260823_12` 增加记忆事实键、冲突关联、处理原因、历史重复清理和当前事实部分唯一索引，`20260826_13` 增加 Coach 建议开始与未继续的反馈统计，`20260826_14` 新增 Coach 行动尝试及番茄钟关联字段，`20260827_15` 增加账号会话版本与持久登录节流状态，`20260830_16` 增加 AgentRuntime 逐用户调度和任务生命周期，`20260901_17` 增加用户级 Provider 输入/输出 Token 单价，`20260901_18` 增加 Coach IANA 时区，`20260902_19` 增加 Canonical Claim 的 Source/Revision/Unit/Claim/Evidence 五表，`20260903_20` 增加 durable knowledge extraction run，`20260903_21` 增加 Entity Resolution、ClaimConceptLink、四类知识 embedding 元数据和 compact projection outbox。SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态；PostgreSQL 只通过 Alembic。
+迁移 `20260804_01` 将每个既有 `Concept.mastery`（0–100）复制为可靠度 0.35 的 `legacy_mastery` 证据，并初始化同值的 `user_concept_state`；`20260804_02` 新增 `projection_outbox`，`20260804_03` 对已验证的 v1.3 SQLite 漂移做条件式对齐，`20260809_05` 新增 Outbox 运维状态，`20260812_06` 为未完成队列聚合新增部分索引；`20260816_07` 与 `20260816_08` 增加 Vault 稳定身份、同步状态和冲突候选，`20260816_09` 增加可审计记忆声明，`20260822_10` 增加资料检索投影及版本化 SQL chunk 清单，`20260822_11` 增加概念审核、别名、来源证据、操作审计及学习状态计数，`20260823_12` 增加记忆事实键、冲突关联、处理原因、历史重复清理和当前事实部分唯一索引，`20260826_13` 增加 Coach 建议开始与未继续的反馈统计，`20260826_14` 新增 Coach 行动尝试及番茄钟关联字段，`20260827_15` 增加账号会话版本与持久登录节流状态，`20260830_16` 增加 AgentRuntime 逐用户调度和任务生命周期，`20260901_17` 增加用户级 Provider 输入/输出 Token 单价，`20260901_18` 增加 Coach IANA 时区，`20260902_19` 增加 Canonical Claim 的 Source/Revision/Unit/Claim/Evidence 五表，`20260903_20` 增加 durable knowledge extraction run，`20260903_21` 增加 Entity Resolution、ClaimConceptLink、四类知识 embedding 元数据和 compact projection outbox。自 2026-09-28 起 SQLite 与 PostgreSQL 共用 Alembic 迁移链（见 8.2）；此前 SQLite 本地启动通过 lightweight migration 执行增量 DDL 和一次性回填，并用 `mnemox_lightweight_migrations` 记录状态，该路径现仅用于旧 SQLite 文件的一次性补齐。
 
 默认 SQLite 的 lightweight migration 与 Alembic 迁移链已覆盖到 head `20260903_21`。此前学习者模型收口备份为 `backend/data/backups/study-pre-slice-close-20260805-085415.db`，SHA256 `28AF023FD4950BE191389B57C097698653BC3E2AEB0937907B04CD0DD3221AB8`，与当时 `study.db` 一致。源库包含 16 个用户、19 条学习事件和 0 个概念，因此 legacy 证据和状态均为 0；outbox 也为 0，因为 schema 迁移不会为历史事件自动创建任务，历史投影必须显式触发 replay。Stage 1～3 不自动回填历史 Material/Note，只有打开总开关后的新写入或后续显式重建才登记 Source、run 和知识投影。早期步骤见 [数据库升级演练报告](database-rehearsal-2026-08-05.md)，既有发布演练见 [PostgreSQL 发布演练报告](postgres-release-rehearsal-2026-08-28.md)，Stage 3 本地历史恢复证据见 [Stage 3 验收记录](updates/2026/2026-09-03_mnemox-v2-stage3.md)。
 
@@ -396,6 +408,12 @@ Docker 场景使用根目录 `docker-compose.yml`。Windows 本地体验可使�
 
 PostgreSQL 只允许通过 `python run_migrations.py` 管理 schema。迁移链由冻结的 v1.3 基线、Phase 1 增量、受控 Phase 2 迁移和默认关闭的 Mnemox V2 Stage 1～3 schema 组成：空库直接升级；经过严格表/列指纹校验的无版本 v1.3 库先写入基线版本再升级；其他无版本库会失败退出，要求先备份并人工对齐，避免错误 `stamp`。当前 head 为 `20260903_21`。该入口会用 PostgreSQL session advisory lock 串行化 schema 指纹识别、可能的 baseline stamp 和 Alembic upgrade，因此多副本启动时后续副本会等待当前迁移完成；不得以直接 `alembic upgrade` 绕过该入口。Docker 在启动 Uvicorn 前执行该入口。应用生命周期在 PostgreSQL 上只校验 Alembic head，绝不执行 `create_all`。Alembic 自动检查忽略 ORM 注释和 SQLite 本地 lightweight 账本，只比较结构、类型、约束和索引。
 
+SQLite 使用同一条迁移链：全量 revision 可在空 SQLite 文件上升级到 head 且 `alembic check` 无差异。桌面版与源码自部署没有独立迁移步骤，因此 `init_db` 在启动时直接执行 Alembic 升级（进程内调用不重置应用日志）。尚未纳入 Alembic 的旧 SQLite 文件按以下顺序处理一次：从 Alembic 构建的基线 `20260928_31` DDL 创建缺失表 → 执行冻结的 `_run_lightweight_migrations` 补齐列、索引与历史回填 → 补建 `ix_notes_source_path`、`ix_wrong_questions_concept_id` → `stamp` 基线 → `upgrade head`。旧文件缺少 `wrong_questions.concept_id` 外键（SQLite 需重建表才能添加），属于已知且被容忍的差异。
+
+改表约定：所有 schema 变更只新增 Alembic revision，同一份 revision 必须能在 SQLite 与 PostgreSQL 上执行；SQLite 需要修改约束时使用 `op.batch_alter_table`（`env.py` 对 SQLite 自动生成 batch 操作）。`_run_lightweight_migrations` 已冻结，`tests/test_sqlite_alembic_runtime.py` 会拒绝对它的修改。桌面安装包会随后端一并打包 `alembic/` 与 `alembic.ini`。
+
+方言差异集中在 `app/utils/dialect.py`：`conflict_insert` 为 SQLite / PostgreSQL 返回同一套 `ON CONFLICT` 写法（冲突目标统一用列，PostgreSQL 据此匹配同列唯一约束），`is_postgresql` 只用于 PostgreSQL 专属的 advisory lock；不支持的数据库直接报错，不再保留逐条回退写法。运行时创建、可随时重建的稀疏检索表（`knowledge_claim_fts*`、`knowledge_claim_sparse*`、`knowledge_sparse_dirty*`）不属于迁移范围，`alembic/env.py` 在比对时忽略它们，防止自动生成误删。SQLite 下的 outbox 与主动 Coach 仍按请求时消费（单写者），不启动后台 worker，这是有意保留的运行差异。
+
 ### 8.3 验证命令
 
 ```powershell
@@ -468,3 +486,10 @@ CI 还会在独立 PostgreSQL 16 服务库上执行空库迁移、`test_postgres
 | Obsidian 同步 | 先完成拉取式增量同步的稳定 ID、冲突/删除策略；watchdog 与写回后置 | 保留 | 🔶 稳定身份、冲突候选、安全输入边界和用户提示已完成；真实多 Vault 验收、watchdog 与写回未完成 |
 | AgentRuntime | 原生 Kernel 与 LangGraph 的受控比较；草案确认、回放和 fallback 后再接调度 | 新 ADR §5/§6 | 🔶 受控原生切片已接前端调试入口、持久调度、租约回收、checkpoint 精确续跑、SSE、取消/重试/回放、预算护栏、供应商用量/配置单价对账和幂等草案确认；LangGraph 与真实账单抽样未完成 |
 | 后台调度与自学习 | Coach 治理下的 catch-up、归因和确定性分桶 | 保留 | 🔶 单场景调度已具备 catch-up、时区/免打扰、硬超时、多实例跳锁和安全重试；默认关闭的 A/A 观察已接稳定分桶、不可变事件与成熟归因报告，仍需真人覆盖和独立 A/A 完整性验收，当前禁止策略差异与 bandit |
+
+
+## 动态理解实现（2026-09-28）
+
+新增 SQL 经历/候选/修订与计划版本迁移 `20260928_30`、`20260928_31`。模型提议与确定性后续评估分离，Graphiti 独立 episode 通道保存抽取输出并以 SQL 来源校验作为读取边界。复用 AgentJob、恢复 worker、事件和预算设施，不改变 Temporal V1 及已确认事实接口。功能、默认开关、词法检索限制、删除和实际验收状态见[实现记录](updates/2026/2026-09-28_dynamic-understanding-implementation.md)。
+
+DI-2 后续补齐实体/关系关联检索与原始经历时间线；重建逐来源创建新图空间，并重映射 SDK UUID 后原子切换可见指针，避免迟到重建恢复已删除内容。Graphiti 与 SQL 在外部检索前后核验来源版本和消费开关；同名实体只作检索线索。重试复用已完成阶段检查点，实际用量与预算预留分开；评测脚本输出同输入的 SQL/图对照。具体上限、恢复与真实模型未验收状态见[DI-2 补齐记录](updates/2026/2026-09-28_di2-continuous-memory-completion.md)。

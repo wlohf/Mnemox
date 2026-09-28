@@ -11,7 +11,8 @@ import asyncio
 import hashlib
 import math
 import re
-from collections import Counter, defaultdict
+import sys
+from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.rag_service import RAGService, get_rag_service, load_rag_settings
 from app.config import settings
 from app.models.chat import ChatProject, ChatProjectMaterial
-from app.models.material import Material
+from app.models.material import Material, material_content_digest
 from app.models.retrieval import RetrievalProjection, RetrievalProjectionChunk
 
 
@@ -117,12 +118,9 @@ async def resolve_material_ids(db: AsyncSession, scope: MaterialSearchScope) -> 
     return [int(row[0]) for row in result.all()]
 
 
-def _where_for_chroma(
-    user_id: int,
-    material_ids: Sequence[int],
-    *,
-    project_id: Optional[int] = None,
-):
+def _where_for_chroma(user_id: int, material_ids: Sequence[int]):
+    # Project scope is already resolved to material IDs in SQL; vectors carry
+    # no project membership, so joining or leaving a project never re-embeds.
     filters: List[Dict[str, Any]] = [{"user_id": str(user_id)}]
     string_ids = [str(item) for item in material_ids]
     if len(string_ids) == 1:
@@ -131,8 +129,6 @@ def _where_for_chroma(
         filters.append({"material_id": {"$in": string_ids}})
     else:
         return None
-    if project_id is not None:
-        filters.append({"project_id": str(project_id)})
     return {"$and": filters}
 
 
@@ -160,24 +156,21 @@ class ChromaMaterialRetrievalBackend:
         await self.rag.initialize()
         if self.rag._embed_model is None:  # Legacy seam: isolated to this adapter.
             return []
+        if self.rag.vector_incompatible:
+            return []
 
         material_ids = await resolve_material_ids(self.db, scope)
         if not material_ids:
             return []
 
-        where_filter = _where_for_chroma(
-            scope.user_id,
-            material_ids,
-            project_id=scope.project_id,
-        )
+        where_filter = _where_for_chroma(scope.user_id, material_ids)
         threshold = float(
             getattr(self.rag, "_similarity_threshold", settings.RAG_SIMILARITY_THRESHOLD)
         )
-        # Legacy indexing writes the same chunk once per project. Without a project
-        # scope, oversample before de-duplication so duplicate project copies do not
-        # crowd distinct chunks out of the requested top-k window.
-        oversample = 1 if scope.project_id is not None else 4
-        requested = max(int(top_k) * oversample, int(top_k), 1)
+        # Indexes written before single-copy vectors hold the same chunk once per
+        # project. Oversample before de-duplication so those copies do not crowd
+        # distinct chunks out of the requested top-k window.
+        requested = max(int(top_k) * 4, 1)
 
         def _retrieve() -> List[MaterialChunkHit]:
             query_embedding = self.rag._embed_model.get_text_embedding(query)
@@ -224,13 +217,47 @@ class ChromaMaterialRetrievalBackend:
             return hits
 
         try:
-            return await asyncio.to_thread(_retrieve)
+            hits = await asyncio.to_thread(_retrieve)
+            # Validate after external I/O against a fresh SQL transaction. Legacy
+            # vectors without a current manifest are excluded until rebuilt.
+            if not hits:
+                return []
+            async with AsyncSession(bind=self.db.bind) as verify:
+                rows = (await verify.execute(
+                    select(
+                        Material.id, Material.title, Material.file_type, Material.content_hash,
+                        RetrievalProjection.content_hash,
+                        RetrievalProjectionChunk.chunk_index, RetrievalProjectionChunk.chunk_hash,
+                    )
+                    .join(RetrievalProjection, (RetrievalProjection.source_id == Material.id)
+                          & (RetrievalProjection.user_id == Material.user_id))
+                    .join(RetrievalProjectionChunk, RetrievalProjectionChunk.projection_id == RetrievalProjection.id)
+                    .where(Material.user_id == scope.user_id, Material.id.in_({hit.material_id for hit in hits}),
+                        RetrievalProjection.source_type == "material", RetrievalProjection.status == "ready",
+                        RetrievalProjection.indexed_version == RetrievalProjection.source_version,
+                        RetrievalProjectionChunk.source_version == RetrievalProjection.source_version))).all()
+                canonical_digests = {int(row[0]): row[3] for row in rows}
+                projected_digests = {int(row[0]): row[4] for row in rows}
+                current, _bodies = await _settle_projection_currency(
+                    verify, scope.user_id, canonical_digests, projected_digests,
+                )
+                valid = {
+                    (int(material_id), int(chunk_index)): (chunk_hash, title, file_type)
+                    for material_id, title, file_type, _, _, chunk_index, chunk_hash in rows
+                    if int(material_id) in current
+                }
+                safe_hits = []
+                for hit in hits:
+                    canonical = valid.get((hit.material_id, hit.chunk_index))
+                    if canonical and hashlib.sha256(hit.text.encode()).hexdigest() == canonical[0]:
+                        hit.material_title, hit.file_type = canonical[1], canonical[2] or ""
+                        safe_hits.append(hit)
+                return safe_hits
         except Exception as exc:
             if self.rag._looks_like_dimension_mismatch(exc):
-                await self.rag.reset_index(
-                    "检测到 Embedding 向量维度变化，已清空旧向量库；请重新索引资料后再使用语义检索。",
-                    user_id=scope.user_id,
-                )
+                # The collection is shared: pause and let the lifecycle handler
+                # reset it once, rather than wiping every user's vectors here.
+                self.rag.mark_vector_incompatible(exc, user_id=scope.user_id)
             return []
 
 
@@ -276,13 +303,111 @@ def _chunk_material_text(content: str) -> List[str]:
         ]
 
 
+async def _settle_projection_currency(
+    db: AsyncSession,
+    user_id: int,
+    canonical_digests: Dict[int, Optional[str]],
+    projected_digests: Dict[int, Optional[str]],
+) -> tuple[set[int], Dict[int, str]]:
+    """Return materials whose projection still matches canonical SQL text.
+
+    ``Material.content_hash`` is refreshed on every ORM write of ``content``,
+    so an equal digest vouches for the projection without reading the body.
+    Any disagreement (legacy rows, missing projections) is settled against the
+    canonical text; bodies read for materials that are not current are returned.
+    """
+    current = {
+        material_id
+        for material_id, digest in projected_digests.items()
+        if digest is not None and canonical_digests.get(material_id) == digest
+    }
+    unsettled = [material_id for material_id in canonical_digests if material_id not in current]
+    bodies: Dict[int, str] = {}
+    if unsettled:
+        result = await db.execute(
+            select(Material.id, Material.content).where(
+                Material.user_id == user_id,
+                Material.id.in_(unsettled),
+            )
+        )
+        for material_id, content in result.all():
+            text = str(content or "")
+            if projected_digests.get(int(material_id)) == material_content_digest(text):
+                current.add(int(material_id))
+            else:
+                bodies[int(material_id)] = text
+    return current, bodies
+
+
+# Upper bound on cached (term, frequency) entries across all chunks; roughly
+# 50-100 MB. Larger corpora stay correct but re-tokenize evicted chunks.
+_TOKEN_CACHE_MAX_TERMS = 2_000_000
+_CHUNK_TEXT_BATCH_SIZE = 500
+
+ChunkTokenStats = tuple[Dict[str, int], int]
+
+
+def _chunk_token_stats(text: str) -> ChunkTokenStats:
+    tokens = _tokenize(text)
+    return dict(Counter(sys.intern(token) for token in tokens)), len(tokens)
+
+
+class _ChunkTokenCache:
+    """LRU of per-chunk term frequencies keyed by the chunk's text digest.
+
+    Keys are content addresses, so an entry can never describe stale text.
+    """
+
+    def __init__(self, max_terms: int) -> None:
+        self.max_terms = max_terms
+        self._entries: "OrderedDict[str, ChunkTokenStats]" = OrderedDict()
+        self._terms = 0
+
+    def get(self, digest: str) -> Optional[ChunkTokenStats]:
+        entry = self._entries.get(digest)
+        if entry is not None:
+            self._entries.move_to_end(digest)
+        return entry
+
+    def put(self, digest: str, entry: ChunkTokenStats) -> None:
+        if digest in self._entries:
+            self._entries.move_to_end(digest)
+            return
+        self._entries[digest] = entry
+        self._terms += len(entry[0])
+        while self._terms > self.max_terms and len(self._entries) > 1:
+            _, evicted = self._entries.popitem(last=False)
+            self._terms -= len(evicted[0])
+
+
+_chunk_token_cache = _ChunkTokenCache(_TOKEN_CACHE_MAX_TERMS)
+
+
 class KeywordMaterialRetrievalBackend:
-    """Small dependency-free BM25 backend over scoped material chunks."""
+    """Dependency-free BM25 over the persisted chunk manifest.
+
+    A query reads chunk metadata, tokenizes only chunks missing from the token
+    cache, and loads text just for those and for the returned hits. Material
+    bodies are read only when a manifest cannot be vouched for by its digest.
+    """
 
     name = "keyword"
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    async def _chunk_texts(self, user_id: int, chunk_ids: Sequence[int]) -> Dict[int, str]:
+        texts: Dict[int, str] = {}
+        ids = list(chunk_ids)
+        for start in range(0, len(ids), _CHUNK_TEXT_BATCH_SIZE):
+            result = await self.db.execute(
+                select(RetrievalProjectionChunk.id, RetrievalProjectionChunk.text).where(
+                    RetrievalProjectionChunk.user_id == user_id,
+                    RetrievalProjectionChunk.id.in_(ids[start:start + _CHUNK_TEXT_BATCH_SIZE]),
+                )
+            )
+            texts.update({int(chunk_id): str(text or "") for chunk_id, text in result.all()})
+        return texts
 
     async def search(
         self,
@@ -298,16 +423,28 @@ class KeywordMaterialRetrievalBackend:
         material_ids = await resolve_material_ids(self.db, scope)
         if not material_ids:
             return []
-        result = await self.db.execute(
-            select(Material).where(
-                Material.user_id == scope.user_id,
-                Material.id.in_(material_ids),
-                Material.content.is_not(None),
-            )
-        )
-        materials = list(result.scalars().all())
+        heads = {
+            int(row.id): row
+            for row in (
+                await self.db.execute(
+                    select(Material.id, Material.title, Material.file_type, Material.content_hash).where(
+                        Material.user_id == scope.user_id,
+                        Material.id.in_(material_ids),
+                        Material.content.is_not(None),
+                    )
+                )
+            ).all()
+        }
+        if not heads:
+            return []
         manifests_result = await self.db.execute(
-            select(RetrievalProjectionChunk, RetrievalProjection.content_hash)
+            select(
+                RetrievalProjectionChunk.id,
+                RetrievalProjectionChunk.source_id,
+                RetrievalProjectionChunk.chunk_index,
+                RetrievalProjectionChunk.chunk_hash,
+                RetrievalProjection.content_hash,
+            )
             .join(
                 RetrievalProjection,
                 RetrievalProjection.id == RetrievalProjectionChunk.projection_id,
@@ -315,7 +452,7 @@ class KeywordMaterialRetrievalBackend:
             .where(
                 RetrievalProjectionChunk.user_id == scope.user_id,
                 RetrievalProjectionChunk.source_type == "material",
-                RetrievalProjectionChunk.source_id.in_(material_ids),
+                RetrievalProjectionChunk.source_id.in_(list(heads)),
                 RetrievalProjection.user_id == scope.user_id,
                 RetrievalProjection.source_id == RetrievalProjectionChunk.source_id,
                 RetrievalProjection.source_version == RetrievalProjectionChunk.source_version,
@@ -324,45 +461,66 @@ class KeywordMaterialRetrievalBackend:
             )
             .order_by(RetrievalProjectionChunk.source_id, RetrievalProjectionChunk.chunk_index)
         )
-        persisted_chunks: dict[int, list[tuple[int, str, str | None]]] = defaultdict(list)
-        for chunk, projected_hash in manifests_result.all():
-            persisted_chunks[int(chunk.source_id)].append(
-                (int(chunk.chunk_index), str(chunk.text or ""), projected_hash)
-            )
+        persisted_chunks: Dict[int, List[tuple[int, int, str]]] = defaultdict(list)
+        projected_digests: Dict[int, Optional[str]] = {}
+        for chunk_id, source_id, chunk_index, chunk_hash, projected_hash in manifests_result.all():
+            persisted_chunks[int(source_id)].append((int(chunk_id), int(chunk_index), str(chunk_hash)))
+            projected_digests[int(source_id)] = projected_hash
+        current, bodies = await _settle_projection_currency(
+            self.db,
+            scope.user_id,
+            {material_id: head.content_hash for material_id, head in heads.items()},
+            projected_digests,
+        )
 
-        docs: List[tuple[Material, int, str, List[str]]] = []
-        document_frequency: Counter[str] = Counter()
-        for material in materials:
-            source_hash = hashlib.sha256(
-                str(material.content or "").strip().encode("utf-8")
-            ).hexdigest()
-            stored = persisted_chunks.get(int(material.id), [])
-            if stored and any(item[2] != source_hash for item in stored):
-                stored = []
-            source_chunks = (
-                [(chunk_index, chunk) for chunk_index, chunk, _ in stored]
-                if stored
-                else list(enumerate(_chunk_material_text(material.content or "")))
-            )
-            for chunk_index, chunk in source_chunks:
-                tokens = _tokenize(chunk)
-                if not tokens:
-                    continue
-                docs.append((material, chunk_index, chunk, tokens))
-                document_frequency.update(set(tokens))
+        # (material_id, chunk_index, chunk_id or None, text or None, stats)
+        docs: List[tuple[int, int, Optional[int], Optional[str], ChunkTokenStats]] = []
+        cached: Dict[str, ChunkTokenStats] = {}
+        missing: Dict[int, str] = {}
+        for material_id in current:
+            for chunk_id, _chunk_index, chunk_hash in persisted_chunks.get(material_id, []):
+                stats = cached.get(chunk_hash) or _chunk_token_cache.get(chunk_hash)
+                if stats is None:
+                    missing[chunk_id] = chunk_hash
+                else:
+                    cached[chunk_hash] = stats
+        texts = await self._chunk_texts(scope.user_id, list(missing)) if missing else {}
+        for chunk_id, text in texts.items():
+            stats = _chunk_token_stats(text)
+            digest = missing[chunk_id]
+            cached[digest] = stats
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() == digest:
+                _chunk_token_cache.put(digest, stats)
+        for material_id in current:
+            for chunk_id, chunk_index, chunk_hash in persisted_chunks.get(material_id, []):
+                stats = cached.get(chunk_hash)
+                if stats is not None and stats[1]:
+                    docs.append((material_id, chunk_index, chunk_id, texts.get(chunk_id), stats))
+        # Materials without a current manifest are chunked from canonical text.
+        for material_id, body in bodies.items():
+            for chunk_index, chunk in enumerate(_chunk_material_text(body)):
+                stats = _chunk_token_stats(chunk)
+                if stats[1]:
+                    docs.append((material_id, chunk_index, None, chunk, stats))
 
         if not docs:
             return []
-        avg_len = sum(len(item[3]) for item in docs) / len(docs)
         corpus_size = len(docs)
+        avg_len = sum(doc[4][1] for doc in docs) / corpus_size
         query_counts = Counter(query_tokens)
+        query_terms = set(query_counts)
+        document_frequency: Counter[str] = Counter()
+        matching = []
+        for doc in docs:
+            common = query_terms.intersection(doc[4][0])
+            if common:
+                document_frequency.update(common)
+                matching.append(doc)
         k1 = 1.5
         b = 0.75
-        scored: List[MaterialChunkHit] = []
+        scored: List[tuple[float, int, int, Optional[int], Optional[str]]] = []
 
-        for material, chunk_index, chunk, tokens in docs:
-            tf = Counter(tokens)
-            doc_len = len(tokens)
+        for material_id, chunk_index, chunk_id, text, (tf, doc_len) in matching:
             score = 0.0
             for term, query_weight in query_counts.items():
                 freq = tf.get(term, 0)
@@ -374,22 +532,35 @@ class KeywordMaterialRetrievalBackend:
                 score += query_weight * idf * (freq * (k1 + 1.0) / norm)
             if score <= 0:
                 continue
-            scored.append(
+            scored.append((score, material_id, chunk_index, chunk_id, text))
+
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        top = scored[: int(top_k)]
+        unread = [chunk_id for _, _, _, chunk_id, text in top if text is None and chunk_id is not None]
+        if unread:
+            texts.update(await self._chunk_texts(scope.user_id, unread))
+
+        hits: List[MaterialChunkHit] = []
+        for score, material_id, chunk_index, chunk_id, text in top:
+            if text is None:
+                text = texts.get(chunk_id) if chunk_id is not None else None
+                if text is None:
+                    continue  # Replaced by a concurrent re-index; the next query sees it.
+            head = heads[material_id]
+            hits.append(
                 MaterialChunkHit(
-                    text=chunk,
+                    text=text,
                     score=score,
-                    material_id=int(material.id),
-                    material_title=str(material.title or ""),
+                    material_id=material_id,
+                    material_title=str(head.title or ""),
                     chunk_index=chunk_index,
-                    source=f"material:{material.id}#chunk:{chunk_index}",
+                    source=f"material:{material_id}#chunk:{chunk_index}",
                     backend=self.name,
-                    file_type=str(material.file_type or ""),
+                    file_type=str(head.file_type or ""),
                     backend_scores={self.name: score},
                 )
             )
-
-        scored.sort(key=lambda item: (-item.score, item.material_id, item.chunk_index))
-        return scored[: int(top_k)]
+        return hits
 
 
 class HybridMaterialRetrievalBackend:
@@ -444,6 +615,12 @@ class HybridMaterialRetrievalBackend:
                         }
                     )
                 target = fused[key]
+                if backend_name == "keyword" and target.text != hit.text:
+                    # Different text at the same chunk offset is a different
+                    # version: never give stale text a fresh keyword score.
+                    target = MaterialChunkHit(**{**hit.__dict__, "backend_scores": {}, "backend_ranks": {}})
+                    fused[key] = target
+                    fused_scores[key] = 1.0 / (self.rrf_k + rank)
                 target.backend_scores.update(hit.backend_scores or {backend_name: hit.score})
                 target.backend_ranks[backend_name] = rank
 
@@ -490,17 +667,6 @@ class MaterialIndexRebuilder:
 
         await asyncio.to_thread(_delete)
 
-    async def _project_ids(self, material_id: int, user_id: int) -> List[int]:
-        result = await self.db.execute(
-            select(ChatProjectMaterial.project_id)
-            .join(ChatProject, ChatProject.id == ChatProjectMaterial.project_id)
-            .where(
-                ChatProject.user_id == user_id,
-                ChatProjectMaterial.material_id == material_id,
-            )
-        )
-        return [int(row[0]) for row in result.all()]
-
     async def rebuild_user(
         self,
         user_id: int,
@@ -545,13 +711,11 @@ class MaterialIndexRebuilder:
         total_chunks = 0
         failures: List[Dict[str, Any]] = []
         for material in materials:
-            project_ids = await self._project_ids(int(material.id), user_id)
             count = await self.rag.index_material(
                 material_id=int(material.id),
                 title=str(material.title or ""),
                 content=str(material.content or ""),
                 file_type=material.file_type,
-                project_ids=project_ids,
                 user_id=user_id,
             )
             if count > 0:

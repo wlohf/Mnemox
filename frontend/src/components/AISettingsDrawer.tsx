@@ -1430,7 +1430,7 @@ export function AISettingsDrawer({ open, onClose }: AISettingsDrawerProps) {
                       )}
                     </Space>
                     <span style={{ fontSize: 12, color: '#999' }}>
-                      {provider.api_key_masked || '未配置'}
+                      {provider.requires_key_confirmation ? '旧密钥已停用，请重新填写自己的 API Key' : provider.api_key_masked || '未配置'}
                       {provider.model ? ` · ${provider.model}` : ''}
                     </span>
                   </div>

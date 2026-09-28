@@ -13,9 +13,12 @@ from app.models.daily_plan import DailyPlan
 from app.models.goal import Goal, Task
 from app.models.memory import UserMemory
 from app.models.note import Note
-from app.models.pomodoro import Pomodoro
 from app.models.question import Question, ReviewSchedule, WrongQuestion
 from app.services.memory_service import get_relevant_memories
+from app.services.behavior_evidence_service import (
+    EVIDENCE_VERSION, get_behavior_evidence, measured_minutes,
+    resolve_analysis_time_zone, summarize_focus,
+)
 from app.services.coach_time_service import local_day_utc_bounds, normalize_coach_time_zone
 from app.services.profile_service import get_profile
 from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
@@ -42,19 +45,20 @@ def _json_loads(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-async def _collect_profile(db: AsyncSession, user_id: int) -> dict[str, Any]:
+async def _collect_profile(db: AsyncSession, user_id: int, *, time_zone: str, today: date) -> dict[str, Any]:
     # Snapshot assembly is a read model. Profile refresh is an explicit
     # projection write owned by the profile endpoint or post-Pomodoro worker.
     profile_obj = await get_profile(db, user_id)
-    if not profile_obj:
+    if not profile_obj or (profile_obj.recent_performance or {}).get("evidence_version") != EVIDENCE_VERSION:
         return {}
+    perf = profile_obj.recent_performance or {}
+    if (perf.get("time_zone") != time_zone
+            or perf.get("focus_evidence", {}).get("window", {}).get("last_local_date") != today.isoformat()):
+        return {}  # A read-only snapshot never relabels stale cached hours.
     return {
         "total_study_days": int(profile_obj.total_study_days or 0),
         "total_study_hours": float(profile_obj.total_study_hours or 0),
         "total_pomodoros": int(profile_obj.total_pomodoros or 0),
-        "focus_score": float(profile_obj.focus_score or 0),
-        "consistency_score": float(profile_obj.consistency_score or 0),
-        "planning_score": float(profile_obj.planning_score or 0),
         "optimal_hours": profile_obj.optimal_hours,
         "weak_points": profile_obj.weak_points or [],
         "recent_performance": profile_obj.recent_performance or {},
@@ -227,53 +231,31 @@ async def _collect_review_state(db: AsyncSession, user_id: int, now: datetime) -
 
 
 async def _collect_pomodoro_state(
-    db: AsyncSession,
-    user_id: int,
-    today: date,
-    now: datetime,
-    day_start_utc: datetime,
-    day_end_utc: datetime,
+    db: AsyncSession, user_id: int, today: date, now: datetime,
+    time_zone: str,
 ) -> dict[str, Any]:
-    today_result = await db.execute(
-        select(Pomodoro).where(
-            Pomodoro.user_id == user_id,
-            Pomodoro.started_at >= day_start_utc,
-            Pomodoro.started_at < day_end_utc,
-        )
-    )
-    today_pomodoros = today_result.scalars().all()
-    today_minutes = sum(float(p.duration or 0) for p in today_pomodoros if p.completed)
-    completed_today = len([p for p in today_pomodoros if p.completed])
-
-    recent_result = await db.execute(
-        select(Pomodoro).where(Pomodoro.user_id == user_id, Pomodoro.started_at >= now - timedelta(days=7))
-    )
-    recent = recent_result.scalars().all()
-    distracted_count = len([p for p in recent if p.stop_reason == "distracted"])
-    interrupted_count = len([p for p in recent if p.stop_reason == "interrupted"])
-    recent_attempts = len(recent)
-    recent_interruptions = [
-        {
-            "id": p.id,
-            "task_name": p.task_name,
-            "duration": float(p.duration or 0),
-            "stop_reason": p.stop_reason,
-            "started_at": _to_iso(p.started_at),
-            "route": "/pomodoro",
-        }
-        for p in recent
-        if p.stop_reason in {"interrupted", "distracted"}
-    ][:6]
-
+    report = await get_behavior_evidence(db, user_id, days=7, now=now, time_zone=time_zone)
+    recent = [r for r in report.records if r.included]
+    todays = [r for r in recent if r.local_date == today.isoformat()]
+    metrics = summarize_focus(todays)
+    interrupted = [r for r in recent if r.outcome == "interrupted"]
     return {
-        "today_minutes": round(today_minutes, 1),
-        "today_pomodoro_count": len(today_pomodoros),
-        "today_completed_pomodoros": completed_today,
-        "recent_distracted_count": distracted_count,
-        "recent_interrupted_count": interrupted_count,
-        "recent_interrupted_or_distracted": recent_interruptions,
-        "recent_attempts": recent_attempts,
-        "recent_distracted_rate": round(distracted_count / recent_attempts, 4) if recent_attempts else 0.0,
+        "today_minutes": round(metrics["actual_minutes"] or 0, 1),
+        "today_actual_minutes": metrics["actual_minutes"],
+        "today_duration_unknown_count": metrics["unknown_actual_duration_count"],
+        "today_pomodoro_count": len(todays),
+        "today_completed_pomodoros": metrics["completed_count"],
+        "recent_distracted_count": report.metrics["distracted_count"],
+        "recent_interrupted_count": sum(r.stop_reason == "interrupted" for r in interrupted),
+        "recent_interrupted_or_distracted": [
+            {"id": r.source.id, "task_name": r.task_name, "duration": measured_minutes(r),
+             "stop_reason": r.stop_reason, "started_at": r.started_at,
+             "ended_at": r.source.occurred_at, "route": "/pomodoro"}
+            for r in interrupted[:6]
+        ],
+        "recent_attempts": len(recent),
+        "recent_distracted_rate": round(report.metrics["distracted_count"] / len(recent), 4) if recent else 0.0,
+        "evidence_summary": report.model_dump(exclude={"records"}),
     }
 
 
@@ -379,7 +361,7 @@ def _compute_risk_flags(snapshot: dict[str, Any]) -> dict[str, bool]:
         "review_debt_high": int(review.get("due_review_count") or 0) >= 6,
         "overdue_tasks_high": int(tasks.get("overdue_task_count") or 0) >= 3,
         "no_daily_plan": not bool(plan.get("has_content")),
-        "low_today_focus": float(learning.get("today_minutes") or 0) < 15,
+        "low_today_focus": learning.get("today_actual_minutes") is not None and float(learning["today_actual_minutes"]) < 15,
         "recent_interruptions_high": int(learning.get("recent_interrupted_count") or 0) >= 2,
         "recent_distraction_high": float(learning.get("recent_distracted_rate") or 0) >= 0.25,
     }
@@ -393,12 +375,12 @@ async def build_learning_snapshot(
     include_profile: bool = True,
     include_recent_notes: bool = True,
     include_memories: bool = True,
-    time_zone: str = "UTC",
+    time_zone: str | None = None,
 ) -> dict[str, Any]:
     """Aggregate the current user's learning state into one reusable object."""
 
     current = to_db_utc(now) if now is not None else utc_now_db()
-    clean_time_zone = normalize_coach_time_zone(time_zone)
+    clean_time_zone = normalize_coach_time_zone(time_zone) if time_zone is not None else (await resolve_analysis_time_zone(db, user_id))[0]
     today, day_start_utc, day_end_utc = local_day_utc_bounds(
         current,
         time_zone=clean_time_zone,
@@ -408,7 +390,7 @@ async def build_learning_snapshot(
         "date": today.isoformat(),
         "time_zone": clean_time_zone,
         "generated_at": to_utc_iso(current),
-        "profile": await _collect_profile(db, user_id) if include_profile else {},
+        "profile": await _collect_profile(db, user_id, time_zone=clean_time_zone, today=today) if include_profile else {},
         "tasks": await _collect_task_state(db, user_id, today, day_start_utc, day_end_utc),
         "daily_plan": await _collect_daily_plan_state(db, user_id, today),
         "review": await _collect_review_state(db, user_id, current),
@@ -417,8 +399,7 @@ async def build_learning_snapshot(
             user_id,
             today,
             current,
-            day_start_utc,
-            day_end_utc,
+            clean_time_zone,
         ),
         "weaknesses": await _collect_weakness_state(db, user_id),
         "memory": await _collect_memory_state(db, user_id, include_memories, current),
@@ -431,5 +412,7 @@ async def build_learning_snapshot(
             day_end_utc,
         ),
     }
+    from app.services.understanding_context_service import understanding_context
+    snapshot["understanding"] = await understanding_context(db, user_id)
     snapshot["risk_flags"] = _compute_risk_flags(snapshot)
     return snapshot

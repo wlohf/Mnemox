@@ -2,6 +2,8 @@
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+from uuid import UUID
+from app.services.review_attempts import reserve_review_attempt, finish_review_attempt, replay_review_attempt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -20,6 +22,7 @@ from app.services.event_tracker import EventTracker
 from app.services.concept_service import link_concept, record_concept_source_evidence, upsert_concept
 from app.services.learner_model_service import record_evidence, record_review_result_evidence
 from app.services.review_scheduler import apply_review
+from app.services.review_schedule_identity import ensure_review_schedule
 from app.models.learning_event import EventType
 from app.utils.sync import begin_idempotent_operation, complete_idempotent_operation, flush_sync_mutation, require_matching_version
 from app.utils.utc import to_db_utc, to_utc_iso, utc_now_db
@@ -46,6 +49,7 @@ class WrongQuestionUpdate(BaseModel):
 
 
 class WrongQuestionReview(BaseModel):
+    attempt_id: UUID
     quality: int  # 0-5
     recall_difficulty: Optional[str] = None  # easy / hard / forgot
 
@@ -175,6 +179,7 @@ async def list_wrong_questions(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    after_id: Optional[int] = Query(None, ge=0),
 ):
     # 在 SQL 层直接过滤，避免加载全部数据到内存
     query = _with_question_and_chapter(select(WrongQuestion)).where(WrongQuestion.user_id == current_user.id)
@@ -186,8 +191,10 @@ async def list_wrong_questions(
             WrongQuestion.next_review_at.isnot(None),
             WrongQuestion.next_review_at <= now,
         )
-    query = query.order_by(WrongQuestion.last_wrong_at.desc().nullslast())
-    query = query.offset(skip).limit(limit)
+    if isinstance(after_id, int):
+        query = query.where(WrongQuestion.id > after_id).order_by(WrongQuestion.id.asc()).limit(limit)
+    else:
+        query = query.order_by(WrongQuestion.last_wrong_at.desc().nullslast(), WrongQuestion.id.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     items = result.scalars().all()
     return [_to_item(i) for i in items]
@@ -257,22 +264,8 @@ async def create_wrong_question(
                 review_status="confirmed",
             )
 
-    # Auto-create ReviewSchedule for this wrong question (due immediately)
-    try:
-        review = ReviewSchedule(
-            user_id=current_user.id,
-            item_type="question",
-            item_id=wrong.id,
-            scheduled_date=now,
-            interval_days=1,
-            ease_factor=250,
-            repetitions=0,
-            status="pending",
-        )
-        db.add(review)
-        await db.flush()
-    except Exception:
-        pass  # Non-blocking
+    await ensure_review_schedule(db, user_id=current_user.id, item_type="question", item_id=wrong.id,
+        scheduled_date=now, interval_days=1, ease_factor=250, repetitions=0, status="pending")
 
     await db.refresh(wrong)
     created_result = await db.execute(
@@ -366,11 +359,14 @@ async def review_wrong_question(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    operation = await reserve_review_attempt(db, int(current_user.id), f"/api/wrong-questions/{wrong_question_id}/review", body)
+    if operation.replay is not None:
+        return operation.replay
     if body.quality < 0 or body.quality > 5:
         raise HTTPException(status_code=400, detail="quality 必须在 0-5")
 
     result = await db.execute(
-        select(WrongQuestion)
+        select(WrongQuestion).execution_options(populate_existing=True)
         .options(selectinload(WrongQuestion.question).selectinload(Question.chapter))
         .where(
             WrongQuestion.id == wrong_question_id,
@@ -386,7 +382,7 @@ async def review_wrong_question(
 
     # 查找或创建关联的 ReviewSchedule
     review_result = await db.execute(
-        select(ReviewSchedule).where(
+        select(ReviewSchedule).execution_options(populate_existing=True).where(
             ReviewSchedule.item_type == "question",
             ReviewSchedule.item_id == item.id,
             ReviewSchedule.user_id == current_user.id,
@@ -396,7 +392,7 @@ async def review_wrong_question(
 
     now = utc_now_db()
     if review_task is None:
-        review_task = ReviewSchedule(
+        review_task, _ = await ensure_review_schedule(db,
             user_id=current_user.id,
             item_type="question",
             item_id=item.id,
@@ -406,7 +402,6 @@ async def review_wrong_question(
             repetitions=0,
             status="pending",
         )
-        db.add(review_task)
         await db.flush()
     schedule = apply_review(review_task, body.quality, now, "scheduled_date")
     days = int(schedule.interval_days)
@@ -434,35 +429,33 @@ async def review_wrong_question(
     await db.flush()
 
     # 记录学习事件：复习答题
-    try:
-        tracker = EventTracker(db, user_id=current_user.id)
-        event_type = EventType.QUESTION_CORRECT if body.quality >= 4 else (
-            EventType.QUESTION_ANSWERED if body.quality >= 2 else EventType.QUESTION_WRONG
+    tracker = EventTracker(db, user_id=current_user.id)
+    event_type = EventType.QUESTION_CORRECT if body.quality >= 4 else (
+        EventType.QUESTION_ANSWERED if body.quality >= 2 else EventType.QUESTION_WRONG
+    )
+    tracked_event = await tracker.track(
+        event_type=event_type,
+        category="review",
+        dedupe_key=f"review.attempt:{body.attempt_id}",
+        event_data={
+            "wrong_question_id": wrong_question_id,
+            "quality": body.quality,
+            "new_interval_days": days,
+            "mastery_status": item.mastery_status,
+            "concept_id": item.concept_id,
+        },
+    )
+    if item.concept_id is not None:
+        await record_review_result_evidence(
+            db, int(current_user.id), target_type="wrong_question", target_id=int(item.id),
+            quality=body.quality, source_event_id=int(tracked_event.id), observed_at=now,
+            next_review_at=next_review_at, concept_id=int(item.concept_id),
         )
-        tracked_event = await tracker.track(
-            event_type=event_type,
-            category="review",
-            event_data={
-                "wrong_question_id": wrong_question_id,
-                "quality": body.quality,
-                "new_interval_days": days,
-                "mastery_status": item.mastery_status,
-                "concept_id": item.concept_id,
-            },
-        )
-        if item.concept_id is not None:
-            await record_review_result_evidence(
-                db, int(current_user.id), target_type="wrong_question", target_id=int(item.id),
-                quality=body.quality, source_event_id=int(tracked_event.id), observed_at=now,
-                next_review_at=next_review_at, concept_id=int(item.concept_id),
-            )
-    except Exception:
-        pass  # 事件追踪不影响主流程
 
     saved = await _get_wrong_question_for_response(db, item.id, current_user.id)
     if not saved:
         raise HTTPException(status_code=500, detail="错题保存失败")
-    return _to_item(saved)
+    return await finish_review_attempt(db, operation, _to_item(saved))
 
 
 @router.delete("/{wrong_question_id}")

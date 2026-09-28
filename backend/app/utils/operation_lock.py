@@ -16,6 +16,8 @@ from typing import AsyncIterator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from app.utils.dialect import is_postgresql
+
 
 _LOCAL_LOCKS: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
     weakref.WeakValueDictionary()
@@ -132,7 +134,7 @@ async def serialized_global_operation(
     local_context = local_lock.exclusive() if exclusive else local_lock.shared()
     async with local_context:
         bind = db.bind
-        if bind is None or bind.dialect.name != "postgresql":
+        if bind is None or not is_postgresql(bind):
             yield
             return
 
@@ -177,7 +179,7 @@ async def serialized_user_operation(
 
     async with _local_lock(namespace, int(user_id)):
         bind = db.bind
-        if bind is None or bind.dialect.name != "postgresql":
+        if bind is None or not is_postgresql(bind):
             yield
             return
 

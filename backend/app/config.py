@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     NEO4J_PASSWORD: str = Field(default="", max_length=500)
     NEO4J_DATABASE: str = Field(default="neo4j", min_length=1, max_length=120)
     NEO4J_GRAPH_SHADOW_TIMEOUT_SECONDS: float = Field(default=2.0, ge=0.1, le=30.0)
+    # Separate opt-ins: SQL understanding is available without Neo4j.
+    UNDERSTANDING_ENABLED: bool = True
+    GRAPHITI_EPISODES_ENABLED: bool = False
+    UNDERSTANDING_DAILY_MODEL_CALLS: int = Field(default=40, ge=1, le=500)
+    UNDERSTANDING_DAILY_TOKENS: int = Field(default=160000, ge=1024, le=2000000)
+    UNDERSTANDING_MODEL_TIMEOUT: float = Field(default=35, ge=1, le=120)
+
     GRAPHITI_ENABLED: bool = False
     GRAPHITI_SHADOW: bool = False
     GRAPHITI_SHADOW_TIMEOUT_SECONDS: float = Field(default=5.0, ge=0.1, le=60.0)

@@ -68,6 +68,10 @@ def to_repo_relative(path: Path) -> str:
     """将绝对路径转成相对项目根目录的路径（用于入库保存）。"""
 
     try:
+        return str(Path("data") / path.resolve().relative_to(get_runtime_data_root()))
+    except ValueError:
+        pass
+    try:
         return str(path.resolve().relative_to(get_project_root()))
     except Exception:
         # 回退：直接保存字符串
@@ -82,10 +86,14 @@ def from_repo_relative(rel_path: str) -> Path:
     """
 
     p = Path(rel_path)
+    # Stable logical paths survive Docker (/data -> /app/data) and desktop moves.
+    normalized = p.as_posix()
+    for prefix in ("/app/data/", "/data/", "app/data/", "data/"):
+        if normalized.startswith(prefix):
+            return get_runtime_data_root() / normalized[len(prefix):]
     if p.is_absolute():
         return p
     project_candidate = get_project_root() / p
     if project_candidate.exists():
         return project_candidate
     return get_runtime_data_root() / p
-

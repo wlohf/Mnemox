@@ -6,7 +6,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,9 @@ from app.auth import get_current_user
 from app.utils.prompt_safety import wrap_untrusted_context
 from app.utils.error_safety import redact_sensitive_text, safe_exception_summary
 from app.models.user import User
+from app.services.behavior_evidence_service import get_behavior_evidence
+from app.services.coach_time_service import local_day_utc_bounds
+from app.utils.utc import utc_now_db, to_db_utc
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -31,6 +34,14 @@ class OutputEvaluateRequest(BaseModel):
     output_text: str
     rubric: Optional[str] = None
     mark_task_completed: bool = False
+
+
+class OutputAssessment(BaseModel):
+    score: int = Field(ge=0, le=100, strict=True)
+    strengths: list[str]
+    gaps: list[str]
+    next_actions: list[str]
+    verdict: str = Field(min_length=1)
 
 
 class MaterialClassificationRequest(BaseModel):
@@ -161,31 +172,34 @@ async def _sync_chapters_from_structure(material_id: int, chapters: List[dict], 
     return created
 
 
-async def _auto_create_goal_and_tasks(material_id: int, db: AsyncSession, user_id: int = None) -> tuple:
+async def _auto_create_goal_and_tasks(material_id: int, db: AsyncSession, *, user_id: int) -> tuple:
     """Auto-create one Goal per material + one Task per chapter (type='learn'), skipping duplicates.
     Returns (goal_id, created_task_count).
     """
-    mat_result = await db.execute(select(Material).where(Material.id == material_id))
+    mat_result = await db.execute(
+        select(Material).where(Material.id == material_id, Material.user_id == user_id)
+    )
     material = mat_result.scalar_one_or_none()
     if not material:
         return (None, 0)
 
     # Check for existing active goal for this material
-    goal_query = select(Goal).where(Goal.material_id == material_id, Goal.status == "active")
-    if user_id:
-        goal_query = goal_query.where(Goal.user_id == user_id)
+    goal_query = select(Goal).where(
+        Goal.material_id == material_id,
+        Goal.status == "active",
+        Goal.user_id == user_id,
+    )
     goal_result = await db.execute(goal_query)
     goal = goal_result.scalar_one_or_none()
     if not goal:
         goal = Goal(
+            user_id=user_id,
             material_id=material_id,
             title=f"学习目标：{material.title}",
             description="由学习流程自动生成",
             target_level="80%",
             status="active",
         )
-        if user_id:
-            goal.user_id = user_id
         db.add(goal)
         await db.flush()
         await db.refresh(goal)
@@ -330,8 +344,9 @@ async def get_learning_dashboard(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    today = date.today()
-    now = datetime.now()
+    now = utc_now_db()
+    evidence = await get_behavior_evidence(db, int(current_user.id), days=1, now=now)
+    today, today_start, today_end = local_day_utc_bounds(now, time_zone=evidence.time_zone)
 
     task_result = await db.execute(
         select(Task).join(Goal, Task.goal_id == Goal.id).where(Goal.user_id == current_user.id)
@@ -342,7 +357,8 @@ async def get_learning_dashboard(
     pending_today = [t for t in today_tasks if t.status in ("pending", "in_progress")]
     completed_today = [
         t for t in tasks
-        if t.completed_at is not None and t.completed_at.date() == today
+        if t.status == "completed" and t.completed_at is not None
+        and today_start <= to_db_utc(t.completed_at) < today_end
     ]
 
     review_result = await db.execute(
@@ -355,19 +371,8 @@ async def get_learning_dashboard(
     )
     due_reviews = review_result.scalars().all()
 
-    # 只查询今天的番茄钟记录，避免加载全部历史
-    today_start = datetime.combine(today, datetime.min.time())
-    today_end = datetime.combine(today, datetime.max.time())
-    pomodoro_result = await db.execute(
-        select(Pomodoro).where(
-            Pomodoro.user_id == current_user.id,
-            Pomodoro.ended_at >= today_start,
-            Pomodoro.ended_at <= today_end,
-            Pomodoro.completed == True
-        )
-    )
-    today_pomodoros = pomodoro_result.scalars().all()
-    today_minutes = sum(int(p.duration or 0) for p in today_pomodoros)
+    today_pomodoros = [r for r in evidence.records if r.included and r.outcome in {"completed", "early_done"}]
+    today_minutes = round(evidence.metrics["actual_minutes"] or 0, 1)
 
     # 推荐动作（简单策略）
     actions = []
@@ -392,6 +397,10 @@ async def get_learning_dashboard(
         "due_review_count": len(due_reviews),
         "today_pomodoro_count": len(today_pomodoros),
         "today_study_minutes": today_minutes,
+        "time_zone": evidence.time_zone,
+        "today_actual_minutes": evidence.metrics["actual_minutes"],
+        "today_duration_unknown_count": evidence.metrics["unknown_actual_duration_count"],
+        "evidence_quality": evidence.quality_counts,
         "today_mission": today_mission,
         "recommended_actions": actions,
         "today_tasks": [
@@ -1069,33 +1078,32 @@ async def get_material_learning_plan(
     }
 
 
-async def _ensure_goal_for_material(material_id: int, db: AsyncSession, user_id: int = None) -> Goal:
-    goal_query = select(Goal).where(Goal.material_id == material_id, Goal.status == "active")
-    if user_id:
-        goal_query = goal_query.where(Goal.user_id == user_id)
+async def _ensure_goal_for_material(material_id: int, db: AsyncSession, *, user_id: int) -> Goal:
+    goal_query = select(Goal).where(
+        Goal.material_id == material_id,
+        Goal.status == "active",
+        Goal.user_id == user_id,
+    )
     goal_result = await db.execute(goal_query)
     goal = goal_result.scalar_one_or_none()
     if goal:
         return goal
 
-    mat_query = select(Material).where(Material.id == material_id)
-    if user_id:
-        # 资料归属校验：避免为他人资料创建目标或读取他人章节
-        mat_query = mat_query.where(Material.user_id == user_id)
+    # 资料归属校验：避免为他人资料创建目标或读取他人章节
+    mat_query = select(Material).where(Material.id == material_id, Material.user_id == user_id)
     mat_result = await db.execute(mat_query)
     material = mat_result.scalar_one_or_none()
     if not material:
         raise HTTPException(status_code=404, detail="资料不存在")
 
     goal = Goal(
+        user_id=user_id,
         material_id=material_id,
         title=f"学习目标：{material.title}",
         description="由进度引擎自动生成",
         target_level="80%",
         status="active",
     )
-    if user_id:
-        goal.user_id = user_id
     db.add(goal)
     await db.flush()
     await db.refresh(goal)
@@ -1347,8 +1355,10 @@ async def evaluate_output(
     except Exception:
         result_obj = None
 
-    if not result_obj:
-        result_obj = _fallback_eval(body.output_text)
+    try:
+        result_obj = OutputAssessment.model_validate(result_obj).model_dump()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="AI 评估暂不可用，本次未评分或修改任务，请稍后重试") from exc
 
     score = int(result_obj.get("score", 0))
     score = max(0, min(100, score))
@@ -1363,8 +1373,6 @@ async def evaluate_output(
     # 关联 material_id 以支持进度引擎汇总
     material_id = None
     if task.goal_id:
-        from app.models.goal import Goal
-
         goal_result = await db.execute(select(Goal).where(Goal.id == task.goal_id))
         goal = goal_result.scalar_one_or_none()
         material_id = int(goal.material_id) if goal and goal.material_id is not None else None

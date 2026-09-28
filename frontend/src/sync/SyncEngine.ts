@@ -10,6 +10,7 @@ export interface ModuleSyncAdapter {
   pushCreate(op: QueuedOperation): Promise<PushResult | void>
   pushUpdate(op: QueuedOperation): Promise<PushResult | void>
   pushDelete(op: QueuedOperation): Promise<void>
+  pushReview?(op: QueuedOperation): Promise<PushResult>
   pullAll(): Promise<void>
   getServerData?(op: QueuedOperation): Promise<Record<string, unknown>>
   mapServer?(server: ServerEntity): Record<string, unknown>
@@ -225,6 +226,11 @@ export class SyncEngine {
       if (module === 'goals' && deleted && (strategy === 'use_server' || record._conflictOpType === 'delete')) {
         await deleteLocalGoalChildren(localId, Number(record._serverId), db)
       }
+      const queuedReview = record._conflictOpType === 'review'
+        ? (await db.opQueue.where({ module, localId }).toArray()).find(op => op.opType === 'review') : undefined
+      if (queuedReview && strategy === 'keep_local' && deleted) {
+        throw new Error('云端卡片已删除，无法追加复习；请先备份本机内容或采用云端结果')
+      }
       await db.opQueue.where({ module, localId }).delete()
       if (strategy === 'use_server') {
         if (deleted) await table.delete(localId)
@@ -236,7 +242,7 @@ export class SyncEngine {
       }
       const wantsDelete = record._conflictOpType === 'delete'
       if (deleted && wantsDelete) { await table.delete(localId); return }
-      const type = wantsDelete ? 'delete' : deleted ? 'create' : 'update'
+      const type = queuedReview ? 'review' : wantsDelete ? 'delete' : deleted ? 'create' : 'update'
       const now = new Date().toISOString()
       await table.update(localId, {
         _serverId: deleted ? null : record._serverId, _serverVersion: deleted ? null : server.sync_version,
@@ -245,7 +251,8 @@ export class SyncEngine {
         _conflictAt: null, _conflictServerData: null, _conflictOpType: null, _syncError: null, _syncFailedAt: null,
       })
       await db.opQueue.add({
-        module, localId, opType: type, payload: JSON.stringify(record), createdAt: now,
+        module, localId, opType: type, payload: queuedReview
+          ? JSON.stringify({ ...JSON.parse(queuedReview.payload), reviewed_at: now }) : JSON.stringify(record), createdAt: now,
         operationId: crypto.randomUUID(), claimedAt: null,
       })
     })
@@ -285,6 +292,10 @@ export class SyncEngine {
           let result: PushResult | void
           if (op.opType === 'create') result = await adapter.pushCreate(op)
           else if (op.opType === 'update') result = await adapter.pushUpdate(op)
+          else if (op.opType === 'review') {
+            if (!adapter.pushReview) throw new Error('此模块不支持离线复习')
+            result = await adapter.pushReview(op)
+          }
           else result = await adapter.pushDelete(op)
           if (!this.isActive(generation)) return 0
           await acknowledgeOperation(op, result, adapter.mapServer, db)
@@ -292,7 +303,7 @@ export class SyncEngine {
         } catch (error) {
           if (!this.isActive(generation)) return 0
           const { status, code } = error as { status?: number; code?: string }
-          if (code === 'SYNC_CONFLICT' || status === 412 || (status === 404 && op.opType === 'update')) {
+          if (code === 'SYNC_CONFLICT' || status === 412 || (status === 404 && ['update', 'review'].includes(op.opType))) {
             // Keep the immutable operation and all later intent until the user
             // explicitly chooses. A failed preview fetch must not discard either.
             try {

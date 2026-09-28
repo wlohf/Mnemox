@@ -10,11 +10,10 @@ import re
 from typing import Any, Sequence
 
 from sqlalchemy import exists, select, update
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.utils.dialect import conflict_insert
 from app.models.knowledge import (
     Claim,
     ClaimEvidence,
@@ -96,33 +95,11 @@ async def _ensure_source(
         "status": "active",
         "current_revision": 0,
     }
-    bind = db.get_bind()
-    dialect_name = bind.dialect.name if bind is not None else ""
-    if dialect_name == "postgresql":
-        await db.execute(
-            postgresql_insert(KnowledgeSource)
-            .values(**values)
-            .on_conflict_do_nothing(constraint="uq_knowledge_sources_user_record")
-        )
-    elif dialect_name == "sqlite":
-        await db.execute(
-            sqlite_insert(KnowledgeSource)
-            .values(**values)
-            .on_conflict_do_nothing(
-                index_elements=["user_id", "source_type", "source_record_id"]
-            )
-        )
-    else:
-        existing = await db.scalar(
-            select(KnowledgeSource).where(
-                KnowledgeSource.user_id == int(user_id),
-                KnowledgeSource.source_type == str(source_type),
-                KnowledgeSource.source_record_id == int(source_record_id),
-            )
-        )
-        if existing is None:
-            db.add(KnowledgeSource(**values))
-            await db.flush()
+    await db.execute(
+        conflict_insert(db, KnowledgeSource)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["user_id", "source_type", "source_record_id"])
+    )
 
     source = await db.scalar(
         select(KnowledgeSource)

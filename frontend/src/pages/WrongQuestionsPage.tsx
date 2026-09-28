@@ -23,6 +23,8 @@ import {
   reviewWrongQuestion,
   type WrongQuestionItem,
 } from '../services/wrongQuestionApi'
+import { beginReviewAttempt } from '../services/reviewAttempt'
+import { getApiErrorMessage } from '../services/apiClient'
 import { PageShell } from '../components/PageShell'
 
 const { TextArea } = Input
@@ -60,9 +62,12 @@ export function WrongQuestionsPage() {
 
   const load = async () => {
     setLoading(true)
-    const data = await listWrongQuestions(filter === 'all' ? undefined : { mastery_status: filter })
-    setItems(data)
-    setLoading(false)
+    try {
+      const data = await listWrongQuestions(filter === 'all' ? undefined : { mastery_status: filter })
+      setItems(data)
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '加载错题失败，请重试'))
+    } finally { setLoading(false) }
   }
 
   useEffect(() => {
@@ -133,12 +138,13 @@ export function WrongQuestionsPage() {
   const handleReview = async (item: WrongQuestionItem, quality: number) => {
     setReviewLoading(true)
     try {
-      await reviewWrongQuestion(item.id, quality)
+      const result = await reviewWrongQuestion(item.id, quality)
+      if (!result) throw new Error('复习提交未成功')
       message.success('复习记录已保存')
       setReviewItem(null)
       await load()
-    } catch {
-      message.error('复习记录失败，请重试')
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '复习记录失败，请重试'))
     } finally {
       setReviewLoading(false)
     }
@@ -174,6 +180,7 @@ export function WrongQuestionsPage() {
             <List
               loading={loading}
               dataSource={items}
+              pagination={{ pageSize: 25, showSizeChanger: true, showTotal: total => `共 ${total} 条` }}
               locale={{ emptyText: '暂无错题' }}
               renderItem={(item) => (
                 <List.Item
@@ -181,7 +188,7 @@ export function WrongQuestionsPage() {
                     <Button size="small" onClick={() => quickSetStatus(item.id, 'not_mastered')}>未掌握</Button>,
                     <Button size="small" onClick={() => quickSetStatus(item.id, 'partial')}>部分掌握</Button>,
                     <Button size="small" type="primary" ghost onClick={() => quickSetStatus(item.id, 'mastered')}>已掌握</Button>,
-                    <Button size="small" type="primary" onClick={() => setReviewItem(item)}>复习</Button>,
+                    <Button size="small" type="primary" onClick={() => { beginReviewAttempt(`/api/wrong-questions/${item.id}/review`); setReviewItem(item) }}>复习</Button>,
                     <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(item.id)} />,
                   ]}
                 >

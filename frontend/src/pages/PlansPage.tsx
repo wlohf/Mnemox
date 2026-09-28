@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Calendar, DatePicker, Empty, List, Segmented, Space, Tag, Timeline, Typography, message } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Button, Calendar, DatePicker, Empty, List, Segmented, Space, Tag, Timeline, Typography, Input, message } from 'antd'
 import {
   BulbOutlined,
   CalendarOutlined,
@@ -16,11 +16,12 @@ import dayjs, { Dayjs } from 'dayjs'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getApiErrorMessage } from '../services/apiClient'
-import { listPlans, savePlan, type PlanItem } from '../services/planApi'
+import { listPlans, savePlan, getPlan, readPlanDraft, writePlanDraft, type PlanItem } from '../services/planApi'
 import { generateDailyPlan } from '../services/learningApi'
 import { generateFeynmanProbe, type FeynmanProbeResult } from '../services/feynmanProbeApi'
 import { confirmCoachNudgeDraft, getCoachNudgeDraft, type CoachNudgeDraft } from '../services/coachApi'
 import { MarkdownLiveEditor } from '../components/MarkdownLiveEditor'
+import { captureApiSession } from '../services/sessionScope'
 import { PageShell } from '../components/PageShell'
 
 dayjs.extend(isoWeek)
@@ -63,7 +64,7 @@ function extractChecklistItems(content: string): ChecklistItem[] {
       return {
         id: `${index}-${matched[2]}`,
         done: matched[1].toLowerCase() === 'x',
-        title: matched[2].trim(),
+        title: matched[2].replace(/<!-- task:\d+:v\d+ -->/g, '').trim(),
       }
     })
     .filter((item): item is ChecklistItem => Boolean(item))
@@ -91,6 +92,10 @@ export function PlansPage() {
   const [loading, setLoading] = useState(false)
   const [activeDate, setActiveDate] = useState(routeDate)
   const [editContent, setEditContent] = useState('')
+  const editor = useRef({ date: '', version: 0, dirty: false })
+  const loadedDate = useRef('')
+  const loadGeneration = useRef(0)
+  const [conflict, setConflict] = useState<PlanItem | null>(null)
   const [saving, setSaving] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [probing, setProbing] = useState(false)
@@ -108,6 +113,8 @@ export function PlansPage() {
 
   const loadPlans = useCallback(async () => {
     setLoading(true)
+    const generation = ++loadGeneration.current
+    const scope = captureApiSession()
     try {
       const today = dayjs()
       const selected = dayjs(activeDate)
@@ -115,9 +122,12 @@ export function PlansPage() {
       const start = selected.isBefore(defaultStart, 'day') ? selected : defaultStart
       const end = selected.isAfter(today, 'day') ? selected : today
       const data = await listPlans(start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'))
+      scope.assertActive()
+      if (generation !== loadGeneration.current) return
+      loadedDate.current = activeDate
       setPlans((data || []).sort((a, b) => b.date.localeCompare(a.date)))
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }, [activeDate])
 
@@ -156,9 +166,26 @@ export function PlansPage() {
   const activePlan = useMemo(() => plans.find((p) => p.date === activeDate) || null, [activeDate, plans])
 
   useEffect(() => {
-    setEditContent(activePlan?.content || '')
+    if (editor.current.date !== activeDate) {
+      const draft = readPlanDraft(activeDate)
+      editor.current = { date: activeDate, version: draft?.version ?? activePlan?.version ?? 0, dirty: Boolean(draft) }
+      setEditContent(draft?.content ?? activePlan?.content ?? '')
+      setConflict(null)
+    }
+    if (loadedDate.current !== activeDate) return
+    if (editor.current.date === activeDate && editor.current.dirty) return
+    const draft = readPlanDraft(activeDate)
+    editor.current = { date: activeDate, version: draft?.version ?? activePlan?.version ?? 0, dirty: Boolean(draft) }
+    setEditContent(draft?.content ?? activePlan?.content ?? '')
     setProbeResult(null)
-  }, [activeDate, activePlan?.content])
+  }, [activeDate, activePlan, loading])
+
+  const updateEditor = (content: string) => {
+    editor.current.dirty = true
+    setEditContent(content)
+    writePlanDraft(activeDate, { content, version: editor.current.version })
+  }
+
 
   const openDocument = useCallback((date: Dayjs | string, replace = false) => {
     const dateStr = typeof date === 'string' ? normalizeDateParam(date) : date.format('YYYY-MM-DD')
@@ -181,11 +208,29 @@ export function PlansPage() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      const saved = await savePlan(activeDate, editContent)
+      const scope = captureApiSession()
+      const saved = await savePlan(activeDate, editContent, editor.current.version)
+      scope.assertActive()
+      const newerDraft = readPlanDraft(activeDate)
       const nextPlan = saved || { date: activeDate, content: editContent }
       upsertPlan(nextPlan)
-      setEditContent(nextPlan.content)
-      message.success('已保存')
+      if (!newerDraft || newerDraft.content === editContent) {
+        writePlanDraft(activeDate, null)
+        if (editor.current.date === activeDate) {
+          editor.current = { date: activeDate, version: saved.version ?? 0, dirty: false }
+          setEditContent(nextPlan.content)
+          setConflict(null)
+        }
+        message.success('已保存')
+      } else {
+        message.success('提交的版本已保存；保存期间新增的编辑仍保留为草稿')
+      }
+    } catch (error) {
+      message.error(getApiErrorMessage(error, '保存失败，草稿已保留'))
+      if ((error as { status?: number }).status === 409) {
+        const latest = await getPlan(activeDate)
+        setConflict(latest)
+      }
     } finally {
       setSaving(false)
     }
@@ -193,13 +238,22 @@ export function PlansPage() {
 
   const handleGenerate = async (date: string) => {
     setGenerating(true)
+    const baseVersion = date === activeDate ? editor.current.version : (plans.find(p => p.date === date)?.version ?? 0)
     try {
+      const scope = captureApiSession()
       const result = await generateDailyPlan(date)
-      const generatedPlan = { date: result.date || date, content: result.content || '' }
-      upsertPlan(generatedPlan)
-      openDocument(generatedPlan.date)
-      setEditContent(generatedPlan.content)
-      message.success(`已生成计划，共 ${result.item_count} 项`)
+      scope.assertActive()
+      // Generation appends to the current local draft; saving is explicit.
+      const latestDraft = readPlanDraft(date)
+      const current = latestDraft?.content ?? (date === activeDate ? editContent : (plans.find(p => p.date === date)?.content ?? ''))
+      const content = [current, result.content || ''].filter(Boolean).join('\n\n')
+      const version = latestDraft?.version ?? baseVersion
+      writePlanDraft(date, { content, version })
+      editor.current = { date, version, dirty: true }
+      openDocument(date)
+      setEditContent(content)
+      message.success(`已追加 ${result.item_count} 项到草稿，请检查后保存`)
+
     } catch (error) {
       message.error(getApiErrorMessage(error, '生成计划失败'))
     } finally {
@@ -262,7 +316,7 @@ export function PlansPage() {
       `**下一步最小补缺口：** ${probeResult.next_focus}`,
       '',
     ].join('\n')
-    setEditContent((prev) => `${prev.trimEnd()}\n${block}`)
+    updateEditor(`${editContent.trimEnd()}\n${block}`)
     message.success('已追加到计划')
   }
 
@@ -326,7 +380,7 @@ export function PlansPage() {
         <Space wrap>
           <Button icon={<PlusOutlined />} onClick={() => openDocument(dayjs())}>今天</Button>
           <Button icon={<RobotOutlined />} loading={generating} onClick={() => handleGenerate(activeDate)}>
-            AI 生成当前计划
+            生成草稿当前计划
           </Button>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}>
             保存
@@ -449,7 +503,7 @@ export function PlansPage() {
           </div>
           <div className="mnemox-doc-toolbar">
             <Button size="small" icon={<RobotOutlined />} loading={generating} onClick={() => handleGenerate(activeDate)}>
-              AI 生成
+              生成草稿
             </Button>
             <Button size="small" icon={<QuestionCircleOutlined />} loading={probing} onClick={handleFeynmanProbe}>
               明镜追问
@@ -458,9 +512,19 @@ export function PlansPage() {
               保存
             </Button>
           </div>
+          {conflict?.date === activeDate && <Alert type="warning" message="服务器内容已更新，你的草稿仍保留在本机" description={<Space direction="vertical" style={{ width: '100%' }}>
+            <Input.TextArea readOnly value={conflict.content} aria-label="服务器最新计划" rows={6} />
+            <Button onClick={() => {
+              const merged = `${conflict.content}\n\n## 保留的本地草稿（待整理）\n${editContent.replace(/<!-- task:\d+:v\d+ -->/g, '')}`
+              editor.current.version = conflict.version ?? 0
+              updateEditor(merged)
+              setConflict(null)
+              message.info('两份内容均已保留在编辑区；任务关联采用服务器最新状态，请整理后保存')
+            }}>保留两份并继续编辑</Button>
+          </Space>} />}
           <MarkdownLiveEditor
             value={editContent}
-            onChange={setEditContent}
+            onChange={updateEditor}
             height="calc(100vh - 330px)"
             className="mnemox-plan-editor"
             placeholder={`# ${activeDate}\n\n- [ ] `}

@@ -24,6 +24,7 @@ export interface AIProvider {
   provider_name: string
   display_name: string
   api_key_masked: string
+  requires_key_confirmation?: boolean
   base_url: string
   model: string
   available_models: string[]

@@ -281,6 +281,7 @@ async def rag_health(
         "rag_online": status["initialized"] and status.get("embedding_enabled", False),
         "embedding_enabled": status.get("embedding_enabled", False),
         "fallback_active": status.get("fallback_active", False),
+        "vector_incompatible": status.get("vector_incompatible", False),
         "last_error": status.get("last_error", ""),
         "last_error_code": status.get("last_error_code"),
         "last_error_fingerprint": status.get("last_error_fingerprint"),

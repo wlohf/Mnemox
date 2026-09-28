@@ -3,15 +3,20 @@ import asyncio
 import json
 import logging
 import re
+import time
+from uuid import UUID, uuid4
+import anyio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from sqlalchemy.exc import OperationalError
-from pydantic import BaseModel
-from typing import Any, AsyncIterator, List, Optional, cast
+from pydantic import BaseModel, Field
+from typing import Any, AsyncIterator, List, Optional
 
+from app.services.background_runner import chat_turn_enrichment_runner
+from app.services.chat_progress import chat_request_hash, save_chat_progress
 from app.database import get_db
 from app.ai.factory import AIProviderFactory
 from app.ai.rag_service import get_rag_service
@@ -51,6 +56,10 @@ from app.utils.prompt_safety import wrap_untrusted_context
 logger = logging.getLogger(__name__)
 
 _SQLITE_LOCK_RETRY_DELAYS = (0.25, 0.75, 1.5, 3.0)
+# Streaming checkpoints: roughly two short write transactions per second per
+# active stream instead of one every 150 ms.
+_PROGRESS_FLUSH_INTERVAL_SECONDS = 0.5
+_PROGRESS_FLUSH_MAX_CHARS = 2048
 WEB_SEARCH_MODE_AUTO = "auto"
 WEB_SEARCH_MODE_PROVIDER_HOSTED = "provider_hosted"
 WEB_SEARCH_MODE_APP_SEARCH = "app_search"
@@ -91,7 +100,7 @@ async def _detect_and_create_wrong_questions(
     ai_reply: str,
     conversation_id: int,
     db: AsyncSession,
-    user_id: int = None,
+    user_id: int,
 ) -> None:
     """Heuristic + LLM detection of wrong answers in chat, auto-create WrongQuestion records."""
     from app.models.question import Question, WrongQuestion
@@ -171,6 +180,7 @@ async def _detect_and_create_wrong_questions(
                 continue
 
             question = Question(
+                user_id=user_id,
                 chapter_id=chapter.id,
                 question_type="short_answer",
                 content=content,
@@ -178,12 +188,11 @@ async def _detect_and_create_wrong_questions(
                 explanation=str(item.get("explanation", "")),
                 difficulty=2,
             )
-            if user_id:
-                question.user_id = user_id
             db.add(question)
             await db.flush()
 
             wrong = WrongQuestion(
+                user_id=user_id,
                 question_id=question.id,
                 first_wrong_at=now,
                 last_wrong_at=now,
@@ -192,25 +201,12 @@ async def _detect_and_create_wrong_questions(
                 next_review_at=now,
                 review_count=0,
             )
-            if user_id:
-                wrong.user_id = user_id
             db.add(wrong)
             await db.flush()
 
-            # Also create ReviewSchedule for the wrong question
-            from app.models.question import ReviewSchedule
-            review = ReviewSchedule(
-                item_type="question",
-                item_id=wrong.id,
-                scheduled_date=now,
-                interval_days=1,
-                ease_factor=250,
-                repetitions=0,
-                status="pending",
-            )
-            if user_id:
-                review.user_id = user_id
-            db.add(review)
+            from app.services.review_schedule_identity import ensure_review_schedule
+            await ensure_review_schedule(db, user_id=user_id, item_type="question", item_id=wrong.id,
+                scheduled_date=now, interval_days=1, ease_factor=250, repetitions=0, status="pending")
 
         await db.flush()
     except Exception as e:
@@ -281,14 +277,12 @@ def _looks_like_read_materials_intent(message: str) -> bool:
     return has_material and has_action
 
 
-async def _detect_materials_from_message(message: str, db: AsyncSession, user_id: int = None) -> List[dict]:
+async def _detect_materials_from_message(message: str, db: AsyncSession, *, user_id: int) -> List[dict]:
     """从用户消息中自动检测提到的资料名称。
 
     返回 [{"id": int, "title": str}, ...] 按标题长度降序排列。
     """
-    query = select(Material.id, Material.title)
-    if user_id:
-        query = query.where(Material.user_id == user_id)
+    query = select(Material.id, Material.title).where(Material.user_id == user_id)
     result = await db.execute(query)
     rows = result.all()
 
@@ -587,6 +581,12 @@ async def _resolve_materials_and_build_prompt(
     except Exception as _ae:
         logger.warning("自主 Agent 简报注入失败: %s", safe_exception_summary(_ae))
 
+    try:
+        from app.services.understanding_context_service import understanding_prompt
+        system_prompt += await understanding_prompt(db, user_id, query=message)
+    except Exception as exc:
+        logger.warning("阶段性理解上下文暂不可用: %s", safe_exception_summary(exc))
+
     return system_prompt, detected, auto_selected
 
 
@@ -615,17 +615,16 @@ async def _get_project_material_ids(conversation_id: int, db: AsyncSession, user
 
 async def _get_recent_material_ids(
     db: AsyncSession,
-    user_id: int = None,
+    *,
+    user_id: int,
     project_id: Optional[int] = None,
     limit: int = AUTO_MATERIAL_LIMIT,
 ) -> List[int]:
     """获取最近上传的资料 ID（仅含有内容的资料）。"""
     query = (
         select(Material.id)
-        .where(Material.content.is_not(None))
+        .where(Material.content.is_not(None), Material.user_id == user_id)
     )
-    if user_id:
-        query = query.where(Material.user_id == user_id)
     if project_id is not None:
         query = query.join(
             ChatProjectMaterial,
@@ -644,6 +643,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    turn_id: UUID = Field(default_factory=uuid4)
     message: str
     history: Optional[List[ChatMessage]] = None
     material_id: Optional[int] = None
@@ -672,72 +672,8 @@ async def _persist_streamed_chat_turn_once(
     user_id: int,
     sessionmaker,
 ) -> None:
-    async with sessionmaker() as save_db:
-        try:
-            conv = None
-            sess = None
-            if body.conversation_id:
-                conv_result = await save_db.execute(
-                    select(ChatConversation).where(
-                        ChatConversation.id == body.conversation_id,
-                        ChatConversation.user_id == user_id,
-                    )
-                )
-                conv = conv_result.scalar_one_or_none()
-
-            if body.study_session_id:
-                sess_result = await save_db.execute(
-                    select(StudySession).where(
-                        StudySession.id == body.study_session_id,
-                        StudySession.user_id == user_id,
-                    )
-                )
-                sess = sess_result.scalar_one_or_none()
-
-            if body.conversation_id:
-                save_db.add(
-                    ChatMessageModel(
-                        conversation_id=body.conversation_id,
-                        role="user",
-                        content=body.message,
-                        image_data=json.dumps(body.image_data, ensure_ascii=False) if body.image_data else None,
-                    )
-                )
-                save_db.add(
-                    ChatMessageModel(
-                        conversation_id=body.conversation_id,
-                        role="assistant",
-                        content=full_reply,
-                    )
-                )
-
-                if conv:
-                    if conv.title == "新对话":
-                        conv.title = body.message[:50]
-                    conv.updated_at = datetime.now()
-
-            if sess:
-                save_db.add(
-                    StudyConversation(
-                        session_id=sess.id,
-                        role="user",
-                        content=body.message,
-                        message_type="chat",
-                    )
-                )
-                save_db.add(
-                    StudyConversation(
-                        session_id=sess.id,
-                        role="assistant",
-                        content=full_reply,
-                        message_type="chat",
-                    )
-                )
-
-            await save_db.commit()
-        except Exception:
-            await save_db.rollback()
-            raise
+    await save_chat_progress(body=body, user_id=user_id, content=full_reply,
+                             status="completed", sessionmaker=sessionmaker)
 
 
 async def _persist_streamed_chat_turn(
@@ -746,10 +682,15 @@ async def _persist_streamed_chat_turn(
     full_reply: str,
     user_id: int,
     sessionmaker=None,
-) -> None:
-    """Persist the recoverable part of a streamed chat turn before SSE success."""
-    if not full_reply or not (body.conversation_id or body.study_session_id):
-        return
+) -> Optional[asyncio.Task]:
+    """Persist the recoverable part of a streamed chat turn before SSE success.
+
+    Post-turn enrichment is detached from the stream and returned as a task:
+    the client gets ``[DONE]`` without waiting for extra model calls, and a
+    disconnect after the core save can no longer cancel memory extraction.
+    """
+    if not (body.conversation_id or body.study_session_id):
+        return None
 
     if sessionmaker is None:
         from app.database import async_session_maker
@@ -786,16 +727,43 @@ async def _persist_streamed_chat_turn(
             raise
 
     if not body.conversation_id:
-        return
+        return None
 
+    # Capture plain values only: the request body may hold base64 images.
+    conversation_id = int(body.conversation_id)
+    message = body.message
+    chat_mode = body.chat_mode or "normal"
+    return chat_turn_enrichment_runner.submit(
+        ("conversation", int(user_id), conversation_id),
+        lambda: _enrich_streamed_chat_turn(
+            conversation_id=conversation_id,
+            message=message,
+            full_reply=full_reply,
+            chat_mode=chat_mode,
+            user_id=int(user_id),
+            sessionmaker=sessionmaker,
+        ),
+    )
+
+
+async def _enrich_streamed_chat_turn(
+    *,
+    conversation_id: int,
+    message: str,
+    full_reply: str,
+    chat_mode: str,
+    user_id: int,
+    sessionmaker,
+) -> None:
+    """Best-effort summary, memory, reflection, mistake and event enrichment."""
     async with sessionmaker() as enrich_db:
         try:
-            await upsert_conversation_summary(body.conversation_id, enrich_db, user_id=user_id)
+            await upsert_conversation_summary(conversation_id, enrich_db, user_id=user_id)
             await enrich_db.commit()
 
             await upsert_user_memories_from_turn(
-                body.conversation_id,
-                body.message,
+                conversation_id,
+                message,
                 full_reply,
                 enrich_db,
                 user_id=user_id,
@@ -804,7 +772,7 @@ async def _persist_streamed_chat_turn(
 
             try:
                 from app.services.memory_service import run_conversation_reflection
-                await run_conversation_reflection(body.conversation_id, enrich_db, user_id=user_id)
+                await run_conversation_reflection(conversation_id, enrich_db, user_id=user_id)
                 await enrich_db.commit()
             except Exception as e:
                 await enrich_db.rollback()
@@ -812,9 +780,9 @@ async def _persist_streamed_chat_turn(
 
             try:
                 await _detect_and_create_wrong_questions(
-                    body.message,
+                    message,
                     full_reply,
-                    body.conversation_id,
+                    conversation_id,
                     enrich_db,
                     user_id=user_id,
                 )
@@ -826,16 +794,16 @@ async def _persist_streamed_chat_turn(
             try:
                 from app.services.event_tracker import EventTracker as _ET
                 from app.models.learning_event import EventType as _EVT
-                _tracker = _ET(enrich_db, user_id=cast(int, cast(object, user_id)))
+                _tracker = _ET(enrich_db, user_id=user_id)
                 await _tracker.track(
                     event_type=_EVT.AI_QUESTION_ASKED,
                     event_data={
-                        "conversation_id": body.conversation_id,
-                        "message_len": len(body.message),
+                        "conversation_id": conversation_id,
+                        "message_len": len(message),
                         "reply_len": len(full_reply),
-                        "chat_mode": body.chat_mode or "normal",
+                        "chat_mode": chat_mode,
                     },
-                    session_id=str(body.conversation_id),
+                    session_id=str(conversation_id),
                 )
                 await enrich_db.commit()
             except Exception as e:
@@ -845,7 +813,7 @@ async def _persist_streamed_chat_turn(
             await enrich_db.rollback()
             logger.warning(
                 "流式对话后处理失败，但核心消息已保存: conversation_id=%s user_id=%s err=%s",
-                body.conversation_id,
+                conversation_id,
                 user_id,
                 safe_exception_summary(exc),
             )
@@ -1321,7 +1289,66 @@ async def chat_send(
             safe_exception_summary(exc),
         )
 
+    request_hash = chat_request_hash(body)
+    progress = await save_chat_progress(body=body, user_id=user_id, request_hash=request_hash)
+
+    async def durable_chunks(source):
+        # Each chunk is committed before it is yielded. The first chunk is
+        # immediate; later ones are grouped per flush interval to bound write
+        # load, and a deadline releases held text when the provider pauses.
+        iterator = source.__aiter__()
+        pending: list[str] = []
+        pending_chars = 0
+        last_flush = 0.0
+        next_chunk: Optional[asyncio.Future] = None
+        try:
+            while True:
+                if next_chunk is None:
+                    next_chunk = asyncio.ensure_future(iterator.__anext__())
+                timeout = None
+                if pending:
+                    timeout = max(0.0, _PROGRESS_FLUSH_INTERVAL_SECONDS - (time.monotonic() - last_flush))
+                done, _ = await asyncio.wait({next_chunk}, timeout=timeout)
+                if done:
+                    arrived, next_chunk = next_chunk, None
+                    try:
+                        chunk = arrived.result()
+                    except StopAsyncIteration:
+                        break
+                    if not chunk:
+                        continue
+                    collected_reply.append(chunk)
+                    pending.append(chunk)
+                    pending_chars += len(chunk)
+                    if (
+                        time.monotonic() - last_flush < _PROGRESS_FLUSH_INTERVAL_SECONDS
+                        and pending_chars < _PROGRESS_FLUSH_MAX_CHARS
+                    ):
+                        continue
+                await save_chat_progress(body=body, user_id=user_id, content="".join(collected_reply),
+                                         request_hash=request_hash)
+                yield "".join(pending)
+                pending.clear()
+                pending_chars = 0
+                last_flush = time.monotonic()
+            if pending:
+                await save_chat_progress(body=body, user_id=user_id, content="".join(collected_reply),
+                                         request_hash=request_hash)
+                yield "".join(pending)
+        finally:
+            if next_chunk is not None and not next_chunk.done():
+                next_chunk.cancel()
+
     async def event_stream():
+        if progress and progress["existed"]:
+            if progress["content"]:
+                yield f"data: {json.dumps({'content': progress['content']}, ensure_ascii=False)}\n\n"
+            if progress["status"] == "completed":
+                yield "data: [DONE]\n\n"
+            else:
+                yield f"data: {json.dumps({'error': '该请求已提交但回复未完成，请查看历史记录后发起新的提问。'}, ensure_ascii=False)}\n\n"
+            return
+        finished = False
         # 先发送自动命中的资料信息（标题匹配 + 项目资料 + 读取资料库意图）
         merged_detected = []
         seen_ids = set()
@@ -1362,7 +1389,7 @@ async def chat_send(
             search_settings = None
             if body.web_search_enabled:
                 try:
-                    search_settings = await get_search_settings_dict(db, current_user.id)
+                    search_settings = await get_search_settings_dict(db, user_id)
                 except Exception:
                     search_settings = None
             use_hosted_web_search = False
@@ -1371,7 +1398,7 @@ async def chat_send(
                     web_prompt, web_results = await _build_provider_search_summary_prompt(
                         query=body.message,
                         db=db,
-                        user_id=current_user.id,
+                        user_id=user_id,
                         provider_name=body.web_search_provider_name,
                     )
                     if web_prompt:
@@ -1389,7 +1416,7 @@ async def chat_send(
                     web_prompt, web_results = await _build_external_web_search_prompt(
                         body.message,
                         db=db,
-                        user_id=current_user.id,
+                        user_id=user_id,
                         mode=web_search_mode,
                     )
                     if web_prompt:
@@ -1402,7 +1429,7 @@ async def chat_send(
                     web_prompt, web_results = await _build_external_web_search_prompt(
                         body.message,
                         db=db,
-                        user_id=current_user.id,
+                        user_id=user_id,
                         mode=web_search_mode,
                     )
                     if web_prompt:
@@ -1429,17 +1456,17 @@ async def chat_send(
                     if use_hosted_web_search
                     else provider.chat_stream
                 )
-                async for chunk in stream_method(
+                await db.rollback()
+                async for chunk in durable_chunks(stream_method(
                     messages=messages,
                     system_prompt=effective_system_prompt,
                     temperature=0.7,
-                ):
-                    collected_reply.append(chunk)
+                )):
                     # SSE format: data: ...\n\n
                     data = json.dumps({"content": chunk}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
             except Exception as exc:
-                if not (body.web_search_enabled and use_hosted_web_search and _is_hosted_web_search_unsupported(exc)):
+                if collected_reply or not (body.web_search_enabled and use_hosted_web_search and _is_hosted_web_search_unsupported(exc)):
                     raise
 
                 logger.info("联网搜索工具不可用，切换到应用层网页搜索: %s", exc)
@@ -1447,22 +1474,24 @@ async def chat_send(
                 web_prompt, web_results = await _build_external_web_search_prompt(
                     body.message,
                     db=db,
-                    user_id=current_user.id,
+                    user_id=user_id,
                     mode=web_search_mode,
                 )
                 fallback_system_prompt = f"{system_prompt or ''}{web_prompt}" if web_prompt else system_prompt
                 yield f"data: {json.dumps({'type': 'web_search_results', 'results': web_results}, ensure_ascii=False)}\n\n"
-                async for chunk in provider.chat_stream(
+                await db.rollback()
+                async for chunk in durable_chunks(provider.chat_stream(
                     messages=messages,
                     system_prompt=fallback_system_prompt,
                     temperature=0.7,
-                ):
-                    collected_reply.append(chunk)
+                )):
                     data = json.dumps({"content": chunk}, ensure_ascii=False)
                     yield f"data: {data}\n\n"
 
             # Detect progress feedback before persistence and final success.
             full_reply = "".join(collected_reply)
+            if not full_reply.strip():
+                raise ValueError("供应商没有返回回复内容，请重试")
             try:
                 feedback = await detect_progress_feedback(body.message, full_reply, db)
                 if feedback:
@@ -1486,9 +1515,9 @@ async def chat_send(
                     ensure_ascii=False,
                 )
                 yield f"data: {error_data}\n\n"
-                yield "data: [DONE]\n\n"
                 return
 
+            finished = True
             # 保存成功后再发送结束标记，避免前端误判为可恢复成功。
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -1506,8 +1535,18 @@ async def chat_send(
                 )
             error_data = json.dumps({"error": f"AI 回复失败：{error_text}"}, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
-            yield "data: [DONE]\n\n"
             return
+        finally:
+            if not finished:
+                # Cancellation cannot erase already emitted content. A hard process
+                # exit leaves status=streaming, which history also shows as unfinished.
+                with anyio.move_on_after(5, shield=True):
+                    try:
+                        await save_chat_progress(body=body, user_id=user_id,
+                            content="".join(collected_reply), status="interrupted",
+                            request_hash=request_hash)
+                    except Exception as exc:
+                        logger.warning("保存聊天中断状态失败: %s", safe_exception_summary(exc))
 
     return StreamingResponse(
         event_stream(),

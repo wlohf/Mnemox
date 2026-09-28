@@ -1,5 +1,5 @@
 """学习会话相关模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -10,7 +10,7 @@ class StudySession(Base):
     __tablename__ = "study_sessions"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, comment="所属用户")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, comment="所属用户")
     chapter_id = Column(Integer, ForeignKey("chapters.id"), comment="学习的章节")
     task_id = Column(Integer, ForeignKey("tasks.id"), comment="关联的任务")
     session_type = Column(String(20), comment="类型: new_learning, review, practice")
@@ -31,6 +31,10 @@ class StudySession(Base):
 class Conversation(Base):
     """对话记录表"""
     __tablename__ = "conversations"
+    __table_args__ = (Index("uq_study_message_turn_role", "session_id", "turn_id", "role", unique=True),)
+
+    turn_id = Column(String(36), nullable=True)
+    status = Column(String(20), nullable=False, default="completed", server_default="completed")
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(Integer, ForeignKey("study_sessions.id"), nullable=False, comment="所属学习会话")

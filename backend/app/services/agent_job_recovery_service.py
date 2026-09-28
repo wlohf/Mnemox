@@ -181,7 +181,9 @@ class AgentJobRecoveryWorker:
             if recovered:
                 await session.commit()
                 self._recovered_jobs += recovered
-            return recovered
+        from app.services.understanding_runtime import run_understanding_once
+        await run_understanding_once(self._session_factory)
+        return recovered
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
