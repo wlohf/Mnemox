@@ -1,67 +1,118 @@
 import { create } from 'zustand'
 
+/*
+ * Theme preference.
+ *
+ * `mode` keeps the persisted legacy values ('warm' = light) so existing users
+ * keep their choice. The resolved theme is written to two attributes:
+ *   data-mx-theme="light|dark"  → design tokens (design/tokens.css)
+ *   data-theme="warm|dark"      → legacy screens still on index.css
+ */
 export type ThemeMode = 'system' | 'warm' | 'dark'
+export type ResolvedTheme = 'warm' | 'dark'
 
 interface ThemeStore {
   mode: ThemeMode
-  setMode: (mode: ThemeMode) => void
-  resolvedTheme: 'warm' | 'dark'
-  bgImage: string | null       // base64 data URL
-  bgOpacity: number            // 0.05 – 0.4
+  resolvedTheme: ResolvedTheme
+  setMode: (mode: ThemeMode, options?: { animate?: boolean }) => void
+  toggle: () => void
+  bgImage: string | null
+  bgOpacity: number // 0.05 – 0.4
   setBgImage: (url: string | null) => void
   setBgOpacity: (v: number) => void
   resetToDefault: () => void
 }
 
-function getSystemTheme(): 'warm' | 'dark' {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'warm'
+const MODE_KEY = 'theme_mode'
+const BG_IMAGE_KEY = 'bg_image'
+const BG_OPACITY_KEY = 'bg_opacity'
+
+function systemPrefersDark(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function resolve(mode: ThemeMode): 'warm' | 'dark' {
-  if (mode === 'system') return getSystemTheme()
-  return mode as 'warm' | 'dark'
+function resolve(mode: ThemeMode): ResolvedTheme {
+  if (mode === 'system') return systemPrefersDark() ? 'dark' : 'warm'
+  return mode
 }
 
-const saved = (localStorage.getItem('theme_mode') as ThemeMode) || 'warm'
-const savedBgImage = localStorage.getItem('bg_image') || null
-const savedBgOpacity = parseFloat(localStorage.getItem('bg_opacity') || '0.15')
+function readMode(): ThemeMode {
+  const raw = localStorage.getItem(MODE_KEY)
+  return raw === 'system' || raw === 'dark' || raw === 'warm' ? raw : 'warm'
+}
 
-export const useThemeStore = create<ThemeStore>((set) => ({
-  mode: saved,
-  resolvedTheme: resolve(saved),
-  bgImage: savedBgImage,
-  bgOpacity: savedBgOpacity,
-  setMode: (mode) => {
-    localStorage.setItem('theme_mode', mode)
+function applyToDocument(theme: ResolvedTheme) {
+  const root = document.documentElement
+  root.setAttribute('data-theme', theme)
+  root.setAttribute('data-mx-theme', theme === 'dark' ? 'dark' : 'light')
+  root.style.colorScheme = theme === 'dark' ? 'dark' : 'light'
+}
+
+function withTransition(apply: () => void, animate: boolean) {
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown }
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (animate && doc.startViewTransition && !reduced) doc.startViewTransition(apply)
+  else apply()
+}
+
+const initialMode = readMode()
+const initialOpacity = Number.parseFloat(localStorage.getItem(BG_OPACITY_KEY) || '0.15')
+
+export const useThemeStore = create<ThemeStore>((set, get) => ({
+  mode: initialMode,
+  resolvedTheme: resolve(initialMode),
+  bgImage: localStorage.getItem(BG_IMAGE_KEY) || null,
+  bgOpacity: Number.isFinite(initialOpacity) ? Math.min(0.4, Math.max(0.05, initialOpacity)) : 0.15,
+
+  setMode: (mode, options = {}) => {
+    localStorage.setItem(MODE_KEY, mode)
     const resolved = resolve(mode)
-    document.documentElement.setAttribute('data-theme', resolved)
-    set({ mode, resolvedTheme: resolved })
+    withTransition(() => {
+      applyToDocument(resolved)
+      set({ mode, resolvedTheme: resolved })
+    }, options.animate ?? false)
   },
-  setBgImage: (url) => {
-    if (url) localStorage.setItem('bg_image', url)
-    else localStorage.removeItem('bg_image')
+
+  toggle: () => {
+    const next: ThemeMode = get().resolvedTheme === 'dark' ? 'warm' : 'dark'
+    get().setMode(next, { animate: true })
+  },
+
+  setBgImage: url => {
+    if (url) localStorage.setItem(BG_IMAGE_KEY, url)
+    else localStorage.removeItem(BG_IMAGE_KEY)
     set({ bgImage: url })
   },
-  setBgOpacity: (v) => {
-    localStorage.setItem('bg_opacity', String(v))
-    set({ bgOpacity: v })
+
+  setBgOpacity: v => {
+    const clamped = Math.min(0.4, Math.max(0.05, v))
+    localStorage.setItem(BG_OPACITY_KEY, String(clamped))
+    set({ bgOpacity: clamped })
   },
+
   resetToDefault: () => {
-    localStorage.removeItem('theme_mode')
-    localStorage.removeItem('bg_image')
-    localStorage.removeItem('bg_opacity')
+    localStorage.removeItem(MODE_KEY)
+    localStorage.removeItem(BG_IMAGE_KEY)
+    localStorage.removeItem(BG_OPACITY_KEY)
     const resolved = resolve('warm')
-    document.documentElement.setAttribute('data-theme', resolved)
+    applyToDocument(resolved)
     set({ mode: 'warm', resolvedTheme: resolved, bgImage: null, bgOpacity: 0.15 })
-  }
+  },
 }))
 
-// Init on load
-const initMode = (localStorage.getItem('theme_mode') as ThemeMode) || 'warm'
-document.documentElement.setAttribute('data-theme', resolve(initMode))
+// Apply before first paint (imported from main.tsx).
+applyToDocument(resolve(initialMode))
 
-// Listen for system changes
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   const { mode, setMode } = useThemeStore.getState()
-  if (mode === 'system') setMode('system') // triggers resolve again
+  if (mode === 'system') setMode('system', { animate: true })
+})
+
+// Keep tabs in sync.
+window.addEventListener('storage', event => {
+  if (event.key !== MODE_KEY) return
+  const next = readMode()
+  const resolved = resolve(next)
+  applyToDocument(resolved)
+  useThemeStore.setState({ mode: next, resolvedTheme: resolved })
 })

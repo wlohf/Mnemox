@@ -1,0 +1,380 @@
+/* ==========================================================================
+   Report charts — hand-drawn SVG on the Mnemox tokens.
+   One hue (ink) carries magnitude; the ramp steps below were validated as an
+   ordinal ramp in both modes (monotone L, ΔL ≥ 0.06, light end ≥ 2:1).
+   Marks are thin, gridlines are solid hairlines, text wears text tokens.
+   ========================================================================== */
+
+.viz {
+  --v1: #96b3de;
+  --v2: #739ad3;
+  --v3: #5381c4;
+  --v4: #3a69ad;
+  --v5: #28528e;
+  --v-muted: #afb4bd;
+  --v-empty: #eef0f4;
+  --v-grid: #e6e8ec;
+  --v-axis: #c9ccd3;
+  --v-surface: var(--mx-surface);
+  --v-area: oklch(0.52 0.12 258 / 0.1);
+  --v-good: var(--mx-success);
+  --v-warn: var(--mx-warning);
+  --v-bad: var(--mx-danger);
+  position: relative;
+}
+:global([data-mx-theme='dark']) .viz {
+  --v1: #344e73;
+  --v2: #426496;
+  --v3: #527bb8;
+  --v4: #6793d5;
+  --v5: #83adea;
+  --v-muted: #51555d;
+  --v-empty: #1d2026;
+  --v-grid: #23262c;
+  --v-axis: #3a3e46;
+  --v-area: oklch(0.7 0.1 258 / 0.12);
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.svg text {
+  fill: var(--mx-text-3);
+  font-family: var(--mx-font-sans);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.grid {
+  stroke: var(--v-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.axis {
+  stroke: var(--v-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+/* ---------------- Daily trend (bars + 7-day mean line) ---------------- */
+.bar {
+  fill: var(--v2);
+  transition: fill var(--mx-t-fast) var(--mx-ease);
+}
+.bar[data-active='true'] {
+  fill: var(--v4);
+}
+.bar[data-zero='true'] {
+  fill: var(--v-empty);
+}
+.meanLine {
+  fill: none;
+  stroke: var(--v5);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.meanDot {
+  fill: var(--v5);
+  stroke: var(--v-surface);
+  stroke-width: 2;
+}
+.crosshair {
+  stroke: var(--mx-text-3);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+.hit {
+  fill: transparent;
+  cursor: default;
+}
+.hit:focus-visible {
+  outline: none;
+}
+
+/* ---------------- Tooltip ---------------- */
+.tip {
+  position: absolute;
+  z-index: 3;
+  min-width: 8.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--mx-border);
+  border-radius: 8px;
+  background: var(--mx-raised);
+  box-shadow: var(--mx-shadow-md);
+  color: var(--mx-text);
+  font-size: var(--mx-type-caption);
+  line-height: 1.5;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 10px));
+  white-space: nowrap;
+}
+.tipTitle {
+  margin-bottom: 0.25rem;
+  color: var(--mx-text-3);
+}
+.tipRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tipRow b {
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.tipRow span {
+  color: var(--mx-text-2);
+}
+.tipKey {
+  width: 0.75rem;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--k);
+}
+.tipKey[data-shape='rect'] {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 2px;
+}
+
+/* ---------------- Legend ---------------- */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+  list-style: none;
+}
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.key {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  background: var(--k);
+}
+.key[data-shape='line'] {
+  width: 0.875rem;
+  height: 2px;
+  border-radius: 1px;
+}
+
+/* ---------------- Heatmap (weekday × hour) ---------------- */
+.heat {
+  display: grid;
+  grid-template-columns: 2.25rem repeat(24, minmax(0, 1fr));
+  gap: 2px;
+}
+.heatLabel {
+  display: flex;
+  align-items: center;
+  color: var(--mx-text-3);
+  font-size: 0.6875rem;
+}
+.heatHour {
+  color: var(--mx-text-3);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.cell {
+  position: relative;
+  aspect-ratio: 1;
+  min-height: 0.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--v-empty);
+  transition: box-shadow var(--mx-t-fast) var(--mx-ease);
+}
+.cell[data-l='1'] {
+  background: var(--v1);
+}
+.cell[data-l='2'] {
+  background: var(--v2);
+}
+.cell[data-l='3'] {
+  background: var(--v3);
+}
+.cell[data-l='4'] {
+  background: var(--v4);
+}
+.cell[data-l='5'] {
+  background: var(--v5);
+}
+.cell:hover,
+.cell:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--v-surface),
+    0 0 0 3px var(--mx-text-2);
+}
+.window {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  height: 3px;
+  margin-top: 4px;
+}
+.window i {
+  border-radius: 2px;
+}
+.window i[data-on='true'] {
+  background: var(--mx-evidence);
+}
+.scale {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.scale span {
+  display: flex;
+  gap: 2px;
+}
+.scale i {
+  width: 0.875rem;
+  height: 0.625rem;
+  border-radius: 2px;
+}
+
+/* ---------------- Outcomes (single stacked bar) ---------------- */
+.stack {
+  display: flex;
+  gap: 2px;
+  height: 0.875rem;
+  overflow: hidden;
+  border-radius: 4px;
+}
+.seg {
+  min-width: 3px;
+  background: var(--k);
+  transition: filter var(--mx-t-fast) var(--mx-ease);
+}
+.seg:hover {
+  filter: brightness(1.08);
+}
+.outcomeList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0.875rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.outcomeHead {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+}
+.outcome b {
+  color: var(--mx-text);
+  font-size: var(--mx-type-title);
+  font-weight: 620;
+}
+.outcome b small {
+  margin-left: 0.25rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-weight: 500;
+}
+
+/* ---------------- Horizontal bars (session length) ---------------- */
+.hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hbar {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) 2.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+}
+.hbarTrack {
+  height: 0.75rem;
+}
+.hbarFill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 0 4px 4px 0;
+  background: var(--v3);
+  transform-origin: left;
+  animation: grow 700ms var(--mx-ease-expo) both;
+}
+.hbarFill[data-top='true'] {
+  background: var(--v5);
+}
+.hbar b {
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+}
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* ---------------- Table view twin ---------------- */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--mx-type-caption);
+}
+.table th,
+.table td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid var(--mx-border);
+  text-align: left;
+}
+.table th {
+  color: var(--mx-text-3);
+  font-weight: 560;
+}
+.table td {
+  color: var(--mx-text);
+  font-variant-numeric: tabular-nums;
+}
+.tableWrap {
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.refetching {
+  opacity: 0.55;
+  transition: opacity var(--mx-t-base) var(--mx-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hbarFill {
+    animation: none;
+  }
+}

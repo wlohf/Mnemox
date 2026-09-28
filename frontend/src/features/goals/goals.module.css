@@ -1,0 +1,873 @@
+/* ==========================================================================
+   目标 — a goal is a study plan you can read: milestones are its chapters,
+   tasks are the lines you tick off. The rail lists goals; the page is the plan.
+   ========================================================================== */
+
+.page {
+  display: grid;
+  grid-template-columns: 16.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: 2.5rem;
+  width: 100%;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 1.25rem 2.5rem 6rem;
+}
+
+/* ---------------- Rail: the list of goals ---------------- */
+.rail {
+  position: sticky;
+  top: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: calc(100dvh - 6rem);
+  min-width: 0;
+}
+.railHead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.25rem 0 0.5rem;
+}
+.railTitle {
+  margin: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 640;
+}
+.railCount {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.railHeadEnd {
+  margin-left: auto;
+}
+.goalList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 0.5rem;
+  overflow-y: auto;
+  list-style: none;
+}
+.goalRow {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.625rem 0.625rem 0.625rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  transition:
+    background-color var(--mx-t-fast) var(--mx-ease),
+    border-color var(--mx-t-fast) var(--mx-ease),
+    box-shadow var(--mx-t-base) var(--mx-ease);
+}
+.goalRow:hover {
+  background: var(--mx-hover);
+}
+.goalRow[aria-current='true'] {
+  border-color: var(--mx-border);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-sm);
+}
+.goalRowText {
+  min-width: 0;
+}
+.goalRowTitle {
+  display: block;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 560;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goalRow[aria-current='true'] .goalRowTitle {
+  color: var(--mx-ink-text);
+}
+.goalRow[data-status='completed'] .goalRowTitle,
+.goalRow[data-status='paused'] .goalRowTitle {
+  color: var(--mx-text-2);
+}
+.goalRowMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.125rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.goalRowMeta [data-tone='overdue'] {
+  color: var(--mx-warning);
+  font-weight: 560;
+}
+.goalRowMeta [data-tone='today'],
+.goalRowMeta [data-tone='soon'] {
+  color: var(--mx-ink-text);
+}
+.ringGlyph {
+  color: var(--mx-success);
+}
+.ringGlyph svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke-width: 2.6;
+}
+.ringPaused {
+  color: var(--mx-text-3);
+}
+.ringPaused svg {
+  width: 0.6875rem;
+  height: 0.6875rem;
+  stroke-width: 2.4;
+}
+.railEmpty {
+  margin: 0;
+  padding: 0.75rem 0.5rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-meta);
+  line-height: 1.6;
+}
+.railSkel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+}
+
+/* ---------------- Plan document ---------------- */
+.doc {
+  min-width: 0;
+  animation: docIn var(--mx-t-reveal) var(--mx-ease) both;
+}
+@keyframes docIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.docMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.875rem;
+  margin-bottom: 0.625rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-weight: 520;
+}
+.docMeta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+}
+.docMeta svg {
+  width: 0.8125rem;
+  height: 0.8125rem;
+}
+.docMeta [data-tone='overdue'] {
+  color: var(--mx-warning);
+}
+.docMeta [data-tone='today'],
+.docMeta [data-tone='soon'] {
+  color: var(--mx-ink-text);
+}
+.materialLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  max-width: 18rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mx-evidence);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--mx-evidence-line);
+  text-underline-offset: 3px;
+}
+.materialLink:hover {
+  text-decoration-color: currentColor;
+}
+.materialLink span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docTitle {
+  max-width: 30em;
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-page);
+  font-weight: 640;
+  line-height: 1.3;
+  letter-spacing: 0.005em;
+}
+.docDesc {
+  max-width: 42em;
+  margin: 0.625rem 0 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-body);
+  line-height: var(--mx-leading-read);
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}
+
+/* Progress ticks: one mark per task, in plan order. */
+.progress {
+  margin: 1.5rem 0 1.25rem;
+}
+.ticks {
+  display: flex;
+  gap: 3px;
+  height: 0.5rem;
+}
+.tick {
+  flex: 1 1 0;
+  min-width: 3px;
+  border-radius: 2px;
+  background: var(--mx-border);
+  transform-origin: bottom;
+  animation: tickIn 420ms var(--mx-ease-expo) both;
+  animation-delay: calc(var(--i, 0) * 14ms);
+  transition: background-color var(--mx-t-slow) var(--mx-ease);
+}
+@keyframes tickIn {
+  from {
+    transform: scaleY(0.2);
+    opacity: 0;
+  }
+}
+.tick[data-status='completed'] {
+  background: var(--mx-ink);
+}
+.tick[data-status='in_progress'] {
+  background: var(--mx-ink-line);
+}
+.tick[data-overdue='true'] {
+  background: oklch(from var(--mx-warning) l c h / 0.45);
+}
+.bar {
+  height: 0.375rem;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--mx-border);
+}
+.barFill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--mx-ink);
+  transform-origin: left;
+  transition: transform var(--mx-t-reveal) var(--mx-ease);
+}
+.progressCaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  margin-top: 0.625rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-meta);
+}
+.progressCaption strong {
+  color: var(--mx-text);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+.nextUp {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.nextUp span {
+  overflow: hidden;
+  color: var(--mx-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--mx-border);
+}
+.spacer {
+  flex: 1;
+}
+
+/* ---------------- Outline ---------------- */
+.outline {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  margin-top: 1.5rem;
+}
+
+.milestone {
+  min-width: 0;
+}
+.msHead {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 2.25rem;
+  margin-bottom: 0.25rem;
+  padding: 0 0.25rem 0.5rem 0.25rem;
+  border-bottom: 1px solid var(--mx-hairline);
+}
+.msIcon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  color: var(--mx-evidence);
+}
+.milestone[data-status='completed'] .msIcon {
+  color: var(--mx-success);
+}
+.msTitle {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-title);
+  font-weight: 640;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.milestone[data-status='completed'] .msTitle {
+  color: var(--mx-text-2);
+}
+.msCount {
+  flex: none;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.msDue {
+  flex: none;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.msDue[data-tone='overdue'] {
+  color: var(--mx-warning);
+}
+.msDue[data-tone='today'],
+.msDue[data-tone='soon'] {
+  color: var(--mx-ink-text);
+}
+.msActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.125rem;
+  margin-left: auto;
+  opacity: 0.55;
+  transition: opacity var(--mx-t-fast) var(--mx-ease);
+}
+.msHead:hover .msActions,
+.msHead:focus-within .msActions {
+  opacity: 1;
+}
+.msEmpty {
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem 0.5rem 2.625rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-meta);
+}
+.inlineLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mx-ink-text);
+  font: inherit;
+  font-weight: 560;
+}
+.inlineLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.groupLabel {
+  margin: 0 0 0.25rem;
+  padding: 0 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--mx-hairline);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  font-weight: 600;
+}
+
+.taskList,
+.subList {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.subList {
+  position: relative;
+  margin-left: 1.3125rem;
+  padding-left: 0.75rem;
+}
+.subList::before {
+  /* tree guide: a hairline, not an accent */
+  content: '';
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.75rem;
+  left: 0;
+  width: 1px;
+  background: var(--mx-border);
+}
+
+.taskRow {
+  display: grid;
+  grid-template-columns: 1.375rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3.125rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.5rem;
+  border-radius: 10px;
+  transition: background-color var(--mx-t-fast) var(--mx-ease);
+}
+.taskRow:hover,
+.taskRow:focus-within {
+  background: var(--mx-hover);
+}
+
+/* The check: ink drops in when done. */
+.check {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: 1.5px solid var(--mx-border-strong);
+  border-radius: 50%;
+  background: var(--mx-surface);
+  color: var(--mx-on-ink);
+  transition:
+    border-color var(--mx-t-fast) var(--mx-ease),
+    background-color var(--mx-t-base) var(--mx-ease),
+    transform var(--mx-t-instant) var(--mx-ease);
+}
+.check svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke-width: 2.8;
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    opacity var(--mx-t-fast) var(--mx-ease),
+    transform var(--mx-t-base) var(--mx-ease-expo);
+}
+.check:hover {
+  border-color: var(--mx-ink);
+}
+.check:hover svg {
+  opacity: 0.35;
+  transform: none;
+  color: var(--mx-ink);
+}
+.check:active {
+  transform: scale(0.88);
+}
+.check:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.task[data-status='in_progress'] > .taskRow .check {
+  border-color: var(--mx-ink);
+}
+.task[data-status='in_progress'] > .taskRow .check::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: conic-gradient(var(--mx-ink) 0 50%, transparent 50% 100%);
+}
+.task[data-status='in_progress'] > .taskRow .check:hover::after {
+  opacity: 0;
+}
+.task[data-status='completed'] > .taskRow .check {
+  border-color: var(--mx-ink);
+  background: var(--mx-ink);
+  animation: inkDrop 380ms var(--mx-ease-expo);
+}
+.task[data-status='completed'] > .taskRow .check svg {
+  opacity: 1;
+  transform: none;
+  color: var(--mx-on-ink);
+}
+@keyframes inkDrop {
+  0% {
+    transform: scale(0.7);
+    box-shadow: 0 0 0 0 var(--mx-ink-line);
+  }
+  60% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    transform: none;
+  }
+}
+
+.taskBody {
+  min-width: 0;
+}
+.taskTitle {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 520;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+  transition: color var(--mx-t-slow) var(--mx-ease);
+}
+/* Done work is crossed out with a pen stroke that draws across. */
+.taskTitle::after {
+  content: '';
+  position: absolute;
+  top: 55%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 420ms var(--mx-ease-expo);
+}
+.task[data-status='completed'] > .taskRow .taskTitle {
+  color: var(--mx-text-3);
+}
+.task[data-status='completed'] > .taskRow .taskTitle::after {
+  transform: scaleX(1);
+}
+.taskMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  margin-top: 0.0625rem;
+  overflow: hidden;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  white-space: nowrap;
+}
+.taskMeta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.taskMeta svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.taskMeta [data-tone='overdue'] {
+  color: var(--mx-warning);
+  font-weight: 560;
+}
+.taskMeta [data-tone='today'] {
+  color: var(--mx-ink-text);
+  font-weight: 560;
+}
+.taskMeta [data-tone='soon'] {
+  color: var(--mx-ink-text);
+}
+.chapter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.unsynced {
+  color: var(--mx-text-4);
+}
+
+.live {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--mx-r-full);
+  background: var(--mx-ink-soft);
+  color: var(--mx-ink-text);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.live i {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: currentColor;
+  animation: breathe 2.4s var(--mx-ease-in-out) infinite;
+}
+@keyframes breathe {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.taskActions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  opacity: 0;
+  transition: opacity var(--mx-t-fast) var(--mx-ease);
+}
+.taskRow:hover .taskActions,
+.taskRow:focus-within .taskActions,
+.task[data-session='true'] > .taskRow .taskActions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .taskActions,
+  .msActions {
+    opacity: 1;
+  }
+}
+
+/* ---------------- Empty states ---------------- */
+.blank {
+  display: grid;
+  place-items: center;
+  min-height: 60vh;
+}
+.docEmpty {
+  margin-top: 1.5rem;
+  padding: 1.5rem 1.625rem;
+  border: 1px dashed var(--mx-border-strong);
+  border-radius: var(--mx-r-card);
+}
+
+/* ---------------- Dialog internals ---------------- */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.formRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+.manualList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.manualRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem 9.5rem auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+.planNote {
+  margin: 0;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.6;
+}
+
+/* ---------------- Output evaluation ---------------- */
+.evalTask {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 9px;
+  background: var(--mx-sunken);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+}
+.evalTask svg {
+  flex: none;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  color: var(--mx-text-3);
+}
+.evalTask strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-weight: 580;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grade {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.25rem 0 1.25rem;
+  border-bottom: 1px solid var(--mx-border);
+}
+.score {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-variant-numeric: tabular-nums;
+}
+.score strong {
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.score span {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-body);
+}
+.gradeText {
+  min-width: 0;
+  margin: 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.6;
+}
+.seal {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-left: auto;
+  padding: 0.3125rem 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 6px;
+  color: var(--seal, var(--mx-success));
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-body);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  transform: rotate(-4deg);
+  animation: seal 560ms var(--mx-ease-expo) 120ms both;
+}
+@keyframes seal {
+  from {
+    opacity: 0;
+    transform: rotate(-14deg) scale(1.6);
+  }
+}
+.feedback {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.feedbackGroup h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0 0 0.375rem;
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-weight: 640;
+}
+.feedbackGroup h3 svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.feedbackGroup[data-kind='good'] h3 svg {
+  color: var(--mx-success);
+}
+.feedbackGroup[data-kind='gap'] h3 svg {
+  color: var(--mx-warning);
+}
+.feedbackGroup[data-kind='next'] h3 svg {
+  color: var(--mx-ink);
+}
+.feedbackGroup ul {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.65;
+}
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 1080px) {
+  .page {
+    grid-template-columns: 14.5rem minmax(0, 1fr);
+    gap: 1.75rem;
+    padding: 1rem 1.5rem 6rem;
+  }
+}
+@media (max-width: 820px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    padding: 0.75rem 1rem 6rem;
+  }
+  .rail {
+    position: static;
+    max-height: none;
+  }
+  .goalList {
+    flex-direction: row;
+    gap: 0.375rem;
+    padding-bottom: 0.25rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .goalList > li {
+    flex: none;
+    width: 14rem;
+  }
+  .docTitle {
+    font-size: 1.5rem;
+  }
+  .formRow,
+  .manualRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .taskRow {
+    grid-template-columns: 1.375rem minmax(0, 1fr) auto;
+  }
+  .live {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc,
+  .tick,
+  .seal,
+  .live i,
+  .task[data-status='completed'] > .taskRow .check {
+    animation: none;
+  }
+}

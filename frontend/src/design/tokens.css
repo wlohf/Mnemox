@@ -1,185 +1,194 @@
 /*
- * Mnemox design tokens — "Ink & Paper"
- * Two meaningful hues only:
- *   ink       → action, selection, the Agent
+ * Mnemox design tokens — 墨与纸 · 书卷 (Ink & Paper, scholarly)
+ *
+ * Hue anchor: ink indigo (h≈258). Neutrals carry a faint ink tint so paper,
+ * text and action read as one material. Three meaningful colour roles only:
+ *   ink       → action, selection, the coach's voice
  *   evidence  → anything traceable to a source (highlighter amber)
- * Everything else is paper and graphite.
+ *   mastery   → a five-step green scale for learning state
+ * Semantic success / warning / danger are reserved for real feedback.
+ *
+ * Tokens live on :root so Radix portals inherit them. Typography defaults are
+ * applied by .mx-app (see base.css) so legacy screens keep their own rem base.
  */
 
-.mx-root {
-  /* Surfaces */
-  --mx-canvas: #f7f6f3;
-  --mx-surface: #ffffff;
-  --mx-sunken: #f0eee9;
-  --mx-raised: #ffffff;
-  --mx-hover: rgb(28 27 25 / 4.5%);
-  --mx-press: rgb(28 27 25 / 8%);
-  --mx-scrim: rgb(20 19 17 / 32%);
+:root {
+  /* ---------- Surfaces: desk → paper → sheet on top ---------- */
+  --mx-canvas: oklch(0.977 0.004 262);
+  --mx-sunken: oklch(0.956 0.006 262);
+  --mx-surface: oklch(0.995 0.0015 262);
+  --mx-raised: oklch(1 0 0);
+  --mx-hover: oklch(0.235 0.022 264 / 0.05);
+  --mx-press: oklch(0.235 0.022 264 / 0.09);
+  --mx-selected: oklch(0.235 0.022 264 / 0.065);
+  --mx-scrim: oklch(0.21 0.02 264 / 0.34);
 
-  /* Lines */
-  --mx-border: #e6e3dc;
-  --mx-border-strong: #d6d2c8;
-  --mx-hairline: rgb(28 27 25 / 6%);
+  /* ---------- Lines ---------- */
+  --mx-border: oklch(0.905 0.008 262);
+  --mx-border-strong: oklch(0.845 0.011 262);
+  --mx-hairline: oklch(0.235 0.022 264 / 0.07);
 
-  /* Text */
-  --mx-text-1: #1c1b19;
-  --mx-text-2: #5e5b55;
-  --mx-text-3: #736f67;
-  --mx-text-4: #a39f96;
-  --mx-text-on-ink: #ffffff;
+  /* ---------- Text (all AA on canvas/surface except text-4) ---------- */
+  --mx-text: oklch(0.235 0.022 264);
+  --mx-text-2: oklch(0.405 0.02 264);
+  --mx-text-3: oklch(0.5 0.016 264);
+  --mx-text-4: oklch(0.66 0.012 264); /* disabled + decorative only */
 
-  /* Ink — action / agent */
-  --mx-ink: #2f4a8a;
-  --mx-ink-hover: #27407a;
-  --mx-ink-press: #213769;
-  --mx-ink-soft: #eaeef7;
-  --mx-ink-line: #c9d3ea;
-  --mx-ink-text: #2f4a8a;
+  /* ---------- Ink: action, selection, coach ---------- */
+  --mx-ink: oklch(0.43 0.105 258);
+  --mx-ink-hover: oklch(0.39 0.1 258);
+  --mx-ink-press: oklch(0.35 0.095 258);
+  --mx-ink-soft: oklch(0.953 0.019 258);
+  --mx-ink-line: oklch(0.865 0.045 258);
+  --mx-ink-text: oklch(0.43 0.105 258);
+  --mx-on-ink: oklch(0.99 0.004 258);
 
-  /* Evidence — highlighter amber */
-  --mx-evidence: #a1661a;
-  --mx-evidence-soft: #fbf1d9;
-  --mx-evidence-line: #ecd29a;
-  --mx-evidence-mark: rgb(245 196 81 / 38%);
+  /* ---------- Evidence: highlighter amber ---------- */
+  --mx-evidence: oklch(0.525 0.115 62);
+  --mx-evidence-soft: oklch(0.967 0.033 84);
+  --mx-evidence-line: oklch(0.865 0.085 80);
+  --mx-evidence-mark: oklch(0.885 0.15 92 / 0.55);
 
-  /* Mastery scale (1 → 5) */
-  --mx-m1: #eceee8;
-  --mx-m2: #cfe0d2;
-  --mx-m3: #99c4a6;
-  --mx-m4: #5ea27c;
-  --mx-m5: #2e7d5b;
+  /* ---------- Mastery (0 = not started, 1 → 5 = shaky → solid) ---------- */
+  --mx-m1: oklch(0.94 0.012 170);
+  --mx-m2: oklch(0.88 0.04 168);
+  --mx-m3: oklch(0.79 0.07 166);
+  --mx-m4: oklch(0.66 0.09 164);
+  --mx-m5: oklch(0.52 0.09 164);
 
-  /* Semantic */
-  --mx-success: #2e7d5b;
-  --mx-warning: #b54708;
-  --mx-danger: #b42318;
-  --mx-danger-soft: #fdecea;
+  /* ---------- Semantic feedback ---------- */
+  --mx-success: oklch(0.5 0.095 160);
+  --mx-success-soft: oklch(0.957 0.026 160);
+  --mx-warning: oklch(0.56 0.14 55);
+  --mx-warning-soft: oklch(0.965 0.032 70);
+  --mx-danger: oklch(0.525 0.175 27);
+  --mx-danger-soft: oklch(0.962 0.022 27);
 
-  /* Elevation (light relies on hairlines, shadows are whispers) */
-  --mx-shadow-1: 0 1px 2px rgb(28 27 25 / 4%);
-  --mx-shadow-2: 0 1px 2px rgb(28 27 25 / 4%), 0 6px 16px -4px rgb(28 27 25 / 8%);
-  --mx-shadow-3: 0 2px 4px rgb(28 27 25 / 4%), 0 24px 56px -12px rgb(28 27 25 / 22%);
-  --mx-focus: 0 0 0 2px var(--mx-canvas), 0 0 0 4px rgb(47 74 138 / 45%);
+  /* ---------- Elevation: light relies on hairlines, shadows whisper ---------- */
+  --mx-shadow-xs: 0 1px 1px oklch(0.235 0.022 264 / 0.04);
+  --mx-shadow-sm: 0 1px 2px oklch(0.235 0.022 264 / 0.05), 0 1px 1px oklch(0.235 0.022 264 / 0.03);
+  --mx-shadow-md: 0 1px 2px oklch(0.235 0.022 264 / 0.04), 0 8px 20px -6px oklch(0.235 0.022 264 / 0.1);
+  --mx-shadow-lg: 0 2px 4px oklch(0.235 0.022 264 / 0.04), 0 18px 44px -14px oklch(0.235 0.022 264 / 0.22);
+  --mx-shadow-xl: 0 2px 6px oklch(0.235 0.022 264 / 0.05), 0 32px 72px -20px oklch(0.235 0.022 264 / 0.32);
+  --mx-focus-color: oklch(0.52 0.13 258 / 0.7);
 
-  /* Type */
-  --mx-font-ui: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
-  --mx-font-read: 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', Georgia, serif;
-  --mx-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  /* ---------- Type ---------- */
+  --mx-font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'HarmonyOS Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui,
+    sans-serif;
+  --mx-font-serif: 'Noto Serif SC Variable', 'Source Han Serif SC', 'Noto Serif SC', 'Songti SC', 'STSong',
+    'SimSun', Georgia, serif;
+  --mx-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 
-  --mx-fs-11: 11px;
-  --mx-fs-12: 12px;
-  --mx-fs-13: 13px;
-  --mx-fs-14: 14px;
-  --mx-fs-16: 16px;
-  --mx-fs-18: 18px;
-  --mx-fs-22: 22px;
-  --mx-fs-28: 28px;
-  --mx-fs-36: 36px;
+  /* Role scale (rem, 16px root). Product UI: tight 1.125–1.2 steps. */
+  --mx-type-caption: 0.75rem; /* 12 — meta, timestamps */
+  --mx-type-meta: 0.8125rem; /* 13 — secondary UI, nav */
+  --mx-type-ui: 0.875rem; /* 14 — controls, list rows */
+  --mx-type-body: 0.9375rem; /* 15 — descriptions, chat */
+  --mx-type-read: 1rem; /* 16 — long-form reading */
+  --mx-type-title: 1.125rem; /* 18 — section / dialog titles */
+  --mx-type-headline: 1.375rem; /* 22 — the one headline on a surface */
+  --mx-type-page: 1.75rem; /* 28 — page titles (serif) */
+  --mx-type-display: 2.125rem; /* 34 — rare display moments (serif) */
 
-  /* Shape */
-  --mx-r-xs: 4px;
-  --mx-r-sm: 6px;
-  --mx-r-md: 10px;
-  --mx-r-lg: 14px;
+  --mx-leading-tight: 1.28;
+  --mx-leading-ui: 1.5;
+  --mx-leading-read: 1.78; /* CJK prose wants air */
+
+  /* ---------- Space (4pt) ---------- */
+  --mx-space-1: 0.25rem;
+  --mx-space-2: 0.5rem;
+  --mx-space-3: 0.75rem;
+  --mx-space-4: 1rem;
+  --mx-space-5: 1.25rem;
+  --mx-space-6: 1.5rem;
+  --mx-space-8: 2rem;
+  --mx-space-10: 2.5rem;
+  --mx-space-12: 3rem;
+  --mx-space-16: 4rem;
+
+  /* ---------- Shape: radius by role, not one radius everywhere ---------- */
+  --mx-r-xs: 4px; /* chips, marks */
+  --mx-r-control: 7px; /* buttons, inputs */
+  --mx-r-card: 12px; /* sheets on the desk */
+  --mx-r-dialog: 16px; /* dialogs, palettes */
   --mx-r-full: 999px;
 
-  /* Motion */
-  --mx-ease: cubic-bezier(0.2, 0, 0, 1);
-  --mx-ease-exit: cubic-bezier(0.3, 0, 1, 1);
-  --mx-ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
-  --mx-t-fast: 120ms;
-  --mx-t-base: 220ms;
-  --mx-t-slow: 360ms;
+  /* ---------- Motion: exponential ease-outs, no bounce ---------- */
+  --mx-ease: cubic-bezier(0.22, 1, 0.36, 1); /* quint out */
+  --mx-ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --mx-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --mx-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --mx-t-instant: 90ms;
+  --mx-t-fast: 140ms;
+  --mx-t-base: 200ms;
+  --mx-t-slow: 320ms;
+  --mx-t-reveal: 480ms;
+
+  /* ---------- Layers ---------- */
+  --mx-z-sticky: 10;
+  --mx-z-dock: 20;
+  --mx-z-drawer: 40;
+  --mx-z-dropdown: 50;
+  --mx-z-overlay: 60;
+  --mx-z-modal: 61;
+  --mx-z-toast: 70;
+  --mx-z-tooltip: 80;
 
   color-scheme: light;
-  font-family: var(--mx-font-ui);
-  font-size: var(--mx-fs-14);
-  line-height: 1.55;
-  color: var(--mx-text-1);
-  background: var(--mx-canvas);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: 'cv11', 'ss01';
-  text-rendering: optimizeLegibility;
 }
 
-.mx-root[data-mx-theme='dark'] {
-  --mx-canvas: #111214;
-  --mx-surface: #17181b;
-  --mx-sunken: #0c0d0f;
-  --mx-raised: #1d1f23;
-  --mx-hover: rgb(236 234 229 / 5%);
-  --mx-press: rgb(236 234 229 / 9%);
-  --mx-scrim: rgb(0 0 0 / 55%);
+:root[data-mx-theme='dark'] {
+  --mx-canvas: oklch(0.185 0.012 264);
+  --mx-sunken: oklch(0.16 0.011 264);
+  --mx-surface: oklch(0.215 0.013 264);
+  --mx-raised: oklch(0.245 0.014 264);
+  --mx-hover: oklch(0.935 0.008 264 / 0.055);
+  --mx-press: oklch(0.935 0.008 264 / 0.095);
+  --mx-selected: oklch(0.935 0.008 264 / 0.075);
+  --mx-scrim: oklch(0.08 0.01 264 / 0.62);
 
-  --mx-border: #2a2c31;
-  --mx-border-strong: #383b41;
-  --mx-hairline: rgb(236 234 229 / 6%);
+  --mx-border: oklch(0.3 0.014 264);
+  --mx-border-strong: oklch(0.37 0.016 264);
+  --mx-hairline: oklch(0.935 0.008 264 / 0.07);
 
-  --mx-text-1: #eceae5;
-  --mx-text-2: #a5a29b;
-  --mx-text-3: #7d7a74;
-  --mx-text-4: #5a5853;
-  --mx-text-on-ink: #0f1422;
+  --mx-text: oklch(0.935 0.008 264);
+  --mx-text-2: oklch(0.79 0.012 264);
+  --mx-text-3: oklch(0.68 0.013 264);
+  --mx-text-4: oklch(0.52 0.012 264);
 
-  --mx-ink: #8fa8e8;
-  --mx-ink-hover: #a3b8ee;
-  --mx-ink-press: #7b96dc;
-  --mx-ink-soft: rgb(143 168 232 / 12%);
-  --mx-ink-line: rgb(143 168 232 / 28%);
-  --mx-ink-text: #a9bcef;
+  --mx-ink: oklch(0.76 0.09 258);
+  --mx-ink-hover: oklch(0.8 0.085 258);
+  --mx-ink-press: oklch(0.72 0.095 258);
+  --mx-ink-soft: oklch(0.76 0.09 258 / 0.13);
+  --mx-ink-line: oklch(0.76 0.09 258 / 0.34);
+  --mx-ink-text: oklch(0.8 0.085 258);
+  --mx-on-ink: oklch(0.205 0.04 258);
 
-  --mx-evidence: #e3b55b;
-  --mx-evidence-soft: rgb(227 181 91 / 11%);
-  --mx-evidence-line: rgb(227 181 91 / 30%);
-  --mx-evidence-mark: rgb(227 181 91 / 22%);
+  --mx-evidence: oklch(0.815 0.115 80);
+  --mx-evidence-soft: oklch(0.815 0.115 80 / 0.12);
+  --mx-evidence-line: oklch(0.815 0.115 80 / 0.34);
+  --mx-evidence-mark: oklch(0.815 0.115 80 / 0.26);
 
-  --mx-m1: #22252a;
-  --mx-m2: #23392f;
-  --mx-m3: #2b5a43;
-  --mx-m4: #3b8a62;
-  --mx-m5: #5fbf8d;
+  --mx-m1: oklch(0.27 0.012 170);
+  --mx-m2: oklch(0.34 0.04 166);
+  --mx-m3: oklch(0.46 0.07 164);
+  --mx-m4: oklch(0.6 0.09 162);
+  --mx-m5: oklch(0.74 0.1 162);
 
-  --mx-success: #5fbf8d;
-  --mx-warning: #e8a25c;
-  --mx-danger: #f07a6e;
-  --mx-danger-soft: rgb(240 122 110 / 12%);
+  --mx-success: oklch(0.76 0.1 162);
+  --mx-success-soft: oklch(0.76 0.1 162 / 0.13);
+  --mx-warning: oklch(0.78 0.12 62);
+  --mx-warning-soft: oklch(0.78 0.12 62 / 0.13);
+  --mx-danger: oklch(0.72 0.14 25);
+  --mx-danger-soft: oklch(0.72 0.14 25 / 0.13);
 
-  --mx-shadow-1: none;
-  --mx-shadow-2: 0 0 0 1px rgb(255 255 255 / 3%), 0 8px 24px -8px rgb(0 0 0 / 50%);
-  --mx-shadow-3: 0 0 0 1px rgb(255 255 255 / 5%), 0 28px 64px -12px rgb(0 0 0 / 70%);
-  --mx-focus: 0 0 0 2px var(--mx-canvas), 0 0 0 4px rgb(143 168 232 / 55%);
+  --mx-shadow-xs: none;
+  --mx-shadow-sm: 0 0 0 1px oklch(1 0 0 / 0.025);
+  --mx-shadow-md: 0 0 0 1px oklch(1 0 0 / 0.035), 0 10px 28px -10px oklch(0 0 0 / 0.55);
+  --mx-shadow-lg: 0 0 0 1px oklch(1 0 0 / 0.045), 0 22px 52px -16px oklch(0 0 0 / 0.7);
+  --mx-shadow-xl: 0 0 0 1px oklch(1 0 0 / 0.06), 0 36px 80px -20px oklch(0 0 0 / 0.78);
+  --mx-focus-color: oklch(0.8 0.09 258 / 0.75);
 
   color-scheme: dark;
-}
-
-.mx-root *,
-.mx-root *::before,
-.mx-root *::after {
-  box-sizing: border-box;
-}
-
-.mx-root :focus-visible {
-  outline: none;
-  box-shadow: var(--mx-focus);
-}
-
-.mx-root ::selection {
-  background: var(--mx-evidence-mark);
-}
-
-.mx-num {
-  font-family: var(--mx-font-mono);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mx-root *,
-  .mx-root *::before,
-  .mx-root *::after {
-    animation-duration: 1ms !important;
-    animation-delay: 0ms !important;
-    transition-duration: 1ms !important;
-  }
 }

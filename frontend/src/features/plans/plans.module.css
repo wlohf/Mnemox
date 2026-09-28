@@ -1,0 +1,598 @@
+/* ==========================================================================
+   学习计划 — a diary of days. The calendar rail shows which days have a
+   plan and how far each got; the page is the day's plan as a document,
+   with its checklist lifted out so ticking a box never means editing text.
+   ========================================================================== */
+
+.root {
+  display: grid;
+  grid-template-columns: 19rem minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---------------- Rail ---------------- */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--mx-border);
+}
+.railScroll {
+  flex: 1;
+  min-height: 0;
+  padding: 0.5rem 1rem 1.5rem;
+  overflow-y: auto;
+}
+
+.monthHead {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+.monthTitle {
+  margin: 0 auto 0 0.25rem;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-title);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.weekdays,
+.grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.weekdays {
+  margin-bottom: 0.25rem;
+  color: var(--mx-text-3);
+  font-size: 0.6875rem;
+  text-align: center;
+}
+.grid {
+  gap: 2px;
+}
+.cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color var(--mx-t-fast) var(--mx-ease),
+    border-color var(--mx-t-fast) var(--mx-ease);
+}
+.cell:hover {
+  background: var(--mx-hover);
+}
+.cell[data-out='true'] {
+  color: var(--mx-text-4);
+}
+.cell[data-today='true'] {
+  color: var(--mx-ink-text);
+  font-weight: 700;
+}
+.cell[aria-pressed='true'] {
+  border-color: var(--mx-ink);
+  background: var(--mx-ink);
+  color: var(--mx-on-ink);
+}
+/* Completion mark under the date: an arc that fills with the checklist. */
+.mark {
+  width: 1rem;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--mx-border-strong);
+}
+.mark i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--mx-success);
+  transform-origin: left;
+  transform: scaleX(var(--p, 0));
+}
+.mark[data-empty='true'] {
+  width: 0.3125rem;
+  background: var(--mx-evidence);
+}
+.cell[aria-pressed='true'] .mark {
+  background: oklch(from var(--mx-on-ink) l c h / 0.35);
+}
+.cell[aria-pressed='true'] .mark i {
+  background: var(--mx-on-ink);
+}
+.cell[aria-pressed='true'] .mark[data-empty='true'] {
+  background: var(--mx-on-ink);
+}
+.markSpacer {
+  height: 3px;
+}
+
+.railSection {
+  margin-top: 1.5rem;
+}
+.railTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0 0.25rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  font-weight: 620;
+}
+.railTitle span {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-weight: 500;
+}
+.days {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.day {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  transition: background-color var(--mx-t-fast) var(--mx-ease);
+}
+.day:hover {
+  background: var(--mx-hover);
+}
+.day[aria-current='true'] {
+  border-color: var(--mx-border);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-xs);
+}
+.dayDate {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.dayDate b {
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 620;
+}
+.dayDate span {
+  color: var(--mx-text-3);
+  font-size: 0.6875rem;
+}
+.dayPreview {
+  overflow: hidden;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dayCount {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.dayCount[data-done='true'] {
+  color: var(--mx-success);
+}
+
+/* ---------------- Document ---------------- */
+.doc {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.docBar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.25rem 1.5rem 0.5rem;
+}
+.save {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.save i {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--mx-success);
+}
+.save[data-state='dirty'] i {
+  background: var(--mx-evidence);
+}
+.save[data-state='saving'] i {
+  background: var(--mx-ink);
+  animation: pulse 1.2s var(--mx-ease-in-out) infinite;
+}
+.save[data-state='error'] {
+  color: var(--mx-danger);
+}
+.save[data-state='error'] i {
+  background: var(--mx-danger);
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.spacer {
+  flex: 1;
+}
+.docScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.page {
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0.75rem 2rem 5rem;
+}
+
+.dateHead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.375rem;
+  animation: headIn var(--mx-t-reveal) var(--mx-ease) both;
+}
+@keyframes headIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.datePrimary {
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-display);
+  font-weight: 650;
+  line-height: 1.15;
+}
+.dateSecondary {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-ui);
+  font-variant-numeric: tabular-nums;
+}
+.dateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 1.5rem;
+}
+
+/* Checklist lifted out of the document */
+.checklist {
+  margin-bottom: 1.75rem;
+  padding: 1rem 1.125rem 0.75rem;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-sm);
+}
+.checkHead {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.checkTitle {
+  margin: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 640;
+}
+.checkCount {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.checkBar {
+  flex: 1;
+  max-width: 9rem;
+  margin-left: auto;
+}
+.tasks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.task {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.375rem;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  line-height: 1.55;
+  text-align: left;
+  transition: background-color var(--mx-t-fast) var(--mx-ease);
+}
+.task:hover {
+  background: var(--mx-hover);
+}
+.box {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.1875rem;
+  border: 1.5px solid var(--mx-border-strong);
+  border-radius: 5px;
+  background: var(--mx-surface);
+  color: var(--mx-on-ink);
+  transition:
+    background-color var(--mx-t-base) var(--mx-ease),
+    border-color var(--mx-t-fast) var(--mx-ease);
+}
+.box svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke-width: 3;
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity var(--mx-t-fast) var(--mx-ease),
+    transform var(--mx-t-base) var(--mx-ease-expo);
+}
+.task:hover .box {
+  border-color: var(--mx-ink);
+}
+.task[aria-pressed='true'] .box {
+  border-color: var(--mx-ink);
+  background: var(--mx-ink);
+}
+.task[aria-pressed='true'] .box svg {
+  opacity: 1;
+  transform: none;
+}
+.taskText {
+  position: relative;
+  justify-self: start;
+  transition: color var(--mx-t-slow) var(--mx-ease);
+}
+.taskText::after {
+  content: '';
+  position: absolute;
+  top: 55%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 420ms var(--mx-ease-expo);
+}
+.task[aria-pressed='true'] .taskText {
+  color: var(--mx-text-3);
+}
+.task[aria-pressed='true'] .taskText::after {
+  transform: scaleX(1);
+}
+.addRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.375rem 0.25rem 2.375rem;
+}
+.addInput {
+  flex: 1;
+  min-width: 0;
+  padding: 0.375rem 0;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  outline: 0;
+  background: transparent;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+}
+.addInput::placeholder {
+  color: var(--mx-text-3);
+}
+.addInput:focus {
+  border-bottom-color: var(--mx-border-strong);
+}
+
+.editorLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.25rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+/* ---------------- Probe (明镜追问) ---------------- */
+.probe {
+  margin-top: 2rem;
+  padding: 1.25rem 1.375rem 1.125rem;
+  border: 1px solid var(--mx-ink-line);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-ink-soft);
+  animation: headIn var(--mx-t-reveal) var(--mx-ease) both;
+}
+.probeHead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.probeHead svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--mx-ink);
+}
+.probeName {
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-title);
+  font-weight: 650;
+}
+.probeTag {
+  margin: 0 0 1rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+}
+.strong {
+  margin: 0 0 1rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.65;
+}
+.strong b {
+  color: var(--mx-success);
+  font-weight: 620;
+}
+.questions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: q;
+}
+.question {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.625rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 10px;
+  background: var(--mx-surface);
+}
+.question::before {
+  counter-increment: q;
+  content: counter(q);
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--mx-ink);
+  color: var(--mx-on-ink);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.qType {
+  display: block;
+  margin-bottom: 0.125rem;
+  color: var(--mx-ink-text);
+  font-size: var(--mx-type-caption);
+  font-weight: 620;
+}
+.qText {
+  margin: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-type-body);
+  line-height: 1.6;
+}
+.qWhy {
+  margin: 0.25rem 0 0;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.55;
+}
+.next {
+  margin: 0 0 1rem;
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  line-height: 1.65;
+}
+.next b {
+  color: var(--mx-evidence);
+  font-weight: 620;
+}
+.probeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ---------------- Coach draft banner ---------------- */
+.draft {
+  margin-bottom: 1.25rem;
+}
+
+.skel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 1080px) {
+  .root {
+    grid-template-columns: 16.5rem minmax(0, 1fr);
+  }
+}
+@media (max-width: 820px) {
+  .root {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    display: none;
+  }
+  .root[data-rail='open'] .rail {
+    display: flex;
+  }
+  .root[data-rail='open'] .doc {
+    display: none;
+  }
+  .docBar {
+    padding: 0.25rem 0.75rem 0.5rem;
+  }
+  .page {
+    padding: 0.5rem 1.125rem 5rem;
+  }
+  .datePrimary {
+    font-size: 1.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dateHead,
+  .probe,
+  .save[data-state='saving'] i {
+    animation: none;
+  }
+}

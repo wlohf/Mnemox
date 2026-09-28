@@ -45,6 +45,21 @@ export async function createAnkiCard(data: {
   }
 }
 
+export async function updateAnkiCard(
+  cardId: number,
+  data: { front?: string; back?: string; tags?: string; note?: string },
+): Promise<AnkiCardItem> {
+  return await apiFetch<AnkiCardItem>(`/api/anki/cards/${cardId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteAnkiCard(cardId: number): Promise<void> {
+  await apiFetch(`/api/anki/cards/${cardId}`, { method: 'DELETE' })
+}
+
 export async function reviewAnkiCard(cardId: number, quality: number): Promise<AnkiCardItem | null> {
   try {
     return await apiFetch<AnkiCardItem>(`/api/anki/cards/${cardId}/review`, {

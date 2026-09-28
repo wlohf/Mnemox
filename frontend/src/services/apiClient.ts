@@ -1,4 +1,4 @@
-import { message } from 'antd'
+import { notify } from './notify'
 import { captureApiSession, invalidateApiSession, type ApiSessionScope } from './sessionScope'
 
 const TOKEN_KEY = 'study_assistant_token'
@@ -132,7 +132,7 @@ export async function apiFetch<T = any>(
       const now = Date.now()
       if (now - _lastNetworkToastAt > 5000) {
         _lastNetworkToastAt = now
-        message.error('后端服务不可用，请确认 Mnemox 后端已启动')
+        notify.error('后端服务不可用，请确认 Mnemox 后端已启动')
       }
       throw new ApiRequestError('后端服务不可用，请确认 Mnemox 后端已启动', {
         code: 'NETWORK_ERROR',
@@ -150,7 +150,7 @@ export async function apiFetch<T = any>(
     if (!_redirecting) {
       _redirecting = true
       clearToken()
-      message.warning('登录状态已过期，请重新登录')
+      notify.warning('登录状态已过期，请重新登录')
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
       }
@@ -171,7 +171,7 @@ export async function apiFetch<T = any>(
       body: errorText,
     })
     if (res.status >= 500) {
-      message.error(`${error.message || '服务器错误'} (${res.status})`)
+      notify.error(`${error.message || '服务器错误'} (${res.status})`)
     }
     throw error
   }

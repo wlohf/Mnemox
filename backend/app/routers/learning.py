@@ -781,6 +781,7 @@ async def get_progress_engine(
     quiz_result = await db.execute(
         select(QuizRecord).where(QuizRecord.question_id.in_(question_ids)) if question_ids else select(QuizRecord).where(False)
     )
+    quiz_records = quiz_result.scalars().all()
     wrong_result = await db.execute(
         select(WrongQuestion).where(WrongQuestion.user_id == current_user.id)
     )

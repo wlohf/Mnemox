@@ -1,0 +1,131 @@
+/* ==========================================================================
+   Active-recall pieces shared by 复习 and 错题本: the answer reveal (drawn
+   open like a page being uncovered) and the four graded recall choices.
+   ========================================================================== */
+
+.reveal {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px dashed var(--mx-border-strong);
+  animation: revealIn var(--mx-t-reveal) var(--mx-ease-expo);
+}
+@keyframes revealIn {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+.answerLabel {
+  margin: 0 0 0.375rem;
+  color: var(--mx-evidence);
+  font-size: var(--mx-type-caption);
+  font-weight: 650;
+}
+.answer {
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-read);
+  line-height: 1.85;
+  white-space: pre-wrap;
+}
+.answer[data-empty='true'] {
+  color: var(--mx-text-3);
+  font-family: var(--mx-font-sans);
+  font-size: var(--mx-type-meta);
+  line-height: 1.7;
+}
+.explain {
+  margin: 0.875rem 0 0;
+  padding: 0.75rem 0.875rem;
+  border-radius: 10px;
+  background: var(--mx-canvas);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.explain strong {
+  margin-right: 0.375rem;
+  color: var(--mx-text);
+}
+
+/* Grades: four labelled choices; colour carries meaning, keys 1–4. */
+.grades {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+.grade {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--mx-border);
+  border-radius: 10px;
+  background: var(--mx-raised);
+  color: var(--mx-text);
+  text-align: left;
+  transition:
+    border-color var(--mx-t-fast) var(--mx-ease),
+    background-color var(--mx-t-fast) var(--mx-ease),
+    transform var(--mx-t-instant) var(--mx-ease);
+}
+.grade:hover:not(:disabled) {
+  border-color: var(--grade-color);
+  background: var(--grade-soft);
+}
+.grade:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.grade:disabled {
+  opacity: 0.5;
+}
+.gradeTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  color: var(--grade-color);
+  font-size: var(--mx-type-ui);
+  font-weight: 650;
+}
+.gradeBody {
+  color: var(--mx-text-3);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+}
+.grade[data-g='again'] {
+  --grade-color: var(--mx-danger);
+  --grade-soft: var(--mx-danger-soft);
+}
+.grade[data-g='hard'] {
+  --grade-color: var(--mx-warning);
+  --grade-soft: var(--mx-warning-soft);
+}
+.grade[data-g='good'] {
+  --grade-color: var(--mx-ink);
+  --grade-soft: var(--mx-ink-soft);
+}
+.grade[data-g='easy'] {
+  --grade-color: var(--mx-success);
+  --grade-soft: var(--mx-success-soft);
+}
+
+@media (max-width: 820px) {
+  .grades {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    animation: none;
+  }
+}

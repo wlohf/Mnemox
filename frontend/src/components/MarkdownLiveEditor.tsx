@@ -4,6 +4,7 @@ import '@toast-ui/editor/dist/toastui-editor.css'
 import './MarkdownLiveEditor.css'
 import 'highlight.js/styles/github-dark.css'
 import 'katex/dist/katex.min.css'
+import '../ui/markdownEditor.css'
 
 type ImageHookCallback = (url: string, text?: string) => void
 
@@ -15,7 +16,7 @@ type ToastEditorInstance = {
   getSelection: () => [number, number]
   getSelectedText: (start?: number, end?: number) => string
   getRangeInfoOfNode: (pos?: number) => { range: [number, number] | any; type: string }
-  setMarkdown: (markdown: string) => void
+  setMarkdown: (markdown: string, cursorToEnd?: boolean) => void
   setPlaceholder: (placeholder: string) => void
   setHeight: (height: string) => void
   setMinHeight: (height: string) => void
@@ -89,6 +90,7 @@ export const MarkdownLiveEditor = forwardRef<MarkdownLiveEditorHandle, MarkdownL
         previewStyle: 'vertical',
         placeholder,
         usageStatistics: false,
+        autofocus: false,
         toolbarItems: [
           ['heading', 'bold', 'italic', 'strike'],
           ['hr', 'quote'],
@@ -183,7 +185,8 @@ export const MarkdownLiveEditor = forwardRef<MarkdownLiveEditorHandle, MarkdownL
       if (!editor) return
       if (editor.getMarkdown() === value) return
       syncingRef.current = true
-      editor.setMarkdown(value || '')
+      // Keep the cursor (and the page scroll) where it is when syncing from outside.
+      editor.setMarkdown(value || '', false)
       syncingRef.current = false
     }, [value])
 
@@ -210,7 +213,7 @@ export const MarkdownLiveEditor = forwardRef<MarkdownLiveEditorHandle, MarkdownL
           editorRef.current?.insertText(text)
         },
         setMarkdown: (text: string) => {
-          editorRef.current?.setMarkdown(text || '')
+          editorRef.current?.setMarkdown(text || '', false)
         },
         getMarkdown: () => editorRef.current?.getMarkdown() || '',
         getSelectedText: () => editorRef.current?.getSelectedText() || '',

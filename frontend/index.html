@@ -2,9 +2,26 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>学习助手</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101318" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Mnemox · AI 学习教练</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a light flash.
+      (function () {
+        try {
+          var mode = localStorage.getItem('theme_mode') || 'warm'
+          var dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          var root = document.documentElement
+          root.setAttribute('data-mx-theme', dark ? 'dark' : 'light')
+          root.setAttribute('data-theme', dark ? 'dark' : 'warm')
+          root.style.colorScheme = dark ? 'dark' : 'light'
+          root.style.background = dark ? '#101318' : '#f6f7fa'
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

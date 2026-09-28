@@ -1,0 +1,17 @@
+import { useSyncExternalStore } from 'react'
+
+export function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    cb => {
+      const mql = window.matchMedia(query)
+      mql.addEventListener('change', cb)
+      return () => mql.removeEventListener('change', cb)
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  )
+}
+
+export const useIsCompact = () => useMediaQuery('(max-width: 820px)')
+export const useIsNarrowDesktop = () => useMediaQuery('(max-width: 1180px)')
+export const usePrefersReducedMotion = () => useMediaQuery('(prefers-reduced-motion: reduce)')

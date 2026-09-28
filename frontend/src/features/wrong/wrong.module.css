@@ -1,0 +1,596 @@
+/* ==========================================================================
+   错题本 — an error ledger. Each mistake is a card you can flip: question on
+   top, your attempt, then the answer drawn open. Status is a margin mark,
+   not a traffic light.
+   ========================================================================== */
+
+.page {
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.25rem 2.5rem 6rem;
+}
+
+/* ---------------- Ledger summary ---------------- */
+.ledger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.ledgerText {
+  min-width: 0;
+}
+.ledgerTitle {
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-page);
+  font-weight: 640;
+  line-height: 1.22;
+}
+.ledgerLead {
+  margin: 0.5rem 0 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-ui);
+  line-height: 1.65;
+}
+.ledgerLead strong {
+  color: var(--mx-text);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+.ledgerActions {
+  display: flex;
+  flex: none;
+  gap: 0.5rem;
+}
+
+/* Status spectrum: one segmented bar, each segment a filter. */
+.spectrum {
+  display: grid;
+  grid-template-columns: var(--cols);
+  gap: 3px;
+  margin-bottom: 0.625rem;
+}
+.spectrumSeg {
+  height: 0.375rem;
+  border-radius: 2px;
+  background: var(--seg);
+  opacity: 0.85;
+  transform-origin: left;
+  animation: segIn 640ms var(--mx-ease-expo) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+@keyframes segIn {
+  from {
+    transform: scaleX(0);
+  }
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+}
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  height: 1.875rem;
+  padding: 0 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--mx-r-full);
+  background: none;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  transition:
+    background-color var(--mx-t-fast) var(--mx-ease),
+    border-color var(--mx-t-fast) var(--mx-ease),
+    color var(--mx-t-fast) var(--mx-ease);
+}
+.legendItem:hover {
+  background: var(--mx-hover);
+  color: var(--mx-text);
+}
+.legendItem[aria-pressed='true'] {
+  border-color: var(--mx-border);
+  background: var(--mx-surface);
+  color: var(--mx-text);
+  box-shadow: var(--mx-shadow-xs);
+}
+.legendItem i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 2px;
+  background: var(--seg, var(--mx-text-4));
+}
+.legendItem b {
+  color: var(--mx-text);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- Toolbar ---------------- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.search {
+  flex: 1 1 16rem;
+  max-width: 22rem;
+}
+.toolbarEnd {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+.sortSelect {
+  width: 8.5rem;
+}
+
+/* ---------------- Due banner ---------------- */
+.due {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  padding: 0.875rem 1rem 0.875rem 1.125rem;
+  border: 1px solid var(--mx-evidence-line);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-evidence-soft);
+}
+.dueGlyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 9px;
+  background: var(--mx-surface);
+  color: var(--mx-evidence);
+  box-shadow: var(--mx-shadow-xs);
+}
+.dueGlyph svg {
+  width: 1rem;
+  height: 1rem;
+}
+.dueText {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.55;
+}
+.dueText strong {
+  display: block;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 620;
+}
+
+/* ---------------- Ledger rows ---------------- */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.item {
+  position: relative;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-xs);
+  transition:
+    border-color var(--mx-t-fast) var(--mx-ease),
+    box-shadow var(--mx-t-base) var(--mx-ease);
+  animation: itemIn 360ms var(--mx-ease) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+}
+@keyframes itemIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.item:hover {
+  border-color: var(--mx-border-strong);
+}
+.item[data-open='true'] {
+  border-color: var(--mx-border-strong);
+  box-shadow: var(--mx-shadow-md);
+}
+
+.top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+.head {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.875rem;
+  width: 100%;
+  padding: 1rem 1.125rem 0.9375rem 1rem;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.head:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The margin mark: a tally of how often this went wrong. */
+.mark {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding-top: 0.125rem;
+}
+.markNum {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1.5px solid var(--mark-color);
+  border-radius: 50%;
+  color: var(--mark-color);
+  font-size: var(--mx-type-body);
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+  line-height: 1;
+}
+.markLabel {
+  color: var(--mx-text-3);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.headBody {
+  min-width: 0;
+}
+.question {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-body);
+  font-weight: 620;
+  line-height: 1.6;
+  text-wrap: pretty;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.item[data-open='true'] .question {
+  display: block;
+  font-size: var(--mx-type-title);
+  -webkit-line-clamp: unset;
+  white-space: pre-wrap;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-top: 0.4375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+}
+.meta svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.statusText {
+  font-weight: 560;
+}
+.statusText i {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 2px;
+  background: currentColor;
+}
+.meta [data-tone='overdue'] {
+  color: var(--mx-warning);
+  font-weight: 560;
+}
+.meta [data-tone='today'] {
+  color: var(--mx-evidence);
+  font-weight: 560;
+}
+.kp {
+  max-width: 14rem;
+  overflow: hidden;
+  color: var(--mx-ink-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.headEnd {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.875rem 0.875rem 0 0;
+}
+.chev {
+  width: 1rem;
+  height: 1rem;
+  color: var(--mx-text-3);
+  transition: transform var(--mx-t-base) var(--mx-ease);
+}
+.item[data-open='true'] .chev {
+  transform: rotate(180deg);
+}
+
+/* ---------------- Expanded practice ---------------- */
+.body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--mx-t-slow) var(--mx-ease);
+}
+.item[data-open='true'] .body {
+  grid-template-rows: 1fr;
+}
+.bodyInner {
+  min-height: 0;
+  overflow: hidden;
+}
+.practice {
+  padding: 0 1.25rem 1.25rem 4.125rem;
+}
+.hint {
+  margin: 0 0 0.75rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-meta);
+  line-height: 1.65;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.spacer {
+  flex: 1;
+}
+.keyHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.mine {
+  margin: 1.125rem 0 0;
+  padding: 0.625rem 0.75rem;
+  border-radius: 9px;
+  background: var(--mx-sunken);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.mine strong {
+  margin-right: 0.375rem;
+  color: var(--mx-text);
+  font-weight: 600;
+}
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 1.25rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--mx-hairline);
+}
+.toolsLabel {
+  margin-right: 0.25rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.statusSet {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.statusBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-full);
+  background: var(--mx-surface);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+  transition:
+    border-color var(--mx-t-fast) var(--mx-ease),
+    background-color var(--mx-t-fast) var(--mx-ease),
+    color var(--mx-t-fast) var(--mx-ease);
+}
+.statusBtn i {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 2px;
+  background: var(--seg);
+}
+.statusBtn:hover:not(:disabled) {
+  border-color: var(--mx-border-strong);
+  color: var(--mx-text);
+}
+.statusBtn[aria-pressed='true'] {
+  border-color: var(--seg);
+  background: oklch(from var(--seg) l c h / 0.1);
+  color: var(--mx-text);
+  font-weight: 560;
+}
+.statusBtn:disabled {
+  opacity: 0.55;
+}
+
+/* Graded result: a small stamp that settles into the card. */
+.graded {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-top: 1.25rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 10px;
+  background: var(--mx-sunken);
+  animation: gradedIn var(--mx-t-slow) var(--mx-ease);
+}
+@keyframes gradedIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.stamp {
+  flex: none;
+  padding: 0.1875rem 0.625rem;
+  border: 2px solid var(--stamp);
+  border-radius: 6px;
+  color: var(--stamp);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-meta);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  transform: rotate(-4deg);
+  animation: stamp 520ms var(--mx-ease-expo) both;
+}
+@keyframes stamp {
+  from {
+    opacity: 0;
+    transform: rotate(-14deg) scale(1.6);
+  }
+}
+.gradedText {
+  min-width: 0;
+  margin: 0;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.55;
+}
+.gradedText strong {
+  color: var(--mx-text);
+  font-weight: 600;
+}
+
+/* ---------------- Dialog ---------------- */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.formRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+.difficulty {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.difficulty > :first-child {
+  flex: 1;
+}
+.difficultyValue {
+  min-width: 3.25rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------------- Loading / empty ---------------- */
+.skel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+.skelRow {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 0.875rem;
+  padding: 1rem 1.125rem 1rem 1rem;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-surface);
+}
+.empty {
+  padding: 2rem 0;
+  border: 1px dashed var(--mx-border-strong);
+  border-radius: var(--mx-r-card);
+}
+
+/* ---------------- Responsive ---------------- */
+@media (max-width: 820px) {
+  .page {
+    padding: 0.75rem 1rem 6rem;
+  }
+  .ledger {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .ledgerTitle {
+    font-size: 1.5rem;
+  }
+  .search {
+    max-width: none;
+  }
+  .toolbarEnd {
+    margin-left: 0;
+  }
+  .head {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.875rem 0.5rem 0.875rem 0.75rem;
+  }
+  .headEnd {
+    padding: 0.625rem 0.5rem 0 0;
+  }
+  .markNum {
+    width: 2rem;
+    height: 2rem;
+  }
+  .practice {
+    padding: 0 0.875rem 1rem;
+  }
+  .formRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spectrumSeg,
+  .item,
+  .graded,
+  .stamp {
+    animation: none;
+  }
+  .body {
+    transition: none;
+  }
+}

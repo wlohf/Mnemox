@@ -1,0 +1,327 @@
+/* ==========================================================================
+   笔记 — a writing desk. List on the left, the page in the centre,
+   the note's relations and agent actions tucked into the context panel.
+   ========================================================================== */
+
+.root {
+  display: grid;
+  grid-template-columns: 17rem minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---------------- List column ---------------- */
+.list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--mx-border);
+}
+.listHead {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem 0.625rem;
+}
+.listTools {
+  display: flex;
+  gap: 0.375rem;
+}
+.folders {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.25rem;
+  margin: 0 -0.75rem;
+  padding: 0 0.75rem 0.125rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 88%, transparent);
+}
+.folders::-webkit-scrollbar {
+  display: none;
+}
+.folders > * {
+  flex: none;
+}
+.listScroll {
+  flex: 1;
+  min-height: 0;
+  padding: 0 0.5rem 1rem;
+  overflow-y: auto;
+}
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  transition: background-color var(--mx-t-fast) var(--mx-ease);
+}
+.item:hover {
+  background: var(--mx-hover);
+}
+.item[aria-current='true'] {
+  background: var(--mx-surface);
+  box-shadow:
+    var(--mx-shadow-xs),
+    inset 0 0 0 1px var(--mx-border);
+}
+.itemTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.itemTitle > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.itemExcerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.itemMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: 0.6875rem;
+}
+.syncDot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--mx-warning);
+}
+.syncDot[data-state='conflicted'],
+.syncDot[data-state='sync_failed'] {
+  background: var(--mx-danger);
+}
+
+/* ---------------- Editor column ---------------- */
+.editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.editorBar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 1.5rem 0.5rem;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.status i {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--mx-success);
+}
+.status[data-state='dirty'] i,
+.status[data-state='saved'] i,
+.status[data-state='restored'] i {
+  background: var(--mx-evidence);
+}
+.status[data-state='pending'] i {
+  background: var(--mx-warning);
+}
+.barSpacer {
+  flex: 1;
+}
+.pageScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.page {
+  width: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1rem 2rem 4rem;
+}
+.titleInput {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: 1.875rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.titleInput::placeholder {
+  color: var(--mx-text-4);
+}
+.tagsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0.625rem 0 1.25rem;
+}
+.tagInput {
+  min-width: 8rem;
+  height: 1.625rem;
+  padding: 0 0.25rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+}
+.tagInput::placeholder {
+  color: var(--mx-text-4);
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 1.5rem;
+  padding: 0 0.25rem 0 0.5rem;
+  border-radius: var(--mx-r-full);
+  background: var(--mx-sunken);
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-caption);
+}
+.tag button {
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--mx-text-3);
+}
+.tag button:hover {
+  background: var(--mx-hover);
+  color: var(--mx-text);
+}
+.tag svg {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.preview {
+  min-height: 20rem;
+  font-family: var(--mx-font-serif);
+}
+
+/* ---------------- Toast UI editor, restyled to the paper ---------------- */
+/* ---------------- Context panel ---------------- */
+.panelHead {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.5rem;
+  height: 3.25rem;
+  padding: 0 0.625rem 0 1.125rem;
+  border-bottom: 1px solid var(--mx-border);
+}
+.panelTitle {
+  font-size: var(--mx-type-meta);
+  font-weight: 640;
+}
+.panelBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-height: 0;
+  padding: 1rem 1.125rem 1.5rem;
+  overflow-y: auto;
+}
+.panelGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+.panelGroupTitle {
+  margin: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-weight: 620;
+}
+.panelHint {
+  margin: 0;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.6;
+}
+.agentActions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.actionBtn {
+  justify-content: flex-start;
+}
+
+.aiActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.suggestion {
+  max-height: 22rem;
+  padding: 1rem 1.125rem;
+  overflow-y: auto;
+  border: 1px solid var(--mx-border);
+  border-radius: 10px;
+  background: var(--mx-surface);
+}
+
+@media (max-width: 1100px) {
+  .root {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .list {
+    display: none;
+  }
+  .root[data-list='open'] .list {
+    display: flex;
+    border-right: 0;
+  }
+  .root[data-list='open'] .editor {
+    display: none;
+  }
+}
+@media (max-width: 820px) {
+  .page {
+    padding: 0.5rem 1rem 3rem;
+  }
+  .editorBar {
+    padding: 0.25rem 0.75rem 0.5rem;
+    flex-wrap: wrap;
+  }
+  .titleInput {
+    font-size: 1.5rem;
+  }
+}

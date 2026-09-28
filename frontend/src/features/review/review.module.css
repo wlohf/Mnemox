@@ -1,0 +1,329 @@
+/* ==========================================================================
+   复习 — active recall. One card at a time, answer hidden until you try.
+   ========================================================================== */
+
+.page {
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.25rem 2.5rem 5rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.toolbarEnd {
+  margin-left: auto;
+}
+
+/* ---------------- Queue list ---------------- */
+.list {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-surface);
+  list-style: none;
+  box-shadow: var(--mx-shadow-sm);
+}
+.row {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem 1rem;
+  transition: background-color var(--mx-t-fast) var(--mx-ease);
+}
+.row + .row {
+  border-top: 1px solid var(--mx-border);
+}
+.row:hover {
+  background: var(--mx-hover);
+}
+.rowIcon {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 9px;
+  background: var(--mx-evidence-soft);
+  color: var(--mx-evidence);
+}
+.rowIcon[data-kind='chapter'] {
+  background: var(--mx-ink-soft);
+  color: var(--mx-ink);
+}
+.rowIcon svg {
+  width: 1rem;
+  height: 1rem;
+}
+.rowBody {
+  min-width: 0;
+}
+.rowTitle {
+  display: block;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-size: var(--mx-type-ui);
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+  margin-top: 0.1875rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.rowMeta [data-overdue='true'] {
+  color: var(--mx-warning);
+  font-weight: 560;
+}
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* ---------------- Session ---------------- */
+.session {
+  max-width: 44rem;
+  margin: 0 auto;
+}
+.progressRow {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-bottom: 1.25rem;
+}
+.progressLabel {
+  flex: none;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.progressBar {
+  flex: 1;
+}
+
+.card {
+  position: relative;
+  padding: 1.75rem 1.875rem 1.5rem;
+  border: 1px solid var(--mx-border);
+  border-radius: 16px;
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-lg);
+  animation: cardIn var(--mx-t-slow) var(--mx-ease);
+}
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+}
+.cardTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.cardTopEnd {
+  margin-left: auto;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+.question {
+  margin: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: 1.375rem;
+  font-weight: 620;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.recallHint {
+  margin: 1rem 0 0;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-meta);
+  line-height: 1.65;
+}
+.attempt {
+  margin-top: 1rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+.spacer {
+  flex: 1;
+}
+.keyHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+}
+
+/* Chapter review (AI) */
+.points {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: pt;
+}
+.point {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.625rem;
+  color: var(--mx-text);
+  font-size: var(--mx-type-body);
+  line-height: 1.75;
+}
+.point::before {
+  counter-increment: pt;
+  content: counter(pt);
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.125rem;
+  border: 1px solid var(--mx-border-strong);
+  border-radius: 50%;
+  color: var(--mx-text-3);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.qList {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.qItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+.qText {
+  margin: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-type-body);
+  font-weight: 580;
+  line-height: 1.65;
+}
+.qText span {
+  margin-right: 0.5rem;
+  color: var(--mx-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: center;
+}
+.score {
+  display: grid;
+  place-items: center;
+  width: 6rem;
+  height: 6rem;
+  border-radius: 50%;
+  background: var(--mx-sunken);
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: 2.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.score[data-band='good'] {
+  background: var(--mx-success-soft);
+  color: var(--mx-success);
+}
+.score[data-band='mid'] {
+  background: var(--mx-warning-soft);
+  color: var(--mx-warning);
+}
+.score[data-band='low'] {
+  background: var(--mx-danger-soft);
+  color: var(--mx-danger);
+}
+
+.done {
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+}
+.doneSeal {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 1rem;
+  padding: 0.25rem 0.75rem;
+  border: 2px solid var(--mx-success);
+  border-radius: 6px;
+  color: var(--mx-success);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-ui);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  transform: rotate(-3deg);
+  animation: seal 520ms var(--mx-ease-expo) both;
+}
+@keyframes seal {
+  from {
+    opacity: 0;
+    transform: rotate(-12deg) scale(1.5);
+  }
+}
+.doneTitle {
+  margin: 0;
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-headline);
+  font-weight: 650;
+}
+.doneBody {
+  margin: 0.5rem auto 1.5rem;
+  max-width: 28rem;
+  color: var(--mx-text-2);
+  font-size: var(--mx-type-meta);
+  line-height: 1.7;
+}
+
+@media (max-width: 820px) {
+  .page {
+    padding: 0.5rem 1rem 5rem;
+  }
+  .card {
+    padding: 1.25rem 1.125rem;
+  }
+  .question {
+    font-size: 1.1875rem;
+  }
+  .result {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .rowIcon {
+    display: none;
+  }
+}

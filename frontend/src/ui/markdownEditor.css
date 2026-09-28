@@ -1,0 +1,120 @@
+/*
+ * Mnemox skin for the Toast UI markdown editor, shared by notes and plans.
+ * Wrap the editor in an element with class `mx-md`.
+ */
+
+.mx-md .markdown-live-editor {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.mx-md .toastui-editor-defaultUI {
+  border: 0;
+  background: transparent;
+}
+.mx-md .toastui-editor-ww-container,
+.mx-md .toastui-editor-ww-mode .toastui-editor,
+.mx-md .toastui-editor-main .toastui-editor-ww-container {
+  background: transparent !important;
+}
+.mx-md .toastui-editor-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--mx-canvas);
+}
+.mx-md .toastui-editor-defaultUI-toolbar {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--mx-border);
+  background: transparent;
+}
+.mx-md .toastui-editor-toolbar-icons {
+  border: 0;
+  border-radius: 6px;
+  opacity: 0.7;
+}
+.mx-md .toastui-editor-toolbar-icons:not(:disabled):hover {
+  background-color: var(--mx-hover);
+  opacity: 1;
+}
+.mx-md .toastui-editor-toolbar-divider {
+  background: var(--mx-border);
+}
+.mx-md .toastui-editor-main,
+.mx-md .toastui-editor-ww-container,
+.mx-md .toastui-editor-md-container {
+  background: transparent;
+}
+.mx-md .toastui-editor-main-container {
+  border: 0;
+}
+.mx-md .toastui-editor-contents,
+.mx-md .toastui-editor-ww-container .ProseMirror {
+  padding: 1rem 0 2rem;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-size: var(--mx-type-read);
+  line-height: var(--mx-leading-read);
+}
+.mx-md .toastui-editor-contents p {
+  margin: 0 0 0.75em;
+  color: var(--mx-text);
+  font-size: var(--mx-type-read);
+  line-height: var(--mx-leading-read);
+}
+.mx-md .toastui-editor-contents h1,
+.mx-md .toastui-editor-contents h2,
+.mx-md .toastui-editor-contents h3 {
+  border: 0;
+  color: var(--mx-text);
+  font-family: var(--mx-font-serif);
+  font-weight: 650;
+}
+.mx-md .toastui-editor-contents h1 {
+  font-size: 1.45em;
+}
+.mx-md .toastui-editor-contents h2 {
+  font-size: 1.25em;
+}
+.mx-md .toastui-editor-contents blockquote {
+  border-left: 1px solid var(--mx-border-strong);
+}
+.mx-md .toastui-editor-contents blockquote p {
+  color: var(--mx-text-2);
+}
+.mx-md .toastui-editor-contents code {
+  border-radius: 4px;
+  background: var(--mx-sunken);
+  color: var(--mx-text);
+}
+.mx-md .toastui-editor-contents pre {
+  border: 1px solid var(--mx-border);
+  border-radius: 10px;
+  background: var(--mx-sunken);
+}
+.mx-md .toastui-editor-contents ul > li::before {
+  background-color: var(--mx-text-3);
+}
+.mx-md .toastui-editor-contents .task-list-item::before {
+  border-color: var(--mx-border-strong);
+  border-radius: 4px;
+}
+.mx-md .toastui-editor-contents .task-list-item.checked::before {
+  border-color: var(--mx-ink);
+  background-color: var(--mx-ink);
+}
+.mx-md .placeholder,
+.mx-md .toastui-editor-contents .placeholder {
+  color: var(--mx-text-4);
+}
+:root[data-mx-theme='dark'] .mx-md .toastui-editor-toolbar-icons {
+  filter: invert(1) hue-rotate(180deg);
+}
+:root[data-mx-theme='dark'] .mx-md .toastui-editor-popup,
+:root[data-mx-theme='dark'] .mx-md .toastui-editor-context-menu {
+  border-color: var(--mx-border);
+  background: var(--mx-raised);
+  color: var(--mx-text);
+}

@@ -1,0 +1,31 @@
+/*
+ * Legacy screens rendered inside the new shell. The shell now owns global
+ * navigation, so the old per-page icon rails and their offsets are removed.
+ */
+.mx-legacy {
+  min-height: 100%;
+  background: transparent;
+  color: var(--mx-text);
+  font-family: var(--mx-font-sans);
+}
+.mx-legacy .mnemox-global-nav-rail,
+.mx-legacy .mnemox-home-navigation {
+  display: none !important;
+}
+/* PageShell: drop the fixed rail + its 64px gutter and the redundant back row. */
+.mx-legacy > .ant-layout,
+.mx-legacy .ant-layout {
+  min-height: 100% !important;
+  background: transparent !important;
+}
+.mx-legacy .ant-layout > .ant-layout {
+  margin-left: 0 !important;
+}
+.mx-legacy .ant-layout-content {
+  padding: 1.25rem 2.5rem 4rem !important;
+}
+@media (max-width: 820px) {
+  .mx-legacy .ant-layout-content {
+    padding: 0.75rem 1rem 4rem !important;
+  }
+}

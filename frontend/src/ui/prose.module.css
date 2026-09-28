@@ -1,0 +1,201 @@
+/* ==========================================================================
+   Prose — rendered markdown in the reading voice.
+   Assistant answers read like a well-set study text: sans for structure,
+   generous leading, serif for block quotes, quiet code.
+   ========================================================================== */
+
+.prose {
+  color: var(--mx-text);
+  font-size: var(--mx-type-body);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
+}
+.prose p {
+  margin: 0 0 0.75em;
+  text-wrap: pretty;
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  margin: 1.4em 0 0.5em;
+  color: var(--mx-text);
+  font-weight: 650;
+  line-height: 1.4;
+}
+.prose h1 {
+  font-family: var(--mx-font-serif);
+  font-size: 1.3em;
+}
+.prose h2 {
+  font-family: var(--mx-font-serif);
+  font-size: 1.16em;
+}
+.prose h3 {
+  font-size: 1.05em;
+}
+.prose h4 {
+  font-size: 1em;
+  color: var(--mx-text-2);
+}
+.prose strong {
+  font-weight: 650;
+}
+.prose a {
+  color: var(--mx-ink-text);
+  text-decoration: underline;
+  text-decoration-color: var(--mx-ink-line);
+  text-underline-offset: 3px;
+}
+.prose a:hover {
+  text-decoration-color: currentColor;
+}
+.prose ul,
+.prose ol {
+  margin: 0.25em 0 0.85em;
+  padding-left: 1.4em;
+}
+.prose li {
+  margin: 0.25em 0;
+  padding-left: 0.125em;
+}
+.prose li::marker {
+  color: var(--mx-text-3);
+}
+.prose ol > li::marker {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.prose blockquote {
+  margin: 0.9em 0;
+  padding: 0.25em 0 0.25em 1em;
+  border-left: 1px solid var(--mx-border-strong);
+  color: var(--mx-text-2);
+  font-family: var(--mx-font-serif);
+}
+.prose hr {
+  margin: 1.4em 0;
+}
+.prose code {
+  padding: 0.1em 0.35em;
+  border: 1px solid var(--mx-border);
+  border-radius: 4px;
+  background: var(--mx-sunken);
+  color: var(--mx-text);
+  font-family: var(--mx-font-mono);
+  font-size: 0.86em;
+}
+.prose pre {
+  position: relative;
+  margin: 0.9em 0;
+  padding: 0.875rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--mx-border);
+  border-radius: 10px;
+  background: var(--mx-sunken);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+.prose pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+}
+.codeCopy {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid var(--mx-border);
+  border-radius: 6px;
+  background: var(--mx-raised);
+  color: var(--mx-text-3);
+  font-family: var(--mx-font-sans);
+  font-size: 0.6875rem;
+  opacity: 0;
+  transition: opacity var(--mx-t-fast) var(--mx-ease);
+}
+.prose pre:hover .codeCopy,
+.codeCopy:focus-visible {
+  opacity: 1;
+}
+.prose table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0.9em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.875em;
+}
+.prose th,
+.prose td {
+  padding: 0.5em 0.875em;
+  border: 1px solid var(--mx-border);
+  text-align: left;
+  vertical-align: top;
+}
+.prose th {
+  background: var(--mx-sunken);
+  color: var(--mx-text-2);
+  font-weight: 620;
+}
+.prose img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+.prose :global(.katex-display) {
+  margin: 0.9em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* highlight.js tokens tuned to the paper palette (both themes) */
+.prose :global(.hljs-keyword),
+.prose :global(.hljs-selector-tag),
+.prose :global(.hljs-built_in) {
+  color: var(--mx-ink-text);
+}
+.prose :global(.hljs-string),
+.prose :global(.hljs-attr),
+.prose :global(.hljs-template-tag) {
+  color: var(--mx-success);
+}
+.prose :global(.hljs-number),
+.prose :global(.hljs-literal) {
+  color: var(--mx-evidence);
+}
+.prose :global(.hljs-comment),
+.prose :global(.hljs-quote) {
+  color: var(--mx-text-3);
+  font-style: italic;
+}
+.prose :global(.hljs-title),
+.prose :global(.hljs-function),
+.prose :global(.hljs-section) {
+  color: var(--mx-warning);
+}
+
+.caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  border-radius: 1px;
+  background: var(--mx-ink);
+  animation: caret 1s steps(2, start) infinite;
+}
+@keyframes caret {
+  to {
+    visibility: hidden;
+  }
+}

@@ -1,0 +1,182 @@
+.loop {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0.25rem 0 1.5rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+.step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0 0.75rem 0 0;
+}
+.step:not(:last-child)::after {
+  /* the thread that ties the loop together */
+  content: '';
+  position: absolute;
+  top: 0.75rem;
+  right: 0.25rem;
+  left: 1.875rem;
+  height: 1px;
+  background: var(--mx-border);
+}
+.stepIdx {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid var(--mx-border-strong);
+  border-radius: 50%;
+  background: var(--mx-raised);
+  color: var(--mx-text-3);
+  font-size: 0.75rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.stepIdx svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  stroke-width: 2.6;
+}
+.step[data-done='true'] .stepIdx {
+  border-color: transparent;
+  background: var(--mx-m2);
+  color: var(--mx-success);
+}
+.stepText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+}
+.stepTitle {
+  color: var(--mx-text);
+  font-size: var(--mx-type-meta);
+  font-weight: 620;
+}
+.stepBody {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.55;
+}
+
+.paths {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.path {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  width: 100%;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--mx-border);
+  border-radius: var(--mx-r-card);
+  background: var(--mx-raised);
+  color: var(--mx-text);
+  text-align: left;
+  transition:
+    border-color var(--mx-t-fast) var(--mx-ease),
+    box-shadow var(--mx-t-base) var(--mx-ease),
+    background-color var(--mx-t-fast) var(--mx-ease);
+}
+.path:hover:not(:disabled) {
+  border-color: var(--mx-border-strong);
+  box-shadow: var(--mx-shadow-md);
+}
+.path:hover:not(:disabled) .pathArrow {
+  transform: translateX(3px);
+  color: var(--mx-text);
+}
+.path[data-primary] {
+  border-color: var(--mx-ink-line);
+  background: var(--mx-ink-soft);
+}
+.path:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+.pathIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 10px;
+  background: var(--mx-sunken);
+  color: var(--mx-text-2);
+}
+.path[data-primary] .pathIcon {
+  background: var(--mx-ink);
+  color: var(--mx-on-ink);
+}
+.pathIcon svg {
+  width: 1.0625rem;
+  height: 1.0625rem;
+}
+.pathText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.pathTitle {
+  font-size: var(--mx-type-ui);
+  font-weight: 620;
+}
+.pathBody {
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.5;
+}
+.path[data-primary] .pathBody {
+  color: var(--mx-text-2);
+}
+.pathArrow {
+  width: 1rem;
+  height: 1rem;
+  color: var(--mx-text-3);
+  transition:
+    transform var(--mx-t-base) var(--mx-ease),
+    color var(--mx-t-fast) var(--mx-ease);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--mx-border);
+  color: var(--mx-text-3);
+  font-size: var(--mx-type-caption);
+  line-height: 1.55;
+}
+.foot > svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+.foot > span {
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .loop {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 1rem;
+  }
+  .step:nth-child(2)::after {
+    display: none;
+  }
+  .foot {
+    flex-wrap: wrap;
+  }
+}

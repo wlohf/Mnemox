@@ -1,81 +1,68 @@
-import { lazy, Suspense, useEffect, useMemo, useRef } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { App as AntdApp, Spin, ConfigProvider, theme } from 'antd'
-import zhCN from 'antd/locale/zh_CN'
-import { ProtectedRoute } from './components/ProtectedRoute'
+import { lazy, useEffect, type ReactNode } from 'react'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { Toaster, TooltipProvider, toast } from './ui'
+import { queryClient } from './app/queryClient'
+import { AppShell } from './app/shell/AppShell'
+import { useUpdateCheck } from './app/shell/globalBehaviours'
+import { LegacyBoundary } from './app/LegacyBoundary'
+import { setNotifySink } from './services/notify'
+import './app/legacy.css'
 import { syncEngine } from './sync/SyncEngine'
 import { notesSyncAdapter } from './sync/adapters/notesSyncAdapter'
 import { goalsSyncAdapter } from './sync/adapters/goalsSyncAdapter'
 import { goalTasksSyncAdapter } from './sync/adapters/goalTasksSyncAdapter'
 import { ankiCardsSyncAdapter } from './sync/adapters/ankiCardsSyncAdapter'
 import { wrongQuestionsSyncAdapter } from './sync/adapters/wrongQuestionsSyncAdapter'
-import { useThemeStore } from './stores/themeStore'
 import { useAuthStore } from './stores/authStore'
 import { usePomodoroStore } from './stores/pomodoroStore'
-import { checkSystemUpdate } from './services/systemApi'
 import { PomodoroTicker } from './components/PomodoroTicker'
+import { AuthGate } from './app/AuthGate'
+import { SettingsRedirect } from './app/SettingsRedirect'
 
-const ObsidianLayout = lazy(() => import('./components/Layout/ObsidianLayout').then(m => ({ default: m.ObsidianLayout })))
-const PomodoroPage = lazy(() => import('./pages/PomodoroPage').then(m => ({ default: m.PomodoroPage })))
-const WrongQuestionsPage = lazy(() => import('./pages/WrongQuestionsPage').then(m => ({ default: m.WrongQuestionsPage })))
-const ReviewPage = lazy(() => import('./pages/ReviewPage').then(m => ({ default: m.ReviewPage })))
-const GoalsTasksPage = lazy(() => import('./pages/GoalsTasksPage').then(m => ({ default: m.GoalsTasksPage })))
-const NotesPage = lazy(() => import('./pages/NotesPage').then(m => ({ default: m.NotesPage })))
-const MemoryPage = lazy(() => import('./pages/MemoryPage').then(m => ({ default: m.MemoryPage })))
-const DashboardPage = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })))
-const MasteryMapPage = lazy(() => import('./pages/MasteryMapPage').then(m => ({ default: m.MasteryMapPage })))
+// Rebuilt screens (Mnemox UI kit)
+const TodayPage = lazy(() => import('./features/today/TodayPage').then(m => ({ default: m.TodayPage })))
+const LoginPage = lazy(() => import('./features/auth/LoginPage').then(m => ({ default: m.LoginPage })))
+const CoachPage = lazy(() => import('./features/coach/CoachPage').then(m => ({ default: m.CoachPage })))
+const ReviewPage = lazy(() => import('./features/review/ReviewPage').then(m => ({ default: m.ReviewPage })))
+const FocusPage = lazy(() => import('./features/focus/FocusPage').then(m => ({ default: m.FocusPage })))
+const NotesPage = lazy(() => import('./features/notes/NotesPage').then(m => ({ default: m.NotesPage })))
+const GoalsPage = lazy(() => import('./features/goals/GoalsPage').then(m => ({ default: m.GoalsPage })))
+const WrongQuestionsPage = lazy(() => import('./features/wrong/WrongQuestionsPage').then(m => ({ default: m.WrongQuestionsPage })))
+const MaterialsPage = lazy(() => import('./features/materials/MaterialsPage').then(m => ({ default: m.MaterialsPage })))
+const CardsPage = lazy(() => import('./features/cards/CardsPage').then(m => ({ default: m.CardsPage })))
+const MemoryPage = lazy(() => import('./features/memory/MemoryPage').then(m => ({ default: m.MemoryPage })))
+const PlansPage = lazy(() => import('./features/plans/PlansPage').then(m => ({ default: m.PlansPage })))
+const MasteryPage = lazy(() => import('./features/mastery/MasteryPage').then(m => ({ default: m.MasteryPage })))
+const ReportPage = lazy(() => import('./features/report/ReportPage').then(m => ({ default: m.ReportPage })))
+
+// Screens still on the legacy stack; rendered inside the new shell.
 const ProgressEnginePage = lazy(() => import('./pages/ProgressEnginePage').then(m => ({ default: m.ProgressEnginePage })))
-const UserProfilePage = lazy(() => import('./pages/UserProfilePage').then(m => ({ default: m.UserProfilePage })))
-const PromptsPage = lazy(() => import('./pages/PromptsPage').then(m => ({ default: m.PromptsPage })))
-const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
-const EDAReportPage = lazy(() => import('./pages/EDAReportPage').then(m => ({ default: m.EDAReportPage })))
 const AgentPage = lazy(() => import('./pages/AgentPage').then(m => ({ default: m.AgentPage })))
-const AnkiPage = lazy(() => import('./pages/AnkiPage').then(m => ({ default: m.AnkiPage })))
-const PlansPage = lazy(() => import('./pages/PlansPage').then(m => ({ default: m.PlansPage })))
 const KnowledgeLabPage = lazy(() => import('./pages/KnowledgeLabPage').then(m => ({ default: m.KnowledgeLabPage })))
 
-const PageSpinner = () => (
-  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-    <Spin size="large" />
-  </div>
-)
+// Route services' notifications into the new toast system.
+setNotifySink((level, text) => {
+  if (level === 'error') toast.error(text)
+  else if (level === 'warning') toast.warning(text)
+  else if (level === 'success') toast.success(text)
+  else toast.info(text)
+})
 
-const UPDATE_AUTO_CHECK_KEY = 'sys_update_auto_check'
-const UPDATE_INTERVAL_MIN_KEY = 'sys_update_interval_min'
-const UPDATE_LAST_RESULT_KEY = 'sys_update_last'
-const UPDATE_NOTIFIED_VERSION_KEY = 'sys_update_notified_version'
+const legacy = (node: ReactNode) => <LegacyBoundary>{node}</LegacyBoundary>
 
-function isAutoCheckEnabled() {
-  return localStorage.getItem(UPDATE_AUTO_CHECK_KEY) !== 'false'
-}
-
-function getAutoCheckIntervalMs() {
-  const parsed = Number.parseInt(localStorage.getItem(UPDATE_INTERVAL_MIN_KEY) ?? '360', 10)
-  const minutes = Number.isNaN(parsed) ? 360 : Math.min(Math.max(parsed, 5), 1440)
-  return minutes * 60 * 1000
-}
-
-function notifyUpdateIfPossible(latestVersion: string) {
-  const notifEnabled = localStorage.getItem('sys_notif') !== 'false'
-  if (!notifEnabled || !('Notification' in window)) {
-    return
-  }
-  if (Notification.permission === 'granted') {
-    const notice = new Notification('Mnemox 发现新版本', {
-      body: `v${latestVersion} 已发布，可在系统设置中更新。`,
-    })
-    notice.onclick = () => {
-      window.focus()
-    }
-  }
+function ScrollReset() {
+  const { pathname } = useLocation()
+  useEffect(() => {
+    document.getElementById('mx-scroll')?.scrollTo({ top: 0 })
+  }, [pathname])
+  return null
 }
 
 function App() {
-  const resolvedTheme = useThemeStore((s) => s.resolvedTheme)
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const userId = useAuthStore((s) => s.user?.id)
-  const refreshPomodoroRecords = usePomodoroStore((s) => s.refreshRecordsFromBackend)
-  const autoCheckTimer = useRef<number | null>(null)
+  const isAuthenticated = useAuthStore(st => st.isAuthenticated)
+  const userId = useAuthStore(st => st.user?.id)
+  const refreshPomodoroRecords = usePomodoroStore(st => st.refreshRecordsFromBackend)
 
   useEffect(() => {
     syncEngine.registerAdapter(notesSyncAdapter)
@@ -91,171 +78,50 @@ function App() {
       void refreshPomodoroRecords()
     } else {
       syncEngine.stop()
+      queryClient.clear()
     }
     return () => syncEngine.stop()
   }, [isAuthenticated, userId, refreshPomodoroRecords])
 
-  useEffect(() => {
-    if (!isAuthenticated) {
-      if (autoCheckTimer.current) {
-        window.clearTimeout(autoCheckTimer.current)
-        autoCheckTimer.current = null
-      }
-      return
-    }
-
-    let destroyed = false
-
-    const runUpdateCheck = async () => {
-      const result = await checkSystemUpdate().catch(() => null)
-      if (destroyed || result === null) {
-        return
-      }
-
-      const payload = JSON.stringify(result)
-      localStorage.setItem(UPDATE_LAST_RESULT_KEY, payload)
-      window.dispatchEvent(new StorageEvent('storage', { key: UPDATE_LAST_RESULT_KEY, newValue: payload }))
-
-      if (!result.has_update || !result.latest_version) {
-        return
-      }
-
-      const lastNotified = localStorage.getItem(UPDATE_NOTIFIED_VERSION_KEY)
-      if (lastNotified === result.latest_version) {
-        return
-      }
-      localStorage.setItem(UPDATE_NOTIFIED_VERSION_KEY, result.latest_version)
-      notifyUpdateIfPossible(result.latest_version)
-    }
-
-    const scheduleNext = () => {
-      if (destroyed) {
-        return
-      }
-      if (!isAutoCheckEnabled()) {
-        autoCheckTimer.current = null
-        return
-      }
-      autoCheckTimer.current = window.setTimeout(async () => {
-        await runUpdateCheck()
-        scheduleNext()
-      }, getAutoCheckIntervalMs())
-    }
-
-    if (isAutoCheckEnabled()) {
-      void runUpdateCheck()
-      scheduleNext()
-    }
-
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== UPDATE_AUTO_CHECK_KEY && event.key !== UPDATE_INTERVAL_MIN_KEY) {
-        return
-      }
-      if (autoCheckTimer.current) {
-        window.clearTimeout(autoCheckTimer.current)
-        autoCheckTimer.current = null
-      }
-      if (isAutoCheckEnabled()) {
-        void runUpdateCheck()
-        scheduleNext()
-      }
-    }
-
-    window.addEventListener('storage', handleStorage)
-    return () => {
-      destroyed = true
-      if (autoCheckTimer.current) {
-        window.clearTimeout(autoCheckTimer.current)
-        autoCheckTimer.current = null
-      }
-      window.removeEventListener('storage', handleStorage)
-    }
-  }, [isAuthenticated])
-
-  const antdTheme = useMemo(() => {
-    // CSS is the single palette source for native and Ant Design controls.
-    const styles = getComputedStyle(document.documentElement)
-    const color = (name: string) => styles.getPropertyValue(name).trim()
-    return {
-      algorithm: resolvedTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
-      token: {
-        colorPrimary: color('--brand-500'),
-        colorPrimaryHover: color('--brand-600'),
-        colorPrimaryActive: color('--brand-400'),
-        colorPrimaryBg: color('--bg-elevated'),
-        colorTextLightSolid: color('--text-inverse'),
-        colorBgContainer: color('--bg-surface'),
-        colorBgLayout: color('--bg-base'),
-        colorBgElevated: color('--bg-surface'),
-        colorBorder: color('--border-color'),
-        colorBorderSecondary: color('--border-light'),
-        colorText: color('--text-primary'),
-        colorTextSecondary: color('--text-secondary'),
-        colorTextTertiary: color('--text-tertiary'),
-        colorTextDisabled: color('--text-muted'),
-        colorLink: color('--text-primary'),
-        colorLinkHover: color('--text-secondary'),
-        colorLinkActive: color('--text-primary'),
-        colorSuccess: color('--success'),
-        colorError: color('--error'),
-        colorWarning: color('--warning'),
-        colorInfo: color('--info'),
-        borderRadius: 10,
-        fontFamily: styles.fontFamily,
-      },
-      components: {
-        Button: { primaryShadow: 'none', defaultShadow: 'none' },
-        Layout: { siderBg: color('--bg-sidebar'), headerBg: color('--bg-base') },
-      },
-    }
-  }, [resolvedTheme])
-
-  useEffect(() => {
-    ConfigProvider.config({
-      holderRender: (children) => (
-        <ConfigProvider locale={zhCN} theme={antdTheme}>
-          <AntdApp>{children}</AntdApp>
-        </ConfigProvider>
-      ),
-    })
-  }, [antdTheme])
+  useUpdateCheck(isAuthenticated)
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={antdTheme}
-    >
-      <AntdApp>
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
         <PomodoroTicker />
         <BrowserRouter>
-          <Suspense fallback={<PageSpinner />}>
-            <Routes key={userId ?? 'guest'}>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
-              <Route path="/conversations/:conversationId" element={<ProtectedRoute><ObsidianLayout /></ProtectedRoute>} />
-              <Route path="/pomodoro" element={<ProtectedRoute><PomodoroPage /></ProtectedRoute>} />
-              <Route path="/wrong-questions" element={<ProtectedRoute><WrongQuestionsPage /></ProtectedRoute>} />
-              <Route path="/review" element={<ProtectedRoute><ReviewPage /></ProtectedRoute>} />
-              <Route path="/goals" element={<ProtectedRoute><GoalsTasksPage /></ProtectedRoute>} />
-              <Route path="/notes" element={<ProtectedRoute><NotesPage /></ProtectedRoute>} />
-              <Route path="/memory" element={<ProtectedRoute><MemoryPage /></ProtectedRoute>} />
-              <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-              <Route path="/mastery" element={<ProtectedRoute><MasteryMapPage /></ProtectedRoute>} />
-              <Route path="/progress" element={<ProtectedRoute><ProgressEnginePage /></ProtectedRoute>} />
-              <Route path="/profile" element={<ProtectedRoute><UserProfilePage /></ProtectedRoute>} />
-              <Route path="/prompts" element={<ProtectedRoute><PromptsPage /></ProtectedRoute>} />
-              <Route path="/eda" element={<ProtectedRoute><EDAReportPage /></ProtectedRoute>} />
-              <Route path="/intervention" element={<ProtectedRoute><Navigate to="/eda?tab=intervention" replace /></ProtectedRoute>} />
-              <Route path="/agent" element={<ProtectedRoute><AgentPage /></ProtectedRoute>} />
-              <Route path="/anki" element={<ProtectedRoute><AnkiPage /></ProtectedRoute>} />
-              <Route path="/plans" element={<ProtectedRoute><PlansPage /></ProtectedRoute>} />
-              <Route path="/knowledge-lab" element={<ProtectedRoute><KnowledgeLabPage /></ProtectedRoute>} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
+          <ScrollReset />
+          <Routes key={userId ?? 'guest'}>
+            <Route path="/login" element={<LoginPage />} />
+            <Route element={<AuthGate><AppShell /></AuthGate>}>
+              <Route path="/today" element={<TodayPage />} />
+              <Route path="/dashboard" element={<Navigate to="/today" replace />} />
+              <Route path="/" element={<CoachPage />} />
+              <Route path="/conversations/:conversationId" element={<CoachPage />} />
+              <Route path="/pomodoro" element={<FocusPage />} />
+              <Route path="/wrong-questions" element={<WrongQuestionsPage />} />
+              <Route path="/review" element={<ReviewPage />} />
+              <Route path="/goals" element={<GoalsPage />} />
+              <Route path="/notes" element={<NotesPage />} />
+              <Route path="/materials" element={<MaterialsPage />} />
+              <Route path="/memory" element={<MemoryPage />} />
+              <Route path="/mastery" element={<MasteryPage />} />
+              <Route path="/progress" element={legacy(<ProgressEnginePage />)} />
+              <Route path="/profile" element={<Navigate to="/eda#profile" replace />} />
+              <Route path="/prompts" element={<SettingsRedirect section="prompts" />} />
+              <Route path="/eda" element={<ReportPage />} />
+              <Route path="/intervention" element={<Navigate to="/eda?tab=intervention" replace />} />
+              <Route path="/agent" element={legacy(<AgentPage />)} />
+              <Route path="/anki" element={<CardsPage />} />
+              <Route path="/plans" element={<PlansPage />} />
+              <Route path="/knowledge-lab" element={legacy(<KnowledgeLabPage />)} />
+            </Route>
+            <Route path="*" element={<Navigate to="/today" replace />} />
+          </Routes>
         </BrowserRouter>
-      </AntdApp>
-    </ConfigProvider>
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
   )
 }
 
