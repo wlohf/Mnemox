@@ -43,7 +43,6 @@ export function NotesPage() {
     next.delete('new')
     setParams(next, { replace: true })
     void ed.create()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Ctrl+S saves
@@ -76,7 +75,6 @@ export function NotesPage() {
         }}
       />
     ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ed.active, dirty],
   )
 

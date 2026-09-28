@@ -33,7 +33,6 @@ export function PromptsSection({ initialKey }: { initialKey?: string }) {
     if (!current) return
     if (!key) setKey(current.mode_key)
     setText(current.content)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.mode_key, current?.content])
 
   if (q.isLoading) return <Skeleton height={320} radius={12} />

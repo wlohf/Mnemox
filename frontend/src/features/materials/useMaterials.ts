@@ -24,6 +24,13 @@ import { checkUpload, displayTitle } from './materialModel'
  */
 
 export const MATERIAL_LIMIT = 500
+// New materials are embedded in the background after upload; poll while any
+// projection is still queued or indexing so the status settles on its own.
+const INDEXING_POLL_MS = 4000
+
+function hasIndexingMaterial(items: MaterialItem[] | undefined): boolean {
+  return (items ?? []).some(m => m.retrieval_projection?.status === 'pending' || m.retrieval_projection?.status === 'indexing')
+}
 
 export interface UploadJob {
   id: string
@@ -64,7 +71,12 @@ export function useContentSearch(query: string, enabled: boolean) {
 
 export function useMaterialsLibrary() {
   const qc = useQueryClient()
-  const list = useQuery({ queryKey: qk.materials, queryFn: () => listMaterials(MATERIAL_LIMIT), staleTime: 30_000 })
+  const list = useQuery({
+    queryKey: qk.materials,
+    queryFn: () => listMaterials(MATERIAL_LIMIT),
+    staleTime: 30_000,
+    refetchInterval: query => (hasIndexingMaterial(query.state.data) ? INDEXING_POLL_MS : false),
+  })
   const projects = useQuery({ queryKey: qk.projects, queryFn: listProjects, staleTime: 60_000 })
   const rag = useQuery({ queryKey: ['rag', 'health'], queryFn: getRagHealth, staleTime: 60_000, retry: false })
   const [uploads, setUploads] = useState<UploadJob[]>([])

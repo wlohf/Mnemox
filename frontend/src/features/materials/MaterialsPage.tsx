@@ -57,7 +57,6 @@ export function MaterialsPage() {
       next.set('id', String(sortMaterials(items, 'recent')[0].id))
       setParams(next, { replace: true })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items.length, selectedId])
 
   // /materials?upload=1 (from 今天 / onboarding) opens the file picker.
@@ -67,7 +66,6 @@ export function MaterialsPage() {
     next.delete('upload')
     setParams(next, { replace: true })
     requestAnimationFrame(() => fileRef.current?.click())
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const shown = useMemo(

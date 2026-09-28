@@ -41,7 +41,6 @@ export function TrendChart({ points, label }: { points: DayPoint[]; label: strin
       points
         .map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p.mean).toFixed(1)}`)
         .join(' '),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [points, top],
   )
 

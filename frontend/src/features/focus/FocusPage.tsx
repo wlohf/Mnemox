@@ -123,7 +123,6 @@ export function FocusPage() {
 
   useEffect(() => {
     void st.loadBackgroundImagePreference()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => {
     if (suggestedMinutes && !isRunning && !isPaused) setMinutes(suggestedMinutes)

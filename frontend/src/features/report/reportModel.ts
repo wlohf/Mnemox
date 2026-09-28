@@ -129,9 +129,9 @@ export function heatGrid(report: Pick<EDAReport, 'charts'>): HeatGrid {
 export function trendCaption(report: Pick<EDAReport, 'daily_points' | 'summary' | 'period_days'>): string {
   const pts = report.daily_points ?? []
   const total = report.summary?.total_minutes ?? 0
-  const active = pts.filter(p => p.study_minutes > 0).length
+  const active = pts.filter(p => (p.study_minutes ?? 0) > 0).length
   if (active === 0) return `近 ${report.period_days} 天还没有学习记录。`
-  const best = pts.reduce((a, b) => (b.study_minutes > a.study_minutes ? b : a))
+  const best = pts.reduce((a, b) => ((b.study_minutes ?? 0) > (a.study_minutes ?? 0) ? b : a))
   return `近 ${report.period_days} 天共学习 ${formatMinutes(total)}，其中 ${active} 天有记录；最长的一天是 ${shortMD(best.date)}，${formatMinutes(best.study_minutes)}。`
 }
 

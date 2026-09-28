@@ -569,7 +569,7 @@ function Drafts({ data, onCite }: { data: Data; onCite: (n: number) => void }) {
 function Rhythm({ data }: { data: Data }) {
   const navigate = useNavigate()
   const d = data.dashboard.data
-  const days = data.week.data ?? []
+  const days = (data.week.data ?? []).map(x => ({ ...x, total_minutes: x.total_minutes ?? 0 }))
   const max = Math.max(1, ...days.map(x => x.total_minutes))
   const activeDays = days.filter(x => x.total_minutes > 0).length
   const weekMinutes = days.reduce((a, b) => a + b.total_minutes, 0)

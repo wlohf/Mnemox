@@ -59,7 +59,7 @@ export function ReportPage() {
     () =>
       (report?.charts?.daily_trend?.length ? report.charts.daily_trend : report?.daily_points ?? []).map(d => ({
         date: d.date,
-        minutes: d.study_minutes,
+        minutes: d.study_minutes ?? 0,
         mean: d.rolling7_minutes ?? 0,
         sessions: d.pomodoro_count,
       })),
@@ -385,7 +385,7 @@ function StatRow({ report }: { report: EDAReport }) {
           {sm.pomodoro_count}
           <small>次</small>
         </span>
-        <span className={s.statFoot}>完整完成 {Math.round(sm.completion_rate)}%</span>
+        <span className={s.statFoot}>完整完成 {Math.round(sm.completion_rate ?? 0)}%</span>
       </div>
       <div className={s.stat}>
         <span className={s.statLabel}>任务</span>

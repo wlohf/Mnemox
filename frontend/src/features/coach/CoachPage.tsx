@@ -66,7 +66,6 @@ export function CoachPage() {
     setSearchParams(next, { replace: true })
     const text = ctx ? `关于「${ctx}」：${ask}` : ask
     void chat.send(text, { projectId })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   usePageChrome({

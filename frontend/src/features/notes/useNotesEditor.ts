@@ -113,7 +113,6 @@ export function useNotesEditor() {
       return
     }
     if (!activeId || !visible.some(n => n._localId === activeId)) load(visible[0])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible.length, folder, query])
 
   // Pull in remote changes while the editor is clean.
@@ -122,7 +121,6 @@ export function useNotesEditor() {
     if (active.title !== title) setTitle(active.title || '')
     if (active.content !== content) setContent(active.content || '')
     if (JSON.stringify(active.tags || []) !== JSON.stringify(tags)) setTags(active.tags || [])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.updated_at, active?._syncStatus])
 
   // Local draft autosave.
